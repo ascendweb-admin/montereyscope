@@ -1,0 +1,29 @@
+{
+  "channel_id": "UCBR8-60-B28hp2BmDPdntcQ",
+  "channel": "YouTube",
+  "uploader": "YouTube",
+  "uploader_id": "@YouTube",
+  "title": "YouTube",
+  "channel_url": "https://www.youtube.com/channel/UCBR8-60-B28hp2BmDPdntcQ",
+  "webpage_url": "https://www.youtube.com/@YouTube",
+  "thumbnails": [
+    {
+      "url": "https://yt3.googleusercontent.com/example-banner-1111111111111111",
+      "width": 1060,
+      "height": 175,
+      "preference": -10
+    },
+    {
+      "url": "https://yt3.googleusercontent.com/example-banner-2222222222222222",
+      "width": 2560,
+      "height": 424,
+      "preference": -10
+    },
+    {
+      "url": "https://yt3.googleusercontent.com/example-avatar-3333333333333333",
+      "width": 900,
+      "height": 900,
+      "preference": 0
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "fixture": "deterministic injected AI adapter; measures pipeline capacity, not live model speed or semantic accuracy",
+  "posts": 10000,
+  "creators": 20,
+  "textBytes": 7505550,
+  "snapshotBytes": 16479385,
+  "seedMs": 4641,
+  "snapshotMs": 1514,
+  "engineMs": 87686,
+  "calls": 1128,
+  "batches": 1128,
+  "phases": {
+    "scan": 920,
+    "reduce": 167,
+    "synthesize": 1,
+    "verify": 40
+  },
+  "reviewed": 10000,
+  "unfinished": 0,
+  "related": 10000,
+  "claims": 40,
+  "contradictoryCreatorPairs": 20,
+  "quietCreators": 2
+}

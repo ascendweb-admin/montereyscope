@@ -1,0 +1,19 @@
+{
+  "id": "E2eG00dV1d0",
+  "title": "A captioned e2e video",
+  "_type": "generic",
+  "webpage_url": "https://www.youtube.com/watch?v=E2eG00dV1d0",
+  "channel": "E2E Sample Channel",
+  "channel_id": "UCe2e00000000000000001",
+  "duration": 251,
+  "live_status": "not_live",
+  "subtitles": {
+    "en": [
+      {
+        "ext": "vtt",
+        "url": "https://www.youtube.com/api/timedtext?lang=en&v=E2eG00dV1d0"
+      }
+    ]
+  },
+  "automatic_captions": {}
+}

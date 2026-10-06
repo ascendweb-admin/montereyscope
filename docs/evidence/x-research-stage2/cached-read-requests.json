@@ -1,0 +1,29 @@
+{
+  "recorded_on": "2026-10-01",
+  "evidence_kind": "offline browser fixture, not live X validation",
+  "total_requests": 81,
+  "api_requests": [
+    {
+      "method": "GET",
+      "path": "/api/ai/models",
+      "count": 2
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/reports",
+      "count": 41
+    },
+    {
+      "method": "GET",
+      "path": "/api/x-research/feed",
+      "count": 10
+    },
+    {
+      "method": "POST",
+      "path": "/api/ai/models/refresh",
+      "count": 3
+    }
+  ],
+  "x_timeline_or_detail_requests": 0,
+  "x_connection_requests": 0
+}

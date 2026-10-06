@@ -1,0 +1,9 @@
+WEBVTT
+
+e2e-1
+00:00:00.500 --> 00:00:02.500
+This is the end-to-end sample transcript.
+
+e2e-2
+00:00:02.600 --> 00:00:04.900
+It survives a server restart from the local cache.

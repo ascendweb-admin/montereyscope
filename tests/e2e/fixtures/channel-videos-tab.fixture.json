@@ -1,0 +1,44 @@
+{
+  "id": "UCe2e00000000000000001",
+  "title": "Videos",
+  "_type": "playlist",
+  "channel": "E2E Sample Channel",
+  "channel_id": "UCe2e00000000000000001",
+  "requested_entries": [1, 2],
+  "entries": [
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "E2eG00dV1d0",
+      "url": "https://www.youtube.com/watch?v=E2eG00dV1d0",
+      "title": "An ordinary upload with captions",
+      "duration": 251,
+      "timestamp": 1787529600,
+      "live_status": "not_live",
+      "thumbnails": [
+        {
+          "url": "https://i.ytimg.com/vi/E2eG00dV1d0/hqdefault.jpg",
+          "height": 94,
+          "width": 168
+        }
+      ]
+    },
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "E2eFl4kyV1d",
+      "url": "https://www.youtube.com/watch?v=E2eFl4kyV1d&localtube-flaky=1",
+      "title": "An upload whose first extraction attempt fails",
+      "duration": 512,
+      "timestamp": 1787443200,
+      "live_status": "not_live",
+      "thumbnails": [
+        {
+          "url": "https://i.ytimg.com/vi/E2eFl4kyV1d/hqdefault.jpg",
+          "height": 94,
+          "width": 168
+        }
+      ]
+    }
+  ]
+}

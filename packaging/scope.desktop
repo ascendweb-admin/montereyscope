@@ -1,0 +1,22 @@
+# Sample freedesktop application entry for scope.
+#
+# This file is a TEMPLATE: @PROJECT_ROOT@ is replaced with the absolute
+# project path by packaging/install-desktop-entry.sh at install time.
+# The installed copy lives in ~/.local/share/applications/scope.desktop
+# (user-local only; nothing is written to /usr/share or autostart).
+#
+# Manual equivalent of what it launches:
+#   <project root>/scripts/launch
+
+[Desktop Entry]
+Type=Application
+Name=scope
+GenericName=YouTube transcript dashboard
+Comment=Open your local scope dashboard
+Exec="@PROJECT_ROOT@/scripts/launch"
+Path=@PROJECT_ROOT@
+Icon=@PROJECT_ROOT@/public/scope-logo.png
+Terminal=false
+Categories=Network;AudioVideo;
+Keywords=youtube;transcript;scope;
+StartupNotify=true

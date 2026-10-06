@@ -1,0 +1,290 @@
+name: Desktop builds
+
+on:
+  # Native matrix jobs consume hosted runner time. The owner has chosen
+  # zero-cost, local-only verification until explicitly changed.
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_ref:
+        type: string
+        required: true
+      release_tag:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Omarchy / Linux AppImage
+            os: ubuntu-24.04
+            target_platform: linux
+            target_arch: x64
+            package_script: dist:linux
+            artifact_name: scope-linux-x64
+            artifact_path: desktop/dist/*.AppImage
+          - name: Windows installer
+            os: windows-2025
+            target_platform: win32
+            target_arch: x64
+            package_script: dist:windows
+            artifact_name: scope-windows-x64
+            artifact_path: desktop/dist/*.exe
+          - name: macOS Apple Silicon DMG
+            # macos-15 is the arm64 Apple Silicon image; the step below
+            # asserts that instead of trusting the label.
+            os: macos-15
+            target_platform: darwin
+            target_arch: arm64
+            runner_uname_m: arm64
+            package_script: dist:mac
+            artifact_name: scope-macos-arm64
+            artifact_path: desktop/dist/*.dmg
+          - name: macOS Intel DMG
+            # macos-15-intel is the hosted x86_64 image and the last one
+            # GitHub will offer (scheduled for retirement in August 2027).
+            # After that date this job needs a self-hosted Intel Mac runner;
+            # the target is never silently dropped. The step below asserts
+            # uname -m instead of trusting the label.
+            os: macos-15-intel
+            target_platform: darwin
+            target_arch: x64
+            runner_uname_m: x86_64
+            package_script: dist:mac:x64
+            artifact_name: scope-macos-x64
+            artifact_path: desktop/dist/*.dmg
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_ref || github.sha }}
+
+      - name: Validate release version and commit
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_COMMIT: ${{ inputs.release_ref }}
+        run: node desktop/scripts/release.cjs validate --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+
+      - name: Set up worker build tools
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.22"
+
+      - name: Verify macOS runner architecture
+        if: runner.os == 'macOS'
+        run: test "$(uname -m)" = "${{ matrix.runner_uname_m }}"
+
+      - name: Install application dependencies
+        run: npm ci
+
+      - name: Install Electron build dependencies
+        run: npm ci --prefix desktop
+
+      - name: Install Linux desktop-entry test tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y desktop-file-utils python3-gi gir1.2-glib-2.0
+
+      - name: Test desktop host
+        run: npm run desktop:test
+
+      - name: Lint application
+        run: npm run lint
+
+      - name: Test application on Linux
+        if: runner.os == 'Linux'
+        run: npm test
+
+      - name: Test application on macOS
+        if: runner.os == 'macOS'
+        run: npm test
+
+      - name: Test application units on Windows
+        if: runner.os == 'Windows'
+        run: npx vitest run tests/unit
+
+      - name: Test Windows provider process launching
+        if: runner.os == 'Windows'
+        run: npx vitest run tests/integration/provider-command-windows.test.ts tests/integration/provider-process.test.ts
+
+      - name: Prepare standalone desktop runtime
+        env:
+          SCOPE_DESKTOP_TARGET_PLATFORM: ${{ matrix.target_platform }}
+          SCOPE_DESKTOP_TARGET_ARCH: ${{ matrix.target_arch }}
+        run: npm run desktop:prepare
+
+      - name: Type-check generated routes and application
+        run: npm run typecheck
+
+      - name: Build native package
+        env:
+          SCOPE_DESKTOP_TARGET_PLATFORM: ${{ matrix.target_platform }}
+          SCOPE_DESKTOP_TARGET_ARCH: ${{ matrix.target_arch }}
+          # Only the dedicated draft-release caller receives signing secrets.
+          # Routine pushes and pull requests build without them. Without
+          # Windows secrets the build is the explicit unsigned friends-beta
+          # mode; without Mac secrets it is the ad-hoc engineering build.
+          CSC_LINK: ${{ matrix.target_platform == 'win32' && inputs.release_tag != '' && secrets.WINDOWS_CSC_LINK || matrix.target_platform == 'darwin' && inputs.release_tag != '' && secrets.MAC_CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.target_platform == 'win32' && inputs.release_tag != '' && secrets.WINDOWS_CSC_KEY_PASSWORD || matrix.target_platform == 'darwin' && inputs.release_tag != '' && secrets.MAC_CSC_KEY_PASSWORD || '' }}
+          APPLE_ID: ${{ matrix.target_platform == 'darwin' && inputs.release_tag != '' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.target_platform == 'darwin' && inputs.release_tag != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.target_platform == 'darwin' && inputs.release_tag != '' && secrets.APPLE_TEAM_ID || '' }}
+          SCOPE_DESKTOP_WINDOWS_REQUIRE_SIGNING: ${{ matrix.target_platform == 'win32' && inputs.release_tag != '' && vars.SCOPE_DESKTOP_WINDOWS_REQUIRE_SIGNING || '0' }}
+          SCOPE_DESKTOP_MAC_REQUIRE_SIGNING: ${{ matrix.target_platform == 'darwin' && inputs.release_tag != '' && vars.SCOPE_DESKTOP_MAC_REQUIRE_SIGNING || '0' }}
+        run: npm --prefix desktop run ${{ matrix.package_script }}
+
+      - name: Verify Windows package
+        if: runner.os == 'Windows'
+        env:
+          SCOPE_DESKTOP_TARGET_PLATFORM: win32
+          SCOPE_DESKTOP_TARGET_ARCH: x64
+          CSC_LINK: ${{ inputs.release_tag != '' && secrets.WINDOWS_CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ inputs.release_tag != '' && secrets.WINDOWS_CSC_KEY_PASSWORD || '' }}
+          SCOPE_DESKTOP_WINDOWS_REQUIRE_SIGNING: ${{ inputs.release_tag != '' && vars.SCOPE_DESKTOP_WINDOWS_REQUIRE_SIGNING || '0' }}
+        run: npm --prefix desktop run verify:windows
+
+      - name: Verify macOS package
+        if: runner.os == 'macOS'
+        env:
+          SCOPE_DESKTOP_TARGET_PLATFORM: darwin
+          SCOPE_DESKTOP_TARGET_ARCH: ${{ matrix.target_arch }}
+          CSC_LINK: ${{ inputs.release_tag != '' && secrets.MAC_CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ inputs.release_tag != '' && secrets.MAC_CSC_KEY_PASSWORD || '' }}
+          APPLE_ID: ${{ inputs.release_tag != '' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ inputs.release_tag != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ inputs.release_tag != '' && secrets.APPLE_TEAM_ID || '' }}
+          SCOPE_DESKTOP_MAC_REQUIRE_SIGNING: ${{ inputs.release_tag != '' && vars.SCOPE_DESKTOP_MAC_REQUIRE_SIGNING || '0' }}
+        run: npm --prefix desktop run verify:mac
+
+      - name: Verify Linux AppImage contents
+        if: runner.os == 'Linux'
+        run: node desktop/scripts/verify-appimage.cjs
+
+      # Ubuntu's hosted AppArmor policy can block unprivileged user namespaces.
+      # Enable the kernel namespace sandbox on this disposable runner so
+      # Chromium does not fall back to an unusable setuid helper in CI.
+      - name: Enable Linux namespace sandbox for packaged smoke
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          unshare -Ur true
+
+      - name: Smoke-test Linux package
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm --prefix desktop run smoke -- --minimal-path
+
+      # The AppImage may run under environments without FUSE; the extraction
+      # fallback is exercised here so a broken fallback fails CI. AppRun is a
+      # shell script, so this run keeps the system PATH; the unpacked run above
+      # covers the no-system-runtimes claim.
+      - name: Smoke-test Linux AppImage with the extraction fallback
+        if: runner.os == 'Linux'
+        env:
+          SCOPE_DESKTOP_TARGET_PLATFORM: linux
+          SCOPE_DESKTOP_TARGET_ARCH: x64
+        run: xvfb-run -a npm --prefix desktop run smoke -- --appimage --appimage-extract-and-run
+
+      - name: Smoke-test Linux external links
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm --prefix desktop run smoke -- --check-external-links
+
+      - name: Smoke-test Windows package
+        if: runner.os == 'Windows'
+        env:
+          SCOPE_DESKTOP_TARGET_PLATFORM: win32
+          SCOPE_DESKTOP_TARGET_ARCH: x64
+        run: npm --prefix desktop run smoke -- --minimal-path
+
+      # A Finder launch gets a minimal PATH; the empty-PATH smoke run proves
+      # the packaged app needs no system node, python, uv, or yt-dlp there.
+      - name: Smoke-test macOS package
+        if: runner.os == 'macOS'
+        env:
+          SCOPE_DESKTOP_TARGET_PLATFORM: darwin
+          SCOPE_DESKTOP_TARGET_ARCH: ${{ matrix.target_arch }}
+        run: npm --prefix desktop run smoke -- --minimal-path
+
+      - name: Build controlled Windows upgrade baseline
+        if: runner.os == 'Windows'
+        env:
+          SCOPE_DESKTOP_TARGET_PLATFORM: win32
+          SCOPE_DESKTOP_TARGET_ARCH: x64
+          # Internal upgrade fixture only, never uploaded as a release asset.
+          SCOPE_DESKTOP_WINDOWS_REQUIRE_SIGNING: "0"
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $baseline = "$version-stage3-baseline"
+          npm --prefix desktop run dist:windows -- --config.extraMetadata.version="$baseline" --config.directories.output=dist/installer-baseline --publish never
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Test actual Windows installer lifecycle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $baseline = "$version-stage3-baseline"
+          ./desktop/scripts/test-windows-installer.ps1 -PreviousInstaller "desktop/dist/installer-baseline/scope-$baseline-windows-x64-setup.exe" -Installer "desktop/dist/scope-$version-windows-x64-setup.exe" -PreviousVersion $baseline -Version $version
+
+      - name: Upload Windows lifecycle evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scope-windows-lifecycle-evidence
+          path: desktop/dist/windows-lifecycle/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload installer
+        if: inputs.release_tag == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Stage exact release artifact
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_COMMIT: ${{ inputs.release_ref }}
+          SCOPE_DESKTOP_TARGET_PLATFORM: ${{ matrix.target_platform }}
+          SCOPE_DESKTOP_TARGET_ARCH: ${{ matrix.target_arch }}
+          CSC_LINK: ${{ matrix.target_platform == 'win32' && secrets.WINDOWS_CSC_LINK || matrix.target_platform == 'darwin' && secrets.MAC_CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.target_platform == 'win32' && secrets.WINDOWS_CSC_KEY_PASSWORD || matrix.target_platform == 'darwin' && secrets.MAC_CSC_KEY_PASSWORD || '' }}
+          APPLE_ID: ${{ matrix.target_platform == 'darwin' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.target_platform == 'darwin' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.target_platform == 'darwin' && secrets.APPLE_TEAM_ID || '' }}
+        run: node desktop/scripts/release.cjs stage --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+
+      - name: Upload release transport artifact
+        if: inputs.release_tag != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.artifact_name }}
+          path: desktop/dist/release-stage/
+          if-no-files-found: error
+          retention-days: 14

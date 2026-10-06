@@ -1,0 +1,81 @@
+{
+  "id": "UCX6OQ3DkcsbYNE6H8uQQuVA",
+  "title": "Live",
+  "_type": "playlist",
+  "webpage_url": "https://www.youtube.com/@samplecreator/streams",
+  "channel": "Sample Creator",
+  "channel_id": "UCX6OQ3DkcsbYNE6H8uQQuVA",
+  "requested_entries": [1, 2, 3],
+  "entries": [
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "L1vEstr34m1",
+      "url": "https://www.youtube.com/watch?v=L1vEstr34m1",
+      "title": "24/7 live views right now",
+      "duration": null,
+      "view_count": null,
+      "timestamp": null,
+      "live_status": "is_live",
+      "thumbnails": [
+        {
+          "url": "https://i.ytimg.com/vi/L1vEstr34m1/hqdefault_live.jpg",
+          "height": 94,
+          "width": 168
+        }
+      ]
+    },
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "Upcom1ngStr",
+      "url": "https://www.youtube.com/watch?v=Upcom1ngStr",
+      "title": "Scheduled stream: launch coverage",
+      "duration": null,
+      "view_count": null,
+      "timestamp": null,
+      "live_status": "is_upcoming",
+      "thumbnails": [
+        {
+          "url": "https://i.ytimg.com/vi/Upcom1ngStr/hqdefault.jpg?sqp=xyz",
+          "height": 188,
+          "width": 336
+        },
+        {
+          "url": "https://i.ytimg.com/vi/Upcom1ngStr/sdqdefault.jpg",
+          "height": 94,
+          "width": 168
+        }
+      ]
+    },
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "WasL1veVide",
+      "url": "https://www.youtube.com/watch?v=WasL1veVide",
+      "title": "Streamed last week: press briefing",
+      "duration": 32259,
+      "view_count": 256000,
+      "timestamp": 1787184000,
+      "live_status": "was_live",
+      "thumbnails": [
+        {
+          "url": "https://i.ytimg.com/vi/WasL1veVide/hqdefault.jpg",
+          "height": 94,
+          "width": 168
+        }
+      ]
+    },
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "PostL1veVid",
+      "url": "https://www.youtube.com/watch?v=PostL1veVid",
+      "title": "Just ended, still processing",
+      "duration": 4312,
+      "timestamp": 1787270400,
+      "live_status": "post_live",
+      "thumbnails": []
+    }
+  ]
+}

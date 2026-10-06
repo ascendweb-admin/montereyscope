@@ -1,0 +1,84 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/desktop/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/.next-x-review/
+/.next-x-desktop/
+/out/
+
+# production
+/build
+/desktop/dist/
+/desktop/vendor/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files with secrets; the documented example stays tracked
+.env*
+!.env.example
+
+# scope local data (SQLite)
+/data/*.db
+/data/*.db-journal
+/data/*.db-shm
+/data/*.db-wal
+/data/*.sqlite
+/data/*.sqlite3
+# launcher runtime state (pid file)
+/data/run/
+
+# materialized AI job artifacts (transcript files + manifests)
+/data/ai-jobs/
+
+# temporary subtitle artifacts
+/tmp/
+*.vtt
+*.srt
+*.ass
+# ...but sanitized WebVTT test fixtures are source, not artifacts.
+!tests/fixtures/*.vtt
+!tests/e2e/fixtures/*.vtt
+
+# local logs
+/logs/
+*.log
+
+# Electron runtime/package output
+/desktop/.runtime/
+
+# browser cookie files (must never be committed)
+cookies.txt
+*.cookies
+cookiejar*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# Python worker development artifacts
+__pycache__/

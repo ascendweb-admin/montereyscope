@@ -1,0 +1,33 @@
+WEBVTT
+Kind: captions
+Language: en
+
+NOTE This is a sanitized sample used by the automated tests.
+
+STYLE
+::cue {
+  background-image: linear-gradient(to bottom, rgb(0 0 0 / 0.8), rgb(0 0 0 / 0.8));
+}
+
+sample-caption-1
+00:00:01.000 --> 00:00:03.500 align:start position:0%
+Welcome to <i>scope</i>, the &quot;offline&quot; dashboard<v Agent>for your library.
+
+sample-caption-2
+00:00:03.500 --> 00:00:06.000 align:start position:0%
+Welcome to <i>scope</i>, the &quot;offline&quot; dashboard for your&nbsp;library.
+It keeps everything&nbsp;local.
+
+sample-caption-3
+00:00:06.010 --> 00:00:08.250
+It keeps everything local.
+No cloud,<c.colorE5AE19> no accounts.</c>
+
+sample-caption-4
+00:00:30.000 --> 00:00:33.000
+<v Speaker A>Hello again, after a long pause.
+<00:00:31.000><rt>トランスク</rt>ript text stays readable.
+
+sample-caption-5
+00:00:33.100 --> 00:00:35.900
+<v Speaker B>And now a different voice answers.

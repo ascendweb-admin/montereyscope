@@ -1,0 +1,16 @@
+{
+  "archivedPosts": 85,
+  "currentMutableText": "CHANGED mutable archive, after the original research answer",
+  "frozenSourceText": "Ethereum lower fees fixture 0 speculation",
+  "frozenCreatorCount": 2,
+  "currentListMembers": [1],
+  "report": {
+    "scopeId": "983f40de-d0fe-4c49-9576-3606104953eb",
+    "jobId": "1c9e1b72-6f1c-4932-a7f6-6e3c8fad7e25",
+    "fullSourceCount": 81,
+    "answerHasOriginal": true,
+    "answerHasChanged": false
+  },
+  "retrievalJobs": 1,
+  "analysisJobs": 5
+}

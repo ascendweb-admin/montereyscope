@@ -1,0 +1,11 @@
+.next
+.next/*
+desktop/.runtime
+desktop/dist
+desktop/vendor
+package-lock.json
+next-env.d.ts
+data/*.db
+data/*.db-journal
+data/*.db-shm
+data/*.db-wal

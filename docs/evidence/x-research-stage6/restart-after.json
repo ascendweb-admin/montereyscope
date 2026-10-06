@@ -1,0 +1,50 @@
+{
+  "id": "5a713acc-06d7-492e-a7f8-a624ebee2bd3",
+  "scopeId": "b3637c73-25c1-414b-9eb1-9ada95567968",
+  "state": {
+    "status": "complete",
+    "phase": "verify",
+    "reason": null,
+    "calls": 13,
+    "chargedTokens": 152501,
+    "reportedTokens": 2400,
+    "usageReportedCalls": 12,
+    "reusedBatches": 0,
+    "estimatedBatches": 7,
+    "estimatedTokens": 84667,
+    "result": {
+      "text": "Alpha discusses lower Ethereum fees. [tweet:1000]\n\nInterpretation: Alpha disagrees with a forecast. [tweet:1080]",
+      "claims": [
+        {
+          "claim": "Alpha discusses lower Ethereum fees.",
+          "evidence": [
+            {
+              "postId": "1000",
+              "excerpt": "Ethereum lower fees fixture 0 speculation",
+              "attribution": "author"
+            }
+          ],
+          "interpretation": false,
+          "horizon": null,
+          "condition": null
+        },
+        {
+          "claim": "Alpha disagrees with a forecast.",
+          "evidence": [
+            {
+              "postId": "1080",
+              "excerpt": "I disagree with this forecast",
+              "attribution": "author"
+            }
+          ],
+          "interpretation": true,
+          "horizon": null,
+          "condition": null
+        }
+      ],
+      "scopeNote": "78 of 78 eligible cached posts reviewed across 2 selected creators. 3 excluded (1 incomplete text, 1 missing text, 1 missing date). 1 uncertain. 0 unfinished. Cached scope 2026-09-25T22:00:00.000Z to 2026-10-02T22:00:00.000Z (end exclusive). Upstream coverage remains unverified; relevance is model judgment. Media and linked pages were not analyzed.",
+      "verified": true
+    }
+  },
+  "reviewed": 78
+}

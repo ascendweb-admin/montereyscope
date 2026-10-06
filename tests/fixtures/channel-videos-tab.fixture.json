@@ -1,0 +1,73 @@
+{
+  "id": "UCBR8-60-B28hp2BmDPdntcQ",
+  "title": "Videos",
+  "_type": "playlist",
+  "webpage_url": "https://www.youtube.com/channel/UCBR8-60-B28hp2BmDPdntcQ/videos",
+  "channel": "Sample Channel",
+  "channel_id": "UCBR8-60-B28hp2BmDPdntcQ",
+  "channel_url": "https://www.youtube.com/channel/UCBR8-60-B28hp2BmDPdntcQ",
+  "uploader_id": "@samplechannel",
+  "_version": { "version": "2026.08.19", "current_git_head": "", "release_git_head": "" },
+  "requested_entries": [1, 2, 3],
+  "entries": [
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "aBcD1234EfG",
+      "url": "https://www.youtube.com/watch?v=aBcD1234EfG",
+      "title": "An ordinary upload with complete metadata",
+      "duration": 676,
+      "view_count": 61000,
+      "timestamp": 1787529600,
+      "live_status": null,
+      "availability": null,
+      "creators": null,
+      "channel_url": null,
+      "uploader_url": null,
+      "thumbnails": [
+        {
+          "url": "https://i.ytimg.com/vi/aBcD1234EfG/hqdefault.jpg?sqp=abc",
+          "height": 94,
+          "width": 168
+        },
+        {
+          "url": "https://i.ytimg.com/vi/aBcD1234EfG/maxresdefault.jpg?sqp=def",
+          "height": 720,
+          "width": 1280
+        },
+        {
+          "url": "http://i.ytimg.com/vi/aBcD1234EfG/insecure.jpg",
+          "height": 1080,
+          "width": 1920
+        }
+      ]
+    },
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "xYzW9876543",
+      "url": "https://www.youtube.com/watch?v=xYzW9876543",
+      "title": "Upload whose date and duration are unknown",
+      "duration": null,
+      "view_count": null,
+      "timestamp": null,
+      "live_status": null,
+      "thumbnails": [
+        {
+          "url": "https://i.ytimg.com/vi/xYzW9876543/hqdefault.jpg",
+          "height": 94,
+          "width": 168
+        }
+      ]
+    },
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "nO7iThumbs1",
+      "title": "Entry without thumbnails or url fields",
+      "duration": 213,
+      "timestamp": 1785801600,
+      "live_status": "not_live"
+    }
+  ]
+}

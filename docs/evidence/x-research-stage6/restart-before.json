@@ -1,0 +1,18 @@
+{
+  "id": "5a713acc-06d7-492e-a7f8-a624ebee2bd3",
+  "scopeId": "b3637c73-25c1-414b-9eb1-9ada95567968",
+  "state": {
+    "status": "waiting_for_provider",
+    "phase": "scan",
+    "reason": null,
+    "calls": 2,
+    "chargedTokens": 25108,
+    "reportedTokens": 200,
+    "usageReportedCalls": 1,
+    "reusedBatches": 0,
+    "estimatedBatches": 7,
+    "estimatedTokens": 84667,
+    "result": null
+  },
+  "reviewed": 13
+}

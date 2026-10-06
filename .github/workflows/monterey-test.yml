@@ -1,0 +1,28 @@
+name: Monterey Intel test DMG
+
+# Run only on request. This uses a standard Intel Mac runner, which is free
+# within a private repository's included allowance. Check billing before use.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - name: Check out Monterey source
+        uses: actions/checkout@v4
+
+      - name: Build unsigned Intel Monterey test DMG
+        run: bash BUILD-MONTEREY.command
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: scope-monterey-intel-test
+          path: desktop/dist/scope-0.1.9-macos-x64-monterey-test.dmg
+          if-no-files-found: error
+          retention-days: 1

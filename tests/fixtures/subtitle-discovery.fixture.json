@@ -1,0 +1,52 @@
+{
+  "id": "CapT10nedV1d",
+  "title": "A captioned sample video",
+  "_type": "generic",
+  "webpage_url": "https://www.youtube.com/watch?v=CapT10nedV1d",
+  "channel": "Sample Creator",
+  "channel_id": "UCX6OQ3DkcsbYNE6H8uQQuVA",
+  "uploader_id": "@samplecreator",
+  "duration": 310,
+  "live_status": "not_live",
+  "subtitles": {
+    "en": [
+      {
+        "ext": "vtt",
+        "url": "https://www.youtube.com/api/timedtext?lang=en&v=CapT10nedV1d"
+      }
+    ],
+    "pt-BR": [
+      {
+        "ext": "vtt",
+        "url": "https://www.youtube.com/api/timedtext?lang=pt-BR&v=CapT10nedV1d"
+      }
+    ]
+  },
+  "automatic_captions": {
+    "en-orig": [
+      {
+        "ext": "vtt",
+        "url": "https://www.youtube.com/api/timedtext?lang=en-orig&kind=asr&v=CapT10nedV1d"
+      }
+    ],
+    "en": [
+      {
+        "ext": "vtt",
+        "url": "https://www.youtube.com/api/timedtext?lang=en&kind=asr&v=CapT10nedV1d"
+      }
+    ],
+    "de": [
+      {
+        "ext": "vtt",
+        "url": "https://www.youtube.com/api/timedtext?lang=de&kind=asr&v=CapT10nedV1d"
+      }
+    ],
+    "live_chat": [
+      {
+        "ext": "json",
+        "url": "https://www.youtube.com/watch?v=CapT10nedV1d&live_chat_replay=1"
+      }
+    ]
+  },
+  "_version": { "version": "2026.08.19", "current_git_head": "", "release_git_head": "" }
+}

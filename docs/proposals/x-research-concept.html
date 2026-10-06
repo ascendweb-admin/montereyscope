@@ -1,0 +1,203 @@
+<div id="scope-x-research" aria-label="Scope X Research concept">
+  <style>
+    #scope-x-research { --sx-bg:light-dark(#fff,#161616); --sx-ink:light-dark(#242424,#eeeeee); --sx-soft:light-dark(#f5f5f5,#242424); --sx-line:light-dark(#e4e4e4,#383838); --sx-muted:light-dark(#606060,#b5b5b5); --sx-active:light-dark(#242424,#eeeeee); --sx-onactive:light-dark(#fff,#202020); --sx-note:light-dark(#fff6df,#332d1f); color:var(--sx-ink); background:var(--sx-bg); font:14px/1.5 ui-sans-serif,system-ui,sans-serif; border:1px solid var(--sx-line); border-radius:10px; overflow-wrap:anywhere; }
+    #scope-x-research * { box-sizing:border-box; }
+    #scope-x-research button,#scope-x-research input,#scope-x-research select,#scope-x-research textarea { font:inherit; color:inherit; }
+    #scope-x-research button { padding:7px 10px; border:1px solid var(--sx-line); border-radius:6px; background:var(--sx-bg); }
+    #scope-x-research button[aria-pressed="true"],#scope-x-research .sx-primary { background:var(--sx-active); color:var(--sx-onactive); border-color:var(--sx-active); }
+    #scope-x-research button:disabled { opacity:.5; }
+    #scope-x-research input:not([type="checkbox"]),#scope-x-research select,#scope-x-research textarea { width:100%; min-width:0; padding:7px 9px; background:var(--sx-bg); border:1px solid var(--sx-line); border-radius:6px; }
+    #scope-x-research h2,#scope-x-research h3,#scope-x-research p { margin:0; }
+    #scope-x-research h2 { font-size:20px; font-weight:500; }
+    #scope-x-research h3 { font-size:14px; font-weight:500; }
+    #scope-x-research .sx-chrome { display:flex; flex-wrap:wrap; align-items:center; gap:18px; padding:13px 18px; border-bottom:1px solid var(--sx-line); }
+    #scope-x-research .sx-brand { font-size:19px; font-weight:500; margin-right:6px; }
+    #scope-x-research .sx-muted { color:var(--sx-muted); }
+    #scope-x-research .sx-small { font-size:12px; }
+    #scope-x-research .sx-chrome .sx-current { font-weight:500; }
+    #scope-x-research .sx-layout { display:grid; grid-template-columns:180px minmax(0,1fr); }
+    #scope-x-research .sx-rail { padding:18px 12px; background:var(--sx-soft); border-right:1px solid var(--sx-line); }
+    #scope-x-research .sx-rail-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; }
+    #scope-x-research .sx-lists { display:grid; gap:7px; margin-bottom:24px; }
+    #scope-x-research .sx-list { text-align:left; display:flex; align-items:center; justify-content:space-between; gap:6px; }
+    #scope-x-research .sx-creators { display:grid; gap:12px; margin-top:12px; }
+    #scope-x-research .sx-creator { display:flex; align-items:center; gap:7px; }
+    #scope-x-research .sx-creator input { accent-color:var(--sx-active); margin:0; }
+    #scope-x-research .sx-main { min-width:0; padding:20px; }
+    #scope-x-research .sx-title { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:16px; }
+    #scope-x-research .sx-demo { font-size:11px; color:var(--sx-muted); border:1px solid var(--sx-line); border-radius:4px; padding:3px 6px; }
+    #scope-x-research .sx-scope { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px; }
+    #scope-x-research .sx-scope label { display:grid; gap:4px; }
+    #scope-x-research .sx-types { display:flex; flex-wrap:wrap; gap:14px; margin:10px 0; }
+    #scope-x-research .sx-types label { display:flex; align-items:center; gap:6px; }
+    #scope-x-research .sx-coverage { background:var(--sx-note); padding:10px 12px; border-radius:6px; font-size:12px; margin:12px 0 16px; }
+    #scope-x-research .sx-tabs { display:flex; gap:6px; border-bottom:1px solid var(--sx-line); padding-bottom:10px; margin-bottom:16px; }
+    #scope-x-research .sx-search { display:grid; grid-template-columns:minmax(0,1fr) 165px; gap:10px; margin-bottom:12px; }
+    #scope-x-research .sx-search label { display:grid; gap:4px; }
+    #scope-x-research .sx-post { padding:16px 0; border-bottom:1px solid var(--sx-line); }
+    #scope-x-research .sx-post-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:6px; }
+    #scope-x-research .sx-avatar { width:28px; height:28px; flex:none; border-radius:50%; background:var(--sx-soft); display:grid; place-items:center; font-size:11px; }
+    #scope-x-research .sx-post button { margin-top:9px; font-size:12px; }
+    #scope-x-research .sx-research-grid { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(0,1fr); gap:20px; }
+    #scope-x-research .sx-question { display:grid; gap:8px; }
+    #scope-x-research .sx-question textarea { resize:vertical; min-height:82px; }
+    #scope-x-research .sx-question button { justify-self:start; }
+    #scope-x-research .sx-answer { padding-top:22px; }
+    #scope-x-research .sx-answer p { margin-top:12px; }
+    #scope-x-research .sx-evidence { padding-left:16px; border-left:1px solid var(--sx-line); }
+    #scope-x-research .sx-cite { display:inline-block; margin:4px 3px 0 0; }
+    #scope-x-research .sx-detail { margin-top:10px; background:var(--sx-soft); padding:10px; border-radius:6px; }
+    #scope-x-research .sx-new { margin:0 0 16px; display:grid; gap:8px; }
+    #scope-x-research .sx-bottom { display:flex; flex-wrap:wrap; gap:8px; }
+    #scope-x-research [hidden] { display:none !important; }
+    #scope-x-research[data-density="compact"] .sx-post { padding:10px 0; }
+    #scope-x-research[data-evidence="below"] .sx-research-grid { grid-template-columns:minmax(0,1fr); }
+    #scope-x-research[data-evidence="below"] .sx-evidence { padding:16px 0 0; border-left:0; border-top:1px solid var(--sx-line); }
+    @media(max-width:760px) { #scope-x-research .sx-research-grid { grid-template-columns:minmax(0,1fr); } #scope-x-research .sx-evidence { padding:16px 0 0; border-left:0; border-top:1px solid var(--sx-line); } }
+    @media(max-width:560px) { #scope-x-research .sx-layout { grid-template-columns:minmax(0,1fr); } #scope-x-research .sx-rail { border-right:0; border-bottom:1px solid var(--sx-line); } #scope-x-research .sx-lists { display:flex; flex-wrap:wrap; margin-bottom:14px; } #scope-x-research .sx-creators { display:flex; flex-wrap:wrap; } #scope-x-research .sx-main { padding:16px; } #scope-x-research .sx-chrome { gap:10px; padding:12px; } #scope-x-research .sx-chrome .sx-secondary-nav { display:none; } #scope-x-research .sx-search,#scope-x-research .sx-scope { grid-template-columns:minmax(0,1fr); } #scope-x-research input:not([type="checkbox"]),#scope-x-research textarea,#scope-x-research select { font-size:16px; } }
+    @media(pointer:coarse) { #scope-x-research button { min-height:44px; } #scope-x-research .sx-creator,#scope-x-research .sx-types label { min-height:44px; } }
+  </style>
+  <header class="sx-chrome"><span class="sx-brand">scope</span><span class="sx-muted sx-secondary-nav">Feed</span><span class="sx-muted sx-secondary-nav">Creator library</span><span class="sx-current">X Research</span><span class="sx-muted sx-secondary-nav">AI Research</span><span class="sx-muted sx-secondary-nav">Reports</span></header>
+  <div class="sx-layout">
+    <aside class="sx-rail" aria-label="Research lists and creators">
+      <div class="sx-rail-head"><h3>Your lists</h3><button type="button" class="cursor-interaction" id="sx-new-toggle" aria-expanded="false">+ New</button></div>
+      <form class="sx-new" id="sx-new-form" hidden><label for="sx-list-name">List name</label><input id="sx-list-name" required maxlength="40" placeholder="e.g. DeFi research"><span class="sx-small sx-muted">Uses the creators selected below.</span><div class="sx-bottom"><button type="button" id="sx-create" class="sx-primary cursor-interaction">Create</button><button type="button" id="sx-new-cancel" class="cursor-interaction">Cancel</button></div></form>
+      <div id="sx-lists" class="sx-lists"></div>
+      <h3>Creators in scope</h3><div id="sx-creators" class="sx-creators"></div>
+      <p class="sx-small sx-muted" style="margin-top:16px" id="sx-selection-note">Uncheck creators to narrow this research.</p>
+    </aside>
+    <main class="sx-main">
+      <div class="sx-title"><div><h2 id="sx-list-title">Ethereum</h2><p id="sx-scope-label" class="sx-small sx-muted"></p></div><span class="sx-demo">Concept · fictional posts</span></div>
+      <div class="sx-scope"><label for="sx-from">From<input type="date" id="sx-from" value="2026-09-24"></label><label for="sx-to">Through<input type="date" id="sx-to" value="2026-09-30"></label></div>
+      <div class="sx-types"><label><input type="checkbox" id="sx-replies" checked>Include replies</label><label><input type="checkbox" id="sx-reposts">Include reposts</label></div>
+      <div id="sx-coverage" class="sx-coverage" aria-live="polite"></div>
+      <div class="sx-tabs" role="group" aria-label="Workspace view"><button type="button" class="cursor-interaction" id="sx-feed-tab" aria-pressed="true">Feed &amp; search</button><button type="button" class="cursor-interaction" id="sx-research-tab" aria-pressed="false">Ask &amp; compare</button></div>
+      <section id="sx-feed" aria-label="List feed">
+        <div class="sx-search"><label for="sx-topic">Find tweets<input id="sx-topic" type="search" placeholder="Topic, ticker, or phrase"></label><label for="sx-match">Matching<select id="sx-match"><option value="exact">Exact terms</option><option value="related">Related topic (example)</option></select></label></div>
+        <p class="sx-small sx-muted" id="sx-result-count" aria-live="polite"></p><div id="sx-posts"></div>
+      </section>
+      <section id="sx-research" hidden aria-label="Research conversation">
+        <div class="sx-research-grid">
+          <div><form id="sx-question-form" class="sx-question"><label for="sx-question">Ask about this scope</label><textarea id="sx-question" required>What is their ETH thesis, and where do they disagree?</textarea><button type="button" id="sx-analyze" class="sx-primary cursor-interaction">Analyze tweets</button></form><div id="sx-answer" class="sx-answer" aria-live="polite"><p class="sx-muted">Your answer and cited evidence appear together.</p></div></div>
+          <aside class="sx-evidence" aria-label="Evidence for this answer"><h3 id="sx-evidence-title">Sources in scope</h3><div id="sx-evidence-posts"></div></aside>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+  (() => {
+    const root = document.getElementById('scope-x-research');
+    const q = selector => root.querySelector(selector);
+    const creators = {a:{name:'Alex Chen',handle:'alex_example'},b:{name:'Maya Reed',handle:'maya_example'},c:{name:'Jordan Lee',handle:'jordan_example'},d:{name:'Sam Rivera',handle:'sam_example'}};
+    const posts = [
+      {id:'e1',author:'a',date:'2026-09-30',kind:'post',text:'My ETH thesis: demand for Ethereum settlement grows with stablecoin activity. The open question is how much value accrues to the token.'},
+      {id:'e2',author:'b',date:'2026-09-29',kind:'post',text:'Ethereum adoption and ETH value capture are different questions. I want to see sustained fee demand before calling this a durable investment thesis.'},
+      {id:'e3',author:'c',date:'2026-09-28',kind:'reply',text:'I am constructive on ETH over a longer horizon, but near-term liquidity still drives my positioning. Network adoption alone is not a timing signal.'},
+      {id:'e4',author:'a',date:'2026-09-27',kind:'post',text:'Lower gas costs help stablecoin users, but do they strengthen settlement economics? That is the tradeoff I am watching.'},
+      {id:'e5',author:'b',date:'2026-09-26',kind:'post',text:'BTC and ETH need separate theses. Scarcity is a simpler story than explaining settlement demand and token economics.'},
+      {id:'e6',author:'c',date:'2026-09-25',kind:'repost',text:'Example repost by another author: ETH settlement activity is rising. A repost does not establish Jordan’s own position.'},
+      {id:'m1',author:'d',date:'2026-09-30',kind:'post',text:'Liquidity conditions matter more to my current macro view than any single inflation print.'},
+      {id:'m2',author:'d',date:'2026-09-28',kind:'post',text:'I would compare the dollar, yields, and credit conditions before making a claim about risk appetite.'}
+    ];
+    const lists = [{id:'ethereum',name:'Ethereum',members:['a','b','c']},{id:'macro',name:'Macro',members:['c','d']}];
+    let current = lists[0];
+    let selected = new Set(current.members);
+    let view = 'feed';
+    let answerIds = null;
+    const design = {density:'comfortable',evidence:'right'};
+    const escaped = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    function scoped() {
+      const from=q('#sx-from').value,to=q('#sx-to').value;
+      if(!from||!to||from>to) return [];
+      return posts.filter(post=>selected.has(post.author)&&post.date>=from&&post.date<=to&&(post.kind!=='reply'||q('#sx-replies').checked)&&(post.kind!=='repost'||q('#sx-reposts').checked));
+    }
+    function topicMatches(post,topic,related) {
+      if(!topic) return true;
+      const text=post.text.toLowerCase();
+      if(related&&['eth','ethereum','$eth'].includes(topic)) return ['eth','ethereum','gas','stablecoin','settlement'].some(term=>text.includes(term));
+      return text.includes(topic);
+    }
+    function postMarkup(post) {
+      const creator=creators[post.author];
+      return `<article class="sx-post" data-post="${post.id}"><div class="sx-post-head"><span class="sx-avatar" aria-hidden="true">${creator.name.split(' ').map(part=>part[0]).join('')}</span><h3>${creator.name}</h3><span class="sx-small sx-muted">${post.date.slice(5)} · ${post.kind}</span></div><p>${escaped(post.text)}</p><button type="button" class="cursor-interaction" data-detail="${post.id}" aria-expanded="false">View source</button><div class="sx-detail" data-detail-body="${post.id}" hidden><div class="sx-small">@${creator.handle} · ${post.date} · ${post.kind}</div><p>${escaped(post.text)}</p><span class="sx-small sx-muted">Fictional source for this concept. Live sources would link to X.</span></div></article>`;
+    }
+    function invalidate() { answerIds=null; q('#sx-answer').innerHTML='<p class="sx-muted">Your scope changed. Analyze again to use these creators and dates.</p>'; }
+    function render() {
+      root.dataset.density=design.density; root.dataset.evidence=design.evidence;
+      q('#sx-lists').innerHTML=lists.map(list=>`<button type="button" class="sx-list cursor-interaction" data-list="${list.id}" aria-pressed="${list.id===current.id}">${escaped(list.name)}<span class="sx-small">${list.members.length}</span></button>`).join('');
+      q('#sx-creators').innerHTML=current.members.map(id=>`<label class="sx-creator"><input type="checkbox" data-creator="${id}" ${selected.has(id)?'checked':''}><span>${creators[id].name}</span></label>`).join('');
+      q('#sx-list-title').textContent=current.name;
+      q('#sx-scope-label').textContent=`${selected.size} of ${current.members.length} creators selected · shared feed and research scope`;
+      const pool=scoped();
+      const invalid=!q('#sx-from').value||!q('#sx-to').value||q('#sx-from').value>q('#sx-to').value;
+      q('#sx-coverage').textContent=invalid?'Choose a valid date range.':`${pool.length} cached example posts in scope · historical coverage incomplete · live sync unavailable in this concept`;
+      q('#sx-question-form button').disabled=invalid||pool.length===0;
+      q('#sx-feed-tab').setAttribute('aria-pressed',String(view==='feed'));
+      q('#sx-research-tab').setAttribute('aria-pressed',String(view==='research'));
+      q('#sx-feed').hidden=view!=='feed'; q('#sx-research').hidden=view!=='research';
+      const topic=q('#sx-topic').value.trim().toLowerCase();
+      const matches=pool.filter(post=>topicMatches(post,topic,q('#sx-match').value==='related'));
+      q('#sx-result-count').textContent=`${matches.length} matching cached posts${topic?' · matching does not narrow Ask & compare':''}`;
+      q('#sx-posts').innerHTML=matches.length?matches.map(postMarkup).join(''):'<p class="sx-muted">No matching posts in the cached example scope.</p>';
+      const evidence=answerIds?pool.filter(post=>answerIds.includes(post.id)):pool;
+      q('#sx-evidence-title').textContent=answerIds?`${evidence.length} supporting example sources`:`${evidence.length} sources in scope`;
+      q('#sx-evidence-posts').innerHTML=evidence.map(postMarkup).join('');
+    }
+    function saveState() {
+      if(window.openai&&window.openai.setWidgetState) window.openai.setWidgetState({modelContent:{list:current.name,creators:[...selected].map(id=>creators[id].name),from:q('#sx-from').value,to:q('#sx-to').value,view},privateContent:{listId:current.id,selected:[...selected],view,topic:q('#sx-topic').value,match:q('#sx-match').value,replies:q('#sx-replies').checked,reposts:q('#sx-reposts').checked,from:q('#sx-from').value,to:q('#sx-to').value,design}}).catch(()=>{});
+    }
+    function restore(snapshot) {
+      const state=snapshot&&snapshot.privateContent;
+      if(!state) return;
+      const scopeKey=()=>JSON.stringify([current.id,[...selected].sort(),q('#sx-from').value,q('#sx-to').value,q('#sx-replies').checked,q('#sx-reposts').checked]);
+      const previousScope=scopeKey();
+      current=lists.find(list=>list.id===state.listId)||lists[0];
+      selected=new Set(Array.isArray(state.selected)?state.selected.filter(id=>current.members.includes(id)):current.members);
+      view=state.view==='research'?'research':'feed';
+      for(const field of ['from','to','topic','match']) if(typeof state[field]==='string') q('#sx-'+field).value=state[field];
+      for(const field of ['replies','reposts']) if(typeof state[field]==='boolean') q('#sx-'+field).checked=state[field];
+      if(state.design) {design.density=state.design.density==='compact'?'compact':'comfortable';design.evidence=state.design.evidence==='below'?'below':'right';}
+      if(previousScope!==scopeKey()) invalidate(); render();
+    }
+    root.addEventListener('click',event=>{
+      const button=event.target.closest('button'); if(!button) return;
+      if(button.dataset.list) {current=lists.find(list=>list.id===button.dataset.list);selected=new Set(current.members);invalidate();render();saveState();}
+      if(button.id==='sx-feed-tab'||button.id==='sx-research-tab') {view=button.id==='sx-feed-tab'?'feed':'research';render();saveState();}
+      if(button.id==='sx-new-toggle'||button.id==='sx-new-cancel') {const opened=button.id==='sx-new-toggle'&&q('#sx-new-form').hidden;q('#sx-new-form').hidden=!opened;q('#sx-new-toggle').setAttribute('aria-expanded',String(opened));if(opened) q('#sx-list-name').focus();}
+      if(button.dataset.detail) {const detail=button.parentElement.querySelector('[data-detail-body]');detail.hidden=!detail.hidden;button.setAttribute('aria-expanded',String(!detail.hidden));}
+      if(button.dataset.cite) {const post=q(`#sx-evidence-posts [data-post="${button.dataset.cite}"]`);if(post) {post.querySelector('[data-detail-body]').hidden=false;post.querySelector('button').setAttribute('aria-expanded','true');post.scrollIntoView({block:'nearest'});}}
+    });
+    root.addEventListener('change',event=>{
+      if(event.target.dataset.creator) {const id=event.target.dataset.creator;event.target.checked?selected.add(id):selected.delete(id);invalidate();}
+      if(['sx-from','sx-to','sx-replies','sx-reposts'].includes(event.target.id)) invalidate();
+      render();saveState();
+    });
+    q('#sx-topic').addEventListener('input',()=>{render();saveState();});
+    for(const id of ['sx-from','sx-to']) q('#'+id).addEventListener('input',()=>{invalidate();render();saveState();});
+    q('#sx-list-name').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();q('#sx-create').click();}});
+    q('#sx-new-form').addEventListener('submit',event=>event.preventDefault());
+    q('#sx-question-form').addEventListener('submit',event=>event.preventDefault());
+    q('#sx-create').addEventListener('click',()=>{if(!q('#sx-new-form').reportValidity()) return;const name=q('#sx-list-name').value.trim();if(!name) return;current={id:'custom-'+lists.length,name,members:[...selected]};lists.push(current);q('#sx-new-form').hidden=true;q('#sx-new-toggle').setAttribute('aria-expanded','false');q('#sx-list-name').value='';invalidate();render();saveState();});
+    q('#sx-analyze').addEventListener('click',()=>{
+      if(!q('#sx-question-form').reportValidity()) return;const pool=scoped();const question=q('#sx-question').value.trim();
+      if(!pool.length||!question) return;
+      if(!/\beth\b|ethereum/i.test(question)) {answerIds=[];q('#sx-answer').innerHTML='<p class="sx-muted">This concept demonstrates the ETH thesis question. The implementation would research your own question using the selected scope.</p>';render();return;}
+      const candidates=pool.filter(post=>post.kind!=='repost'&&topicMatches(post,'eth',true));
+      answerIds=candidates.map(post=>post.id);
+      let paragraphs='<h3>Example analysis · text only</h3>';
+      const cite=id=>`<button type="button" class="sx-cite cursor-interaction" data-cite="${id}">Source ${id.slice(1)}</button>`;
+      if(candidates.some(post=>post.id==='e1')) paragraphs+=`<p><strong>Alex:</strong> settlement demand supports the thesis, but token value capture remains an open question. ${cite('e1')}</p>`;
+      if(candidates.some(post=>post.id==='e2')) paragraphs+=`<p><strong>Maya:</strong> adoption alone is insufficient; sustained fee demand is the condition she wants to see. ${cite('e2')}</p>`;
+      if(candidates.some(post=>post.id==='e3')) paragraphs+=`<p><strong>Jordan:</strong> constructive longer term, with near-term positioning driven by liquidity. ${cite('e3')}</p>`;
+      if(candidates.length===0) paragraphs+='<p>No ETH evidence found in the selected cached example posts.</p>';
+      else paragraphs+='<p>The useful comparison is adoption, token value capture, and investment horizon. No price target or complete investment thesis can be established from these short posts.</p>';
+      paragraphs+=`<p class="sx-small sx-muted">Searched ${pool.length} cached example posts across ${selected.size} creators. ${candidates.length} related sources found. Historical coverage is incomplete.</p>`;
+      q('#sx-answer').innerHTML=paragraphs;render();saveState();
+    });
+    render();
+    if(window.openai&&window.openai.widgetState) restore(window.openai.widgetState);
+    window.addEventListener('openai:set_globals',event=>{if(event.detail&&event.detail.globals&&event.detail.globals.widgetState) restore(event.detail.globals.widgetState);});
+    if(globalThis.Tweak) {const tweak=new Tweak({container:root,onChange:()=>{render();saveState();}});tweak.addSelect(design,'density',{label:'Tweet spacing',options:['comfortable','compact']});tweak.addSelect(design,'evidence',{label:'Evidence placement',options:[{label:'Beside answer',value:'right'},{label:'Below answer',value:'below'}]});}
+  })();
+  </script>
+</div>

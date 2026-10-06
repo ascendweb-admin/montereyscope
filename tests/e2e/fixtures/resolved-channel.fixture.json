@@ -1,0 +1,18 @@
+{
+  "id": "UCe2e00000000000000001",
+  "title": "E2E Sample Channel",
+  "_type": "playlist",
+  "webpage_url": "https://www.youtube.com/@e2esample",
+  "channel": "E2E Sample Channel",
+  "channel_id": "UCe2e00000000000000001",
+  "channel_url": "https://www.youtube.com/channel/UCe2e00000000000000001",
+  "uploader_id": "@e2esample",
+  "thumbnails": [
+    {
+      "url": "https://yt3.googleusercontent.com/e2e-sample-avatar-0000000000",
+      "width": 900,
+      "height": 900,
+      "preference": 0
+    }
+  ]
+}

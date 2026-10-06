@@ -1,0 +1,21 @@
+{
+  "success": true,
+  "data": {
+    "lifecycle": {
+      "effectiveLaunch": {
+        "browserLaunched": true,
+        "engine": "chrome",
+        "launchHash": 11677035664275010974
+      },
+      "launched": false,
+      "relaunchedBrowser": false,
+      "restartedBackground": false,
+      "restoreStatus": "not_configured",
+      "reused": true,
+      "saveStatus": "not_attempted"
+    },
+    "origin": "http://127.0.0.1:3106/x-research?job=1c9e1b72-6f1c-4932-a7f6-6e3c8fad7e25",
+    "result": { "evidence": 309, "viewport": 390, "width": 375 }
+  },
+  "error": null
+}

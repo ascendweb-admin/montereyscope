@@ -1,0 +1,86 @@
+name: Draft desktop release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag to build and assemble as a draft
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.revision.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+      - name: Validate existing tag and locked versions
+        id: revision
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG" || { echo 'Dispatch this workflow on the release tag itself.' >&2; exit 1; }
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG" || { echo 'Release tag does not exist.' >&2; exit 1; }
+          commit="$(git rev-parse HEAD)"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$commit" || { echo 'Tag and checkout differ.' >&2; exit 1; }
+          node desktop/scripts/release.cjs validate --tag "$RELEASE_TAG" --commit "$commit"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo 'A release already exists for this tag. Use a new version instead of replacing binaries.' >&2
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: preflight
+    uses: ./.github/workflows/desktop-build.yml
+    with:
+      release_ref: ${{ needs.preflight.outputs.commit }}
+      release_tag: ${{ inputs.tag }}
+    secrets: inherit
+
+  draft:
+    needs: [preflight, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.commit }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+      - name: Download all four native build outputs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-scope-*
+          path: desktop/dist/release-incoming
+      - name: Validate and assemble draft assets
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ needs.preflight.outputs.commit }}
+        run: node desktop/scripts/release.cjs assemble --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --repository "$GITHUB_REPOSITORY" --input desktop/dist/release-incoming --output desktop/dist/release-ready
+      - name: Create draft in this repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          gh release create "$RELEASE_TAG" desktop/dist/release-ready/* --draft --verify-tag --title "Scope $RELEASE_TAG" --notes-file desktop/dist/release-ready/RELEASE-NOTES.md
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true

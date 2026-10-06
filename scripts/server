@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# scope server status/stop helper.
+#
+#   scripts/server status   Show whether the launcher-managed server is running
+#   scripts/server stop     Stop the server started by scripts/launch
+#
+# Safety: the stop path only ever signals the exact PID recorded in
+# data/run/localtube.pid, and only after verifying that PID currently belongs
+# to a `next start` process of this project checkout (executable path, working
+# directory, or command line must resolve inside this project). It never kills
+# by process name or port, so an unrelated process can never be targeted.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
+
+say() { printf '%s\n' "$*"; }
+
+usage() {
+  say "Usage: scripts/server <status|stop>"
+  say ""
+  say "status   Report whether the scope production server is running."
+  say "stop     Gracefully stop the server previously started by scripts/launch."
+  exit 0
+}
+
+[ $# -gt 0 ] || usage
+case $1 in
+  -h | --help) usage ;;
+  status) cmd=status ;;
+  stop) cmd=stop ;;
+  *)
+    say "Unknown command: $1" >&2
+    usage >&2
+    ;;
+esac
+
+clear_stale_pidfile() {
+  rm -f "$LOCALTUBE_PID_FILE"
+  localtube_log "removed stale pidfile"
+}
+
+# Prints one of: managed-healthy | managed-degraded | managed-unresponsive |
+# unmanaged | stopped. Exit code 0 in all reporting cases.
+inspect() {
+  local pid=""
+  pid="$(localtube_read_pid 2>/dev/null || true)"
+
+  if [ -n "$pid" ] && localtube_pid_alive "$pid"; then
+    if ! localtube_pid_is_ours "$pid"; then
+      # PID was reused by something else; the record is meaningless now.
+      clear_stale_pidfile
+      pid=""
+    fi
+  elif [ -n "$pid" ]; then
+    clear_stale_pidfile
+    pid=""
+  fi
+
+  if [ -n "$pid" ]; then
+    if localtube_probe_healthy; then
+      printf 'managed-healthy %s\n' "$pid"
+    elif localtube_probe_ready; then
+      printf 'managed-degraded %s\n' "$pid"
+    else
+      printf 'managed-unresponsive %s\n' "$pid"
+    fi
+    return 0
+  fi
+
+  if localtube_probe_ready; then
+    printf 'unmanaged 0\n'
+  else
+    printf 'stopped 0\n'
+  fi
+}
+
+do_status() {
+  local state pid
+  read -r state pid <<<"$(inspect)"
+  case $state in
+    managed-healthy)
+      say "running (pid ${pid}, healthy) at ${LOCALTUBE_URL}"
+      ;;
+    managed-degraded)
+      say "running (pid ${pid}, degraded — see /api/health) at ${LOCALTUBE_URL}"
+      ;;
+    managed-unresponsive)
+      say "process exists (pid ${pid}) but not answering health checks yet"
+      ;;
+    unmanaged)
+      say "a scope server is serving ${LOCALTUBE_URL} but it was not started"
+      say "by scripts/launch (no tracked pid); use its own terminal to stop it"
+      say "(e.g. Ctrl-C where 'npm start' runs)."
+      ;;
+    stopped)
+      say "stopped"
+      ;;
+  esac
+  [ "$state" = stopped ] && exit 1
+  exit 0
+}
+
+do_stop() {
+  local pid
+  pid="$(localtube_read_pid 2>/dev/null || true)"
+
+  if [ -z "$pid" ]; then
+    if localtube_probe_ready; then
+      say "A scope server is serving ${LOCALTUBE_URL} but was not started by"
+      say "scripts/launch, so there is no tracked PID to stop safely."
+      say "Stop it from the terminal where it runs (Ctrl-C on 'npm start')."
+    else
+      say "scope is not running."
+    fi
+    exit 1
+  fi
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    clear_stale_pidfile
+    say "Stale pid entry removed; scope is not running."
+    exit 1
+  fi
+
+  if ! localtube_pid_is_ours "$pid"; then
+    say "Refusing to stop: recorded PID ${pid} no longer belongs to this"
+    say "project's scope server (it was reused by another process or"
+    say "started outside the launcher). Nothing was signaled."
+    localtube_log "stop refused for pid ${pid} (ownership check failed)"
+    exit 1
+  fi
+
+  say "Stopping scope (pid ${pid}) ..."
+  localtube_log "stop requested for pid ${pid}"
+  kill -TERM "$pid"
+
+  local waited=0
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 100 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+
+  if kill -0 "$pid" 2>/dev/null; then
+    say "Graceful stop timed out; sending SIGKILL to the tracked PID only."
+    localtube_log "escalating to SIGKILL for pid ${pid}"
+    kill -KILL "$pid" 2>/dev/null || true
+    sleep 0.5
+  fi
+
+  if kill -0 "$pid" 2>/dev/null; then
+    say "Error: tracked PID ${pid} did not exit. It may need manual attention:"
+    say "check what \"/proc/${pid}/cmdline\" belongs to before acting."
+    exit 1
+  fi
+
+  clear_stale_pidfile
+
+  # Confirm the port actually went quiet (bounded; informational only).
+  waited=0
+  while localtube_probe_ready && [ "$waited" -lt 30 ]; do
+    sleep 0.2
+    waited=$((waited + 1))
+  done
+  if localtube_probe_ready; then
+    say "Stopped, but something still answers on port ${LOCALTUBE_PORT};"
+    say "that is not a process we track — investigate manually if unexpected."
+  else
+    say "Stopped. Data stays safe in data/localtube.db."
+  fi
+}
+
+case $cmd in
+  status) do_status ;;
+  stop) do_stop ;;
+esac

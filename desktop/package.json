@@ -1,0 +1,33 @@
+{
+  "name": "scope-desktop",
+  "productName": "scope",
+  "desktopName": "scope.desktop",
+  "version": "0.1.9",
+  "private": true,
+  "description": "Private, local-first YouTube transcript and research desktop application",
+  "author": "scope",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "smoke": "node scripts/smoke-packaged.cjs",
+    "verify:artifacts": "node scripts/verify-artifacts.cjs",
+    "verify:appimage": "node scripts/verify-appimage.cjs",
+    "verify:windows": "node scripts/verify-windows.cjs",
+    "verify:mac": "node scripts/verify-mac.cjs",
+    "fetch:ytdlp": "node scripts/fetch-ytdlp.cjs",
+    "pack": "electron-builder --dir --config electron-builder.config.cjs",
+    "dist:linux": "electron-builder --linux AppImage --x64 --config electron-builder.config.cjs --publish never",
+    "dist:windows": "electron-builder --win nsis --x64 --config electron-builder.config.cjs --publish never",
+    "dist:mac": "electron-builder --mac dmg --arm64 --config electron-builder.config.cjs --publish never",
+    "dist:mac:x64": "electron-builder --mac dmg --x64 --config electron-builder.config.cjs --publish never",
+    "build:x-worker": "node scripts/build-x-worker.cjs"
+  },
+  "devDependencies": {
+    "electron": "43.7.7",
+    "electron-builder": "26.15.3"
+  },
+  "allowScripts": {
+    "electron-winstaller@5.4.0": true
+  }
+}

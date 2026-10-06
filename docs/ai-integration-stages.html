@@ -1,0 +1,860 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>scope — AI Integration: 7 Build Stages</title>
+    <style>
+      :root {
+        --bg: #f5f6f8;
+        --card: #ffffff;
+        --border: #e3e7ee;
+        --text: #1c2430;
+        --muted: #5c6675;
+        --accent: #4f46e5;
+        --accent-soft: #eef0fe;
+        --code-bg: #101828;
+        --code-text: #dce3ef;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          15px/1.6 system-ui,
+          -apple-system,
+          "Segoe UI",
+          Roboto,
+          sans-serif;
+      }
+      .wrap {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 40px 24px 80px;
+      }
+
+      header h1 {
+        font-size: 26px;
+        margin: 0 0 4px;
+        letter-spacing: -0.02em;
+      }
+      header .sub {
+        color: var(--muted);
+        margin: 0 0 24px;
+      }
+      .meta {
+        font-size: 12.5px;
+        color: var(--muted);
+        margin-top: -16px;
+        margin-bottom: 24px;
+      }
+
+      .intro {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 20px 24px;
+        margin-bottom: 16px;
+      }
+      .intro h2 {
+        font-size: 15px;
+        margin: 0 0 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+      }
+      .intro ol,
+      .intro ul {
+        margin: 0;
+        padding-left: 20px;
+      }
+      .intro li {
+        margin: 5px 0;
+      }
+      .intro + .intro {
+        margin-top: 16px;
+      }
+      code.inline {
+        background: var(--accent-soft);
+        color: var(--accent);
+        padding: 1px 6px;
+        border-radius: 5px;
+        font-size: 0.9em;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      nav {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background: rgba(245, 246, 248, 0.92);
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid var(--border);
+        margin: 28px -24px 32px;
+        padding: 10px 24px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      nav a {
+        text-decoration: none;
+        color: var(--muted);
+        font-size: 13px;
+        padding: 4px 11px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        white-space: nowrap;
+      }
+      nav a:hover {
+        color: var(--accent);
+        background: var(--accent-soft);
+      }
+
+      .stage {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 22px 24px;
+        margin-bottom: 28px;
+        scroll-margin-top: 64px;
+      }
+      .stage-head {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+      }
+      .stage-num {
+        flex: none;
+        width: 30px;
+        height: 30px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--accent);
+        color: #fff;
+        border-radius: 9px;
+        font-weight: 700;
+        font-size: 14px;
+        transform: translateY(4px);
+      }
+      .stage h2 {
+        font-size: 18px;
+        margin: 0;
+        letter-spacing: -0.01em;
+      }
+      .goal {
+        color: var(--muted);
+        font-size: 14px;
+        margin: 8px 0 0 42px;
+      }
+
+      .codewrap {
+        position: relative;
+        margin-top: 16px;
+      }
+      pre {
+        margin: 0;
+        background: var(--code-bg);
+        color: var(--code-text);
+        border-radius: 10px;
+        padding: 44px 20px 20px;
+        overflow: auto;
+        max-height: 480px;
+        font:
+          13px/1.6 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .copy-btn {
+        position: absolute;
+        top: 9px;
+        right: 9px;
+        z-index: 2;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        background: rgba(255, 255, 255, 0.1);
+        color: #e7ecf5;
+        font:
+          600 12px/1 system-ui,
+          sans-serif;
+        padding: 7px 13px;
+        border-radius: 7px;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          color 0.15s,
+          border-color 0.15s;
+      }
+      .copy-btn:hover {
+        background: rgba(255, 255, 255, 0.2);
+      }
+      .copy-btn.copied {
+        background: #16a34a;
+        border-color: #16a34a;
+        color: #fff;
+      }
+
+      .testbox {
+        margin-top: 16px;
+        background: var(--accent-soft);
+        border: 1px solid #dcdff9;
+        border-radius: 10px;
+        padding: 14px 18px 8px;
+      }
+      .testbox h3 {
+        margin: 0 0 10px;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--accent);
+      }
+      .testbox p {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+      .testbox ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .testbox li {
+        margin: 0 0 9px;
+        display: flex;
+        gap: 9px;
+        align-items: flex-start;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .testbox input[type="checkbox"] {
+        margin: 3px 0 0;
+        width: 15px;
+        height: 15px;
+        flex: none;
+        accent-color: var(--accent);
+        cursor: pointer;
+      }
+      .testbox li.done span {
+        color: var(--muted);
+        text-decoration: line-through;
+      }
+      .testbox code {
+        background: #e3e6fb;
+        color: var(--accent);
+        padding: 1px 5px;
+        border-radius: 5px;
+        font-size: 0.9em;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      footer {
+        color: var(--muted);
+        font-size: 13px;
+        margin-top: 40px;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>scope — AI Integration</h1>
+        <p class="sub">
+          Seven copy-paste stages that add Codex-powered chat and HTML reports to your
+          market-research dashboard.
+        </p>
+        <p class="meta">
+          Generated 2026-08-27 · verified against codex-cli 0.150.1 (logged in via subscription, no
+          API key) · model pinned to <strong>gpt-5.6-sol</strong> @ <strong>xhigh</strong> reasoning
+          per invocation.
+        </p>
+      </header>
+
+      <div class="intro">
+        <h2>How to use this</h2>
+        <ol>
+          <li>
+            Run the stages <strong>in order</strong> — each builds directly on the files the
+            previous one created.
+          </li>
+          <li>
+            For each stage, start a <strong>fresh session</strong> with your coding agent inside the
+            scope project folder and paste the whole prompt.
+          </li>
+          <li>Each stage ends with its own commit, so you can review the diff between stages.</li>
+          <li>
+            Each stage card carries a <strong>Test it yourself</strong> checklist with the manual
+            checks for that moment — tick them off right in this doc; your ticks are saved in this
+            browser.
+          </li>
+          <li>
+            Nothing hits your Codex subscription during tests: live calls are opt-in via
+            <code class="inline">SCOPE_AI_LIVE_TEST=1</code> (stage 2 smoke test, stage 6 sample
+            report, stage 7 full pass).
+          </li>
+          <li>
+            You can also hand your agent several stage prompts in one session — the numbering keeps
+            that unambiguous.
+          </li>
+        </ol>
+      </div>
+
+      <div class="intro">
+        <h2>Design decisions baked into the prompts</h2>
+        <ul>
+          <li>
+            <strong>One scope abstraction:</strong> every entry point (single video, channel
+            multi-select, cross-channel) is just a list of video IDs — chat and reports are built
+            once and reused everywhere.
+          </li>
+          <li>
+            <strong>Codex CLI as the runtime AI:</strong>
+            <code class="inline">codex exec --json</code> spawned server-side, subscription auth
+            only, model/effort pinned per call — your global Codex config is never modified.
+          </li>
+          <li>
+            <strong>Sandboxed:</strong> chat runs with a read-only sandbox (transcripts are
+            semi-trusted content); report jobs may write only into their own job directory.
+          </li>
+          <li>
+            <strong>Quota-friendly:</strong> report jobs run sequentially through an in-process
+            queue; all tests use a mocked Codex spawner.
+          </li>
+          <li>
+            <strong>Still loopback-only:</strong> the app keeps binding to 127.0.0.1 — with your
+            subscription attached, that rule matters more than ever.
+          </li>
+          <li>
+            <strong>Design bar in every UI prompt:</strong> stages 3–7 carry explicit design
+            requirements — match the existing scope look (Tailwind + the
+            <code class="inline">components/ui</code> primitives), quiet and deliberate rather than
+            flashy.
+          </li>
+        </ul>
+      </div>
+
+      <nav>
+        <a href="#stage-1">1 · Materialize</a>
+        <a href="#stage-2">2 · Codex adapter</a>
+        <a href="#stage-3">3 · Chat API</a>
+        <a href="#stage-4">4 · Video chat UI</a>
+        <a href="#stage-5">5 · Scope selection</a>
+        <a href="#stage-6">6 · HTML reports</a>
+        <a href="#stage-7">7 · Hardening</a>
+      </nav>
+
+      <main>
+        <section class="stage" id="stage-1">
+          <div class="stage-head">
+            <span class="stage-num">1</span>
+            <h2>Transcript materialization</h2>
+          </div>
+          <p class="goal">
+            Backend foundation: resolve a set of video IDs into validated scope metadata and write
+            per-job transcript files that Codex will later read. No UI.
+          </p>
+          <div class="codewrap">
+            <button class="copy-btn" type="button">Copy prompt</button>
+            <pre>
+This is stage 1 of 7 of the scope AI integration: transcript materialization for AI analysis. Backend only — no UI in this stage.
+
+Context: scope is a single-user, loopback-only YouTube creator dashboard (Next.js App Router, better-sqlite3, vitest). Schema lives in lib/db/migrations.ts: creators, videos (YouTube video id as TEXT primary key), transcripts (video_id primary key, language, source, plain_text). Transcript text is stored in transcripts.plain_text; helpers in lib/transcripts/.
+
+Build a new lib/ai/ module with:
+
+1. lib/ai/scope.ts — resolveScope(videoIds: string[]): validates each ID against the videos table, joins creator display names, and returns per-video metadata (id, title, creator, publishedAt, hasTranscript, durationSeconds) plus which IDs are unknown or missing transcripts. Pure data, no side effects, fully unit-testable.
+
+2. lib/ai/materialize.ts — materializeTranscripts(videoIds: string[]): creates a job directory under data/ai-jobs/&lt;jobId&gt;/transcripts/ and writes one .txt file per video with a short metadata header (title, creator, URL, published date, language, manual/automatic) followed by the plain transcript text. Also writes a manifest.json (scope metadata + file list) at the job root. Return the job dir path and the manifest. Handle missing transcripts per video by excluding that video and recording the exclusion in the manifest.
+
+3. Keep both behind small interfaces so later stages can mock them in tests.
+
+Verification: vitest unit tests for both modules (follow the existing test/fixture patterns), npm run typecheck, npm test. No DB migration is needed for this stage. When everything passes, commit this stage with a descriptive message.</pre>
+          </div>
+          <div class="testbox">
+            <h3>Test it yourself</h3>
+            <p>
+              Nothing visible in the app yet — this stage is pure backend. You'll exercise it for
+              real in stage 4; for now just confirm the agent's tests cover scope resolution and
+              materialization, including the missing-transcript exclusion path.
+            </p>
+          </div>
+        </section>
+
+        <section class="stage" id="stage-2">
+          <div class="stage-head">
+            <span class="stage-num">2</span>
+            <h2>Codex adapter</h2>
+          </div>
+          <p class="goal">
+            The only code that spawns the codex CLI: pinned model and reasoning effort, JSONL event
+            streaming, session resume, abort handling, and a fully mockable interface.
+          </p>
+          <div class="codewrap">
+            <button class="copy-btn" type="button">Copy prompt</button>
+            <pre>
+This is stage 2 of 7 of the scope AI integration: the Codex adapter — the only code in the app that spawns the codex CLI. No UI yet.
+
+Context: stage 1 added lib/ai/scope.ts (scope resolution) and lib/ai/materialize.ts (writes transcripts to data/ai-jobs/&lt;jobId&gt;/). The machine has codex-cli 0.150.1 authenticated via ~/.codex/auth.json from a ChatGPT subscription — never use or request an API key. Do not read or modify ~/.codex/config.toml or auth.json.
+
+Build lib/ai/codex.ts:
+
+1. runCodex(options) spawns: codex exec --json -m gpt-5.6-sol -c model_reasoning_effort="xhigh" -s &lt;read-only|workspace-write&gt; -C &lt;workDir&gt; - with the prompt piped to stdin. Parse stdout as a JSONL event stream and expose it as a typed async iterable (streaming text deltas where the events provide them, plus the final message).
+
+2. Return (or emit) the session/thread id so later stages can continue conversations with codex exec resume &lt;sessionId&gt;. Also support resumeSessionId as an input option that switches the command to codex exec resume.
+
+3. AbortSignal support that kills the child process cleanly; a sane default timeout; map failures to typed errors (not authenticated, codex binary not found, non-zero exit, quota/usage limit).
+
+4. An injectable spawner interface so every test runs without touching the real CLI or the subscription.
+
+Verification: unit tests with a fake spawner feeding fixture JSONL (happy path, resume, abort, non-zero exit). Then run the single opt-in live smoke test guarded by SCOPE_AI_LIVE_TEST=1 — a tiny read-only prompt in a temp dir — exactly once, and report the raw output. If codex rejects the gpt-5.6-sol slug, print the models codex reports as available and stop for my decision. npm run typecheck and npm test must pass; commit this stage when done.</pre>
+          </div>
+          <div class="testbox">
+            <h3>Test it yourself</h3>
+            <ul>
+              <li>
+                <input type="checkbox" id="t2-1" /><span
+                  >The agent's report shows the live smoke test ran and returned a real answer from
+                  Codex.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t2-2" /><span
+                  >The output confirms <code>gpt-5.6-sol</code> was accepted at xhigh effort — or
+                  the agent stopped and asked you to pick a model instead.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t2-3" /><span
+                  >No leftover processes: <code>pgrep -af "codex exec"</code> prints nothing after
+                  the smoke test.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t2-4" /><span
+                  >All unit tests passed <em>without</em> the live flag — the only subscription call
+                  was the single smoke prompt.</span
+                >
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="stage" id="stage-3">
+          <div class="stage-head">
+            <span class="stage-num">3</span>
+            <h2>Chat API with persistence</h2>
+          </div>
+          <p class="goal">
+            POST /api/ai/chat: creates or resumes Codex sessions over any scope, streams events to
+            the browser as SSE, and persists threads and messages in SQLite.
+          </p>
+          <div class="codewrap">
+            <button class="copy-btn" type="button">Copy prompt</button>
+            <pre>
+This is stage 3 of 7 of the scope AI integration: the chat API with persistence and streaming.
+
+Context: stages 1–2 delivered lib/ai/scope.ts, lib/ai/materialize.ts, and lib/ai/codex.ts (typed JSONL event stream, resume support, injectable spawner, typed errors). Routes live under app/api/, data access under lib/, migrations in lib/db/migrations.ts. This is a loopback-only single-user app with no auth by design — keep it that way.
+
+Build:
+
+1. Migration 002: ai_threads (id, title, codex_session_id, selected video IDs as JSON, created_at) and ai_messages (id, thread_id, role, content, created_at). Follow the existing migrator pattern and naming style.
+
+2. POST app/api/ai/chat/route.ts accepting {videoIds, message, threadId?}. New thread: resolveScope, reject if no selected video has a transcript, materialize transcripts (the job dir doubles as the Codex work dir), seed the conversation with one instruction message that frames Codex as a market-research analyst working from the transcript files in its working directory, then send the user's message. Existing thread: codex exec resume with just the new message — transcripts stay in the Codex session context. Stream Codex events to the client as SSE. Persist user and assistant messages and the codex session id. Read-only sandbox, Node runtime.
+
+3. GET app/api/ai/chat/threads (list with scope summary) and GET app/api/ai/chat/threads/[id] (messages) for history.
+
+4. Route tests using the mocked spawner: SSE shape, persistence, the resume path, and error mapping.
+
+Design bar: emit fine-grained streaming events (a working/thinking indicator plus text deltas), not just a final blob, so the stage 4 UI can feel alive instead of frozen while Codex reasons at xhigh.
+
+Before writing route-handler or streaming code, read the relevant bundled Next.js docs in node_modules/next/dist/docs/ — this Next version has breaking changes (see AGENTS.md). Verification: npm run typecheck, npm test, then a manual curl against the endpoint for a video with a cached transcript. Commit this stage when done.</pre>
+          </div>
+          <div class="testbox">
+            <h3>Test it yourself</h3>
+            <p>
+              Still backend-only: the agent verifies the endpoint with curl and route tests, so
+              there's nothing for you to click yet. The first hands-on checks arrive with stage 4 —
+              but do glance at the migration: <code>ai_threads</code> and
+              <code>ai_messages</code> should exist in the SQLite file after the app has run once.
+            </p>
+          </div>
+        </section>
+
+        <section class="stage" id="stage-4">
+          <div class="stage-head">
+            <span class="stage-num">4</span>
+            <h2>Chat UI on the video page</h2>
+          </div>
+          <p class="goal">
+            "Ask AI" on any video: a reusable streaming chat panel (components/ai/chat-panel.tsx)
+            with thread history — deliberately scope-agnostic so stage 5 can reuse it.
+          </p>
+          <div class="codewrap">
+            <button class="copy-btn" type="button">Copy prompt</button>
+            <pre>
+This is stage 4 of 7 of the scope AI integration: chat UI on the video page.
+
+Context: stage 3 shipped the chat API (SSE streaming, threads, resume, persistence). The video page is app/channels/[id]/videos/[videoId]/page.tsx; the transcript panel is components/video/transcript-panel.tsx; shared UI primitives are in components/ui (button, card, dialog, toast, separator). Match the existing styling conventions.
+
+Build:
+
+1. An "Ask AI" entry point on the video page that opens a side panel (or collapsible section consistent with the transcript panel).
+
+2. components/ai/chat-panel.tsx — a reusable streaming chat component that takes a scope (a list of video IDs) as a prop: message composer, streaming assistant output rendered as it arrives, an abort button while generating, errors surfaced via the existing toast, and auto-scroll that stops fighting the user when they scroll up.
+
+3. Thread history for this video (from the GET endpoints): list past threads, reopen one to continue it, start a new thread.
+
+4. Keep the panel dumb about where the scope comes from — stage 5 will reuse it for channel and cross-channel selections.
+
+Design bar: this panel is the user-facing face of the whole feature — hold it to the app's standard. scope is built on Tailwind CSS 4 with shadcn-style primitives in components/ui (button, card, toast, separator): reuse them rather than inventing styles, and match the transcript panel's spacing, radii, and muted color treatment. Specifically: a quiet but clearly animated working indicator while Codex reasons before any text arrives; incoming text that appears smoothly rather than in jarring chunks; assistant answers rendered with lightweight markdown (paragraphs, lists, bold — no heavy dependency); a clean composer with an obvious send/stop affordance; and a helpful empty state for the no-threads case. Quiet and deliberate over flashy — no gradients or gimmicks, and hover/focus/disabled/error states all consistent with the rest of the app.
+
+Verification: component tests for the chat panel with a mocked SSE fetch (streaming render, abort, error), npm run typecheck, npm test, and a manual pass on a video with a cached transcript. Commit this stage when done.</pre>
+          </div>
+          <div class="testbox">
+            <h3>Test it yourself — first thing you can click</h3>
+            <ul>
+              <li>
+                <input type="checkbox" id="t4-1" /><span
+                  >Open a video that has a cached transcript and start "Ask AI" — the panel opens
+                  without leaving the page.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t4-2" /><span
+                  >Send a question and watch the answer arrive — you see streaming activity
+                  (status/thinking indicator, then text) rather than a frozen panel while the model
+                  reasons at xhigh.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t4-3" /><span
+                  >Grounding check: ask what products, claims, or numbers are mentioned, and
+                  spot-check the answer against the transcript panel.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t4-4" /><span
+                  >Follow-up check: ask "condense your last answer into one sentence" — it should
+                  remember the conversation, proving session resume works.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t4-5" /><span
+                  >Create a second thread, then reopen the first one from history and continue it —
+                  both stay independent.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t4-6" /><span
+                  >Press stop mid-generation — the stream ends cleanly and you can immediately ask
+                  something else.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t4-7" /><span
+                  >Open a video without a cached transcript — you get a clear message (or the entry
+                  point is hidden), never a raw error.</span
+                >
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="stage" id="stage-5">
+          <div class="stage-head">
+            <span class="stage-num">5</span>
+            <h2>Scope selection — channel &amp; cross-channel</h2>
+          </div>
+          <p class="goal">
+            Multi-select checkboxes on channel feeds plus a global "AI Research" page for picking
+            videos across many creators — all feeding the same chat panel.
+          </p>
+          <div class="codewrap">
+            <button class="copy-btn" type="button">Copy prompt</button>
+            <pre>
+This is stage 5 of 7 of the scope AI integration: scope selection — channel multi-select and cross-channel research.
+
+Context: stages 1–4 delivered the AI scope/materializer, the Codex adapter, the chat API, and components/ai/chat-panel.tsx, which accepts any list of video IDs. The channel view is app/channels/[id]/page.tsx with channel-view.tsx, and components/channel/feed-tabs.tsx + video-card.tsx render the Videos/Livestreams tabs. The dashboard is app/page.tsx; nav items live in components/layout/nav-items.ts.
+
+Build:
+
+1. Selection mode on the channel page: per-video checkboxes in the feed tabs with a floating action bar ("N selected" → Chat about selection). Works across both tabs.
+
+2. A new "AI Research" page with a nav entry: pick one or more creators, then a searchable, filterable list of their videos across creators, select any subset, then open the chat panel with that scope.
+
+3. The video page's "Ask AI" keeps working with its single-video scope.
+
+4. Validate before entering chat: exclude videos without transcripts with a clear note about what was skipped, and reject empty selections. Reuse lib/ai/scope.ts as the single source of truth for the scope type.
+
+Design bar: selection should feel intentional, not bolted on. Selected video cards get a clear, consistent selected treatment while still looking like the app's existing video cards; the floating action bar only appears once something is selected, showing the count plus a primary "Chat about selection" button; and the AI Research page reads as a deliberate two-step flow (choose creators, then choose videos) with a comfortable list density, a responsive search, and honest disabled states — not a debug form.
+
+Verification: component tests for the selection UI and scope validation, npm run typecheck, npm test, and a manual pass selecting videos from at least two different creators. Commit this stage when done.</pre>
+          </div>
+          <div class="testbox">
+            <h3>Test it yourself</h3>
+            <ul>
+              <li>
+                <input type="checkbox" id="t5-1" /><span
+                  >On a channel page, enter selection mode — checkboxes appear on both the Videos
+                  and Livestreams tabs and the floating bar count is correct.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t5-2" /><span
+                  >Chat about a 2–3 video selection from one channel — the answer clearly draws on
+                  more than one video.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t5-3" /><span
+                  >On the AI Research page, pick two creators and select videos across both — the
+                  answer attributes points to the right creator/video.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t5-4" /><span
+                  >Include a video without a transcript in a selection — it's excluded and the app
+                  tells you what was skipped.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t5-5" /><span
+                  >Try to start a chat with nothing selected — it refuses with a clear
+                  message.</span
+                >
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="stage" id="stage-6">
+          <div class="stage-head">
+            <span class="stage-num">6</span>
+            <h2>HTML report generation</h2>
+          </div>
+          <p class="goal">
+            Background jobs that have Codex write a clean, self-contained HTML summary of any scope
+            into its own sandboxed job dir, with a reports list page and a chat action.
+          </p>
+          <div class="codewrap">
+            <button class="copy-btn" type="button">Copy prompt</button>
+            <pre>
+This is stage 6 of 7 of the scope AI integration: HTML report generation.
+
+Context: stages 1–5 delivered chat over any video scope, the Codex adapter (sandbox modes, resume, injectable spawner), and per-job transcript directories under data/ai-jobs/. Reports are a new feature: a clean standalone HTML summary generated by Codex from a scope's transcripts.
+
+Build:
+
+1. Migration: ai_reports (id, scope video IDs as JSON, status queued|running|done|failed, file_path, error, created_at, completed_at).
+
+2. POST app/api/ai/reports accepting {videoIds, threadId?}: insert a queued job. Jobs run sequentially through a small in-process queue — never in parallel, to protect the Codex plan's rate limits.
+
+3. The job: materialize transcripts, then run codex exec with -s workspace-write and -C set to the job directory, with a report prompt template that instructs Codex to write a single self-contained HTML file into its working directory: inline CSS only, no JavaScript, no external requests, with sections for an executive overview, key themes, notable quotes with video attribution, and actionable takeaways; length proportional to the amount of transcript material. Track status transitions, register the produced file path, and map failures to the error column.
+
+4. Serve finished reports through a route handler that reads from the job dir (the app stays loopback-only). Add a reports list page with status polling, and a "Generate report" action in the chat panel that passes the current thread's scope.
+
+5. Treat transcripts as untrusted input: the report job's write access must be limited to its own job directory.
+
+Design bar (two surfaces): (a) the generated report must read like a designed document, not machine output — the prompt template should ask for a restrained accent color, clear typographic hierarchy, a comfortable reading measure, styled pull-quotes with video attribution, subtle section spacing, and print-friendly page breaks; (b) the reports list page reuses the app's card and badge primitives for status, gets a proper empty state, and the "Generate report" action sits naturally within the chat panel's existing layout.
+
+Verification: unit tests for the queue and the job state machine with the mocked spawner, npm run typecheck, npm test, then one opt-in live report via SCOPE_AI_LIVE_TEST=1 on a small selection — report the resulting HTML path so I can open it. Commit this stage when done.</pre>
+          </div>
+          <div class="testbox">
+            <h3>Test it yourself</h3>
+            <ul>
+              <li>
+                <input type="checkbox" id="t6-1" /><span
+                  >From a chat thread, hit "Generate report" — status moves queued → running → done
+                  on its own (no manual refresh needed).</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t6-2" /><span
+                  >Open the finished report — clean layout, inline CSS only, no JavaScript, no
+                  external requests.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t6-3" /><span
+                  >Self-contained proof: open the report file straight from disk in a browser (the
+                  reports page shows where it lives) — it renders identically with no server and no
+                  network.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t6-4" /><span
+                  >Check the content: overview, key themes, notable quotes, takeaways — and quotes
+                  attribute the correct video.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t6-5" /><span
+                  >Start two reports back-to-back — the second stays queued until the first
+                  completes (never parallel).</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t6-6" /><span
+                  >Reload the page while one is running — the list still shows the correct
+                  status.</span
+                >
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="stage" id="stage-7">
+          <div class="stage-head">
+            <span class="stage-num">7</span>
+            <h2>Hardening, polish &amp; docs</h2>
+          </div>
+          <p class="goal">
+            Final pass: readable failure modes, selection/size guardrails, queue recovery after
+            restarts, a live end-to-end verification, and README documentation.
+          </p>
+          <div class="codewrap">
+            <button class="copy-btn" type="button">Copy prompt</button>
+            <pre>
+This is stage 7 of 7 of the scope AI integration: hardening, polish, and documentation.
+
+Context: stages 1–6 delivered the full AI layer — scope resolution, transcript materialization, the Codex adapter (gpt-5.6-sol, xhigh reasoning), chat with SSE streaming on the video page, channel and cross-channel selection, the reusable chat panel, and sequential background HTML reports.
+
+Do a final hardening pass:
+
+1. Error UX sweep: every failure path (codex not authenticated, codex binary missing, quota/usage limit, timeout, abort, empty scope) surfaces a readable message through the existing toast/error UI — no raw stack traces. Aborted streams must kill the child process and leave thread/job state consistent.
+
+2. Guardrails: cap selections at 25 videos per analysis with a clear message; skip videos without transcripts and say what was skipped; cap total materialized bytes and report the truncation.
+
+3. Concurrency and recovery: chat requests serialize per thread, the report queue stays strictly sequential, and on server boot any job stuck in "running" is marked failed.
+
+4. Live end-to-end verification with the real subscription: a chat on one video, a chat on a multi-creator selection, and one generated report — note roughly how much plan quota the pass consumed.
+
+5. Documentation: add an "AI features" section to README.md (what it does, that it shells out to the local codex CLI under the user's own subscription, the SCOPE_AI_LIVE_TEST flag, and why the loopback-only rule matters more now), plus a short docs/ai-features.md if useful.
+
+Design bar: failure and loading states are designed, not defaulted — reuse the existing toast/alert and pending primitives, avoid layout jumps, and make sure a stream that dies mid-answer leaves the conversation visually coherent (the partial answer clearly marked, with an obvious way to retry).
+
+Verification: npm run typecheck, npm run lint, the full vitest suites including integration and e2e; fix anything that falls out. Commit this stage when done.</pre>
+          </div>
+          <div class="testbox">
+            <h3>Test it yourself — full regression</h3>
+            <ul>
+              <li>
+                <input type="checkbox" id="t7-1" /><span
+                  >Try to select more than 25 videos — a clear cap message appears, no crash.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t7-2" /><span
+                  >Ask about something the transcripts never mention — the assistant says it isn't
+                  covered instead of inventing an answer.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t7-3" /><span
+                  >Optional failure drill (fully reversible): quit the app, move
+                  <code>~/.codex/auth.json</code> to <code>auth.json.bak</code>, restart, send a
+                  chat — you see a readable "not authenticated" error, not a stack trace. Move the
+                  file back and restart.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t7-4" /><span
+                  >Abort a generation, then run <code>pgrep -af "codex exec"</code> — no orphaned
+                  Codex processes.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t7-5" /><span
+                  >Restart the dev server while a report is running — after boot the stuck job reads
+                  failed (not "running" forever) and everything else still works.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t7-6" /><span
+                  >Non-AI regression: add/remove a creator, refresh a feed, fetch and copy a
+                  transcript — all still work, and the full test suites are green.</span
+                >
+              </li>
+              <li>
+                <input type="checkbox" id="t7-7" /><span
+                  >Confirm the app still binds to 127.0.0.1 only.</span
+                >
+              </li>
+            </ul>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        Keep each stage's commit separate — if a stage goes sideways, it's one
+        <code class="inline">git revert</code> away from clean.
+      </footer>
+    </div>
+
+    <script>
+      (function () {
+        function fallbackCopy(text) {
+          var ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          try {
+            document.execCommand("copy");
+          } catch (e) {}
+          document.body.removeChild(ta);
+        }
+        document.querySelectorAll(".copy-btn").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            var pre = btn.parentElement.querySelector("pre");
+            var text = pre ? pre.textContent : "";
+            var done = function () {
+              btn.textContent = "Copied ✓";
+              btn.classList.add("copied");
+              setTimeout(function () {
+                btn.textContent = "Copy prompt";
+                btn.classList.remove("copied");
+              }, 1600);
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(text).then(done, function () {
+                fallbackCopy(text);
+                done();
+              });
+            } else {
+              fallbackCopy(text);
+              done();
+            }
+          });
+        });
+
+        // Test checklists: persist ticks in this browser when storage is available.
+        document.querySelectorAll('.testbox input[type="checkbox"]').forEach(function (cb) {
+          var saved = null;
+          try {
+            saved = localStorage.getItem("lt-test-" + cb.id);
+          } catch (e) {}
+          if (saved === "1") {
+            cb.checked = true;
+            cb.closest("li").classList.add("done");
+          }
+          cb.addEventListener("change", function () {
+            try {
+              localStorage.setItem("lt-test-" + cb.id, cb.checked ? "1" : "0");
+            } catch (e) {}
+            cb.closest("li").classList.toggle("done", cb.checked);
+          });
+        });
+      })();
+    </script>
+  </body>
+</html>
