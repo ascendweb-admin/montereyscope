@@ -1,0 +1,53 @@
+name: Diagnose Monterey DMG startup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    env:
+      SCOPE_DESKTOP_TARGET_PLATFORM: darwin
+      SCOPE_DESKTOP_TARGET_ARCH: x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+
+      - name: Download the original DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download 37512903858 --name scope-monterey-intel-test --dir "$RUNNER_TEMP/scope-dmg-download"
+
+      - name: Copy the app from its disk image
+        run: |
+          mkdir -p "$RUNNER_TEMP/scope-dmg-mount"
+          hdiutil attach "$RUNNER_TEMP/scope-dmg-download/scope-0.1.9-macos-x64-monterey-test.dmg" -nobrowse -readonly -mountpoint "$RUNNER_TEMP/scope-dmg-mount"
+          ditto "$RUNNER_TEMP/scope-dmg-mount/scope.app" "$RUNNER_TEMP/scope-under-test.app"
+          hdiutil detach "$RUNNER_TEMP/scope-dmg-mount"
+
+      - name: Inspect bundled native libraries
+        run: |
+          node - <<'JS'
+          const path = require('node:path');
+          const { nativeFiles } = require('./desktop/lib/mac-native.cjs');
+          const { readMachOMinimumOS, compareVersionStrings } = require('./desktop/lib/target.cjs');
+          const root = path.join(process.env.RUNNER_TEMP, 'scope-under-test.app');
+          for (const component of nativeFiles(root)) {
+            const minimum = readMachOMinimumOS(component.file, 'x64');
+            console.log(`${component.label}: minimum macOS ${minimum}`);
+            if (minimum && compareVersionStrings(minimum, '12.0') > 0) {
+              console.error(`Above Monterey target: ${component.label}`);
+            }
+          }
+          JS
+
+      - name: Launch and test the actual packaged app
+        run: node desktop/scripts/smoke-packaged.cjs --exe "$RUNNER_TEMP/scope-under-test.app/Contents/MacOS/scope" --minimal-path
