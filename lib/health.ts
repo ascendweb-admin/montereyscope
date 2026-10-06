@@ -1,7 +1,7 @@
 import { getDb } from "@/lib/db/connection";
 import { getYtDlpVersion } from "@/lib/ytdlp/version";
 
-export interface HealthReport {
+export interface ReadinessReport {
   status: "ok" | "degraded";
   app: {
     name: "scope";
@@ -10,6 +10,9 @@ export interface HealthReport {
   database: {
     connected: boolean;
   };
+}
+
+export interface HealthReport extends ReadinessReport {
   ytdlp: {
     available: boolean;
     /** yt-dlp version string when available. */
@@ -30,6 +33,24 @@ export const defaultHealthCheckDeps: HealthCheckDeps = {
   getYtDlpVersion: () => getYtDlpVersion(),
 };
 
+/** Startup readiness depends on the app database, without launching external tools. */
+export function collectReadinessReport(
+  deps: Pick<HealthCheckDeps, "checkDatabase"> = defaultHealthCheckDeps,
+): ReadinessReport {
+  let databaseConnected = false;
+  try {
+    deps.checkDatabase();
+    databaseConnected = true;
+  } catch {
+    databaseConnected = false;
+  }
+  return {
+    status: databaseConnected ? "ok" : "degraded",
+    app: { name: "scope", status: "ready" },
+    database: { connected: databaseConnected },
+  };
+}
+
 /**
  * Collects safe-to-publish health information: application readiness,
  * database connectivity, and yt-dlp availability plus version.
@@ -38,13 +59,7 @@ export const defaultHealthCheckDeps: HealthCheckDeps = {
 export async function collectHealthReport(
   deps: HealthCheckDeps = defaultHealthCheckDeps,
 ): Promise<HealthReport> {
-  let databaseConnected = false;
-  try {
-    deps.checkDatabase();
-    databaseConnected = true;
-  } catch {
-    databaseConnected = false;
-  }
+  const readiness = collectReadinessReport(deps);
 
   let ytdlpAvailable = false;
   let ytdlpVersion: string | undefined;
@@ -58,12 +73,11 @@ export async function collectHealthReport(
     ytdlpAvailable = false;
   }
 
-  const degraded = !databaseConnected || !ytdlpAvailable;
+  const degraded = !readiness.database.connected || !ytdlpAvailable;
 
   return {
+    ...readiness,
     status: degraded ? "degraded" : "ok",
-    app: { name: "scope", status: "ready" },
-    database: { connected: databaseConnected },
     ytdlp: {
       available: ytdlpAvailable,
       ...(ytdlpAvailable && ytdlpVersion ? { version: ytdlpVersion } : {}),

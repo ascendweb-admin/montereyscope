@@ -130,7 +130,7 @@ module.exports = {
   mac: {
     target: ["dmg"],
     category: "public.app-category.video",
-    artifactName: "scope-${version}-macos-x64-monterey-test.${ext}",
+    artifactName: "scope-${version}-macos-x64-monterey-startup-fix.${ext}",
     // Candidate floor for this private test; no installer verification runs.
     minimumSystemVersion: "12.0",
     darkModeSupport: true,
@@ -140,7 +140,7 @@ module.exports = {
     notarize: false,
   },
   dmg: {
-    artifactName: "scope-${version}-macos-x64-monterey-test.${ext}",
+    artifactName: "scope-${version}-macos-x64-monterey-startup-fix.${ext}",
     // Standard drag-to-Applications layout: the app and an /Applications
     // shortcut side by side.
     contents: [

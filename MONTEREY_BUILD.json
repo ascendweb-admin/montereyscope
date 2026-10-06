@@ -6,5 +6,9 @@
   "candidateMinimumMacOS": "12.0",
   "signed": false,
   "notarized": false,
-  "installerVerified": false
+  "installerVerified": false,
+  "profile": "monterey-startup-fix",
+  "changes": [
+    "Desktop readiness no longer waits for yt-dlp version diagnostics."
+  ]
 }

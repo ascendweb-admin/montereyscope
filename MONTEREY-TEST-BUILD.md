@@ -33,7 +33,7 @@ enabled; the command does not verify or launch the completed installer.
 The output folder opens when the build finishes. The installer is:
 
 ```text
-desktop/dist/scope-0.1.9-macos-x64-monterey-test.dmg
+desktop/dist/scope-0.1.9-macos-x64-monterey-startup-fix.dmg
 ```
 
 Open the DMG, drag **scope** into **Applications**, eject it, and launch
@@ -67,6 +67,14 @@ or paid usage. See [GitHub's runner documentation](https://docs.github.com/en/ac
 The workflow builds this Monterey copy, not the main project's Electron 44
 release. A completed cloud build does not verify that the app runs on
 Monterey; the friend still needs to test the installer on his Mac.
+
+The current `monterey-startup-fix` installer separates desktop readiness
+from the downloader version check. Before uploading it, the cloud workflow
+starts the backend using the Electron runtime from the actual app bundle,
+checks the database, authenticated startup endpoint, library page, and bundled
+downloader, and repeats the test with a deliberately slow downloader. These
+checks run on GitHub's macOS 15 Intel host, not on Monterey. They do not
+replace a full GUI test on the friend's Mac.
 
 ## Opening an unsigned test app
 

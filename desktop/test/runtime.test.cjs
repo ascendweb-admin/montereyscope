@@ -183,7 +183,9 @@ test("health polling reports the last safe readiness result on timeout", async (
   const port = await allocateLoopbackPort();
   const server = http.createServer((_request, response) => {
     response.setHeader("Content-Type", "application/json");
-    response.end(JSON.stringify({ app: { name: "scope", status: "ready" }, database: { connected: false } }));
+    response.end(
+      JSON.stringify({ app: { name: "scope", status: "ready" }, database: { connected: false } }),
+    );
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -194,6 +196,41 @@ test("health polling reports the last safe readiness result on timeout", async (
     waitForBackend({ origin: `http://127.0.0.1:${port}`, token: "b".repeat(64), timeoutMs: 200 }),
     /Last health: HTTP 200, app=ready, database=false/,
   );
+});
+
+test("desktop startup does not wait for slow external-tool health diagnostics", async (context) => {
+  const token = "b".repeat(64);
+  const port = await allocateLoopbackPort();
+  const timers = [];
+  const server = http.createServer((request, response) => {
+    assert.equal(request.headers[DESKTOP_AUTH_HEADER], token);
+    const reply = () => {
+      response.setHeader("Content-Type", "application/json");
+      response.end(
+        JSON.stringify({
+          app: { name: "scope", status: "ready" },
+          database: { connected: true },
+        }),
+      );
+    };
+    if (request.url === "/api/health") {
+      timers.push(setTimeout(reply, 2_500));
+    } else if (request.url === "/api/ready") {
+      reply();
+    } else {
+      response.writeHead(404).end();
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", resolve);
+  });
+  context.after(() => {
+    for (const timer of timers) clearTimeout(timer);
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  await waitForBackend({ origin: `http://127.0.0.1:${port}`, token, timeoutMs: 500 });
 });
 
 test("minimal smoke keeps system runtimes unavailable to backend subprocesses", (context) => {

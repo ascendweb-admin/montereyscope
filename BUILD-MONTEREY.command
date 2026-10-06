@@ -97,7 +97,7 @@ npm ci --prefix desktop --no-audit --no-fund
 npm run desktop:dist:mac:x64
 
 echo ""
-echo "Build finished. Open desktop/dist/scope-0.1.9-macos-x64-monterey-test.dmg"
+echo "Build finished. Open desktop/dist/scope-0.1.9-macos-x64-monterey-startup-fix.dmg"
 echo "Drag scope into Applications, then launch it to begin your test."
 if [[ "${CI:-}" != "true" ]]; then
   /usr/bin/open "$PWD/desktop/dist"

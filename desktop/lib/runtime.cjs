@@ -180,7 +180,7 @@ function backendEnvironment({
 
 function requestHealth(origin, token, timeoutMs = 2_000, onResult = () => {}) {
   return new Promise((resolve, reject) => {
-    const target = new URL("/api/health", origin);
+    const target = new URL("/api/ready", origin);
     const request = http.request(
       target,
       {
@@ -235,7 +235,11 @@ async function waitForBackend({ origin, token, timeoutMs, isAlive = () => true }
       });
     }
     try {
-      if (await requestHealth(origin, token, 2_000, (result) => { lastResult = result; })) {
+      if (
+        await requestHealth(origin, token, 2_000, (result) => {
+          lastResult = result;
+        })
+      ) {
         return;
       }
     } catch (error) {

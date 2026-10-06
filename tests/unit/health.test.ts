@@ -7,7 +7,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import { INITIAL_MIGRATIONS } from "@/lib/db/migrations";
 import { runMigrations } from "@/lib/db/migrator";
-import { collectHealthReport, type HealthCheckDeps } from "@/lib/health";
+import { collectHealthReport, collectReadinessReport, type HealthCheckDeps } from "@/lib/health";
 
 const tempDirs: string[] = [];
 const databases: Database.Database[] = [];
@@ -39,6 +39,33 @@ function failingDatabaseProbe(): HealthCheckDeps["checkDatabase"] {
     throw new Error("simulated database outage");
   };
 }
+
+describe("collectReadinessReport", () => {
+  it("reports a migrated database ready without waiting for a downloader that never finishes", () => {
+    let downloaderStarted = false;
+    const deps: HealthCheckDeps = {
+      checkDatabase: makeDatabaseProbe(),
+      getYtDlpVersion: () => {
+        downloaderStarted = true;
+        return new Promise(() => {});
+      },
+    };
+    expect(collectReadinessReport(deps)).toEqual({
+      status: "ok",
+      app: { name: "scope", status: "ready" },
+      database: { connected: true },
+    });
+    expect(downloaderStarted).toBe(false);
+  });
+
+  it("still blocks startup when the database cannot be opened", () => {
+    expect(collectReadinessReport({ checkDatabase: failingDatabaseProbe() })).toEqual({
+      status: "degraded",
+      app: { name: "scope", status: "ready" },
+      database: { connected: false },
+    });
+  });
+});
 
 describe("collectHealthReport", () => {
   it("reports ok with database connected and yt-dlp version when both are healthy", async () => {

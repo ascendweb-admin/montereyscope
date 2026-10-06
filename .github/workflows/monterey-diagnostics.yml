@@ -16,6 +16,8 @@ jobs:
       SCOPE_DESKTOP_TARGET_ARCH: x64
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: 9814e8a7ea387677e8a3aa575177c95f728b73ad
 
       - uses: actions/setup-node@v4
         with:
