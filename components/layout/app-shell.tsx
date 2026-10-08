@@ -1,4 +1,4 @@
-import { ResearchActivity } from "@/components/background/research-activity";
+import { XDashboardActivity } from "@/components/background/x-dashboard-activity";
 import type { ReactNode } from "react";
 import { BackgroundChatProvider } from "@/components/ai/background-chat";
 import { BackgroundActivity } from "@/components/background/activity";
@@ -17,7 +17,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <ModelCatalogProvider>
       <BackgroundChatProvider>
-        <ResearchActivity />
+        <XDashboardActivity />
         <div className="flex min-h-dvh">
           <AppSidebar activity={<BackgroundActivity />} />
           <div className="flex min-w-0 flex-1 flex-col">

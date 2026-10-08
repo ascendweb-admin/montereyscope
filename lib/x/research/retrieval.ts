@@ -3,15 +3,16 @@ import type { ScopeDatabase } from "@/lib/db/connection";
 import { getDb } from "@/lib/db/connection";
 import { getCreator } from "@/lib/creators/repository";
 import { getXProvider } from "@/lib/x/providers";
-import { runXExclusive, toXServiceError } from "@/lib/x/service";
+import { runXExclusive, toXServiceError, type XExclusiveOptions } from "@/lib/x/service";
 import { getTweetById, mergeCreatorTimeline } from "@/lib/x/repository";
 import { XProviderError, type XProvider, type XTimelinePage } from "@/lib/x/model";
 import { ResearchInputError } from "./repository";
-import type {
-  RetrievalCoverage,
-  RetrievalJob,
-  RetrievalRequest,
-  RetrievalStatus,
+import {
+  autoPageBudget,
+  type RetrievalCoverage,
+  type RetrievalJob,
+  type RetrievalRequest,
+  type RetrievalStatus,
 } from "./retrieval-model";
 
 interface Checkpoint {
@@ -56,8 +57,14 @@ interface Task {
   newest: string | null;
   reason: string | null;
   error: string | null;
+  /** Provider failure code behind `error`; decides whether a retry is worthwhile. */
+  errorCode?: string | null;
   retryAt: string | null;
   maxPages: number;
+  /** Oldest ordinary post seen, unlike `oldest` never moved by a pin or repost. */
+  reach?: string | null;
+  /** An initial import whose newest pages went to the head lane; the rest is background history. */
+  promoted?: boolean;
 }
 interface JobRow {
   id: string;
@@ -88,6 +95,50 @@ const resetTraversal = (task: Task) => {
   task.skipped = 0;
   task.resolved = false;
 };
+const pageBudget = (request: RetrievalRequest, task: Pick<Task, "since" | "until">) =>
+  request.maxPages ??
+  autoPageBudget((Date.parse(task.until) - Date.parse(task.since)) / 86_400_000);
+
+export interface RetrievalEngineOptions {
+  /**
+   * Keep unfinished work going without another click: continue after a page or
+   * time budget, wait out X rate limits, and retry transient network failures.
+   * Every continuation is bounded; anything else still stops for the user.
+   */
+  autoContinue?: boolean;
+  /** Budget continuations per launch (each walks one page/time budget). */
+  maxRounds?: number;
+  /** Rate-limit waits per launch. */
+  maxWaits?: number;
+  /** Transient network/timeout retries per launch. */
+  maxFaults?: number;
+  /** Delay before retrying a transient failure. */
+  faultDelayMs?: number;
+  /** Longest single rate-limit wait honored automatically. */
+  maxWaitMs?: number;
+  /**
+   * Newer posts first: once an initial import has read this many days (or `headPages` pages),
+   * the creator counts as synced and the rest of its window continues as background history.
+   * Off when unset.
+   */
+  headDays?: number;
+  headPages?: number;
+}
+const CONTINUE_REASONS = new Set(["page_budget", "time_budget", "cursor_stall"]);
+const TRANSIENT_CODES = new Set(["network", "timeout", "rate_limited", "invalid_response"]);
+const sleep = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
 
 /** One engine per server process, shared across route bundles/HMR. Reading never starts work. */
 export class RetrievalEngine {
@@ -99,8 +150,14 @@ export class RetrievalEngine {
   constructor(
     private readonly database: () => ScopeDatabase,
     private readonly provider: () => XProvider,
-    private readonly exclusive = runXExclusive,
+    private readonly exclusive: <T>(
+      operation: () => Promise<T>,
+      options?: XExclusiveOptions,
+    ) => Promise<T> = runXExclusive,
     private readonly durationMs = 180_000,
+    // Larger page budgets earn proportionally more active time.
+    private readonly pageMs = 6_000,
+    private readonly options: RetrievalEngineOptions = {},
   ) {}
   private task(id: string): Task | null {
     const row = this.database()
@@ -199,6 +256,7 @@ export class RetrievalEngine {
         newest: t.newest,
         reason: this.effective(t) === "interrupted" ? "interrupted" : t.reason,
         error: t.error,
+        errorCode: t.errorCode ?? null,
         retryAt: t.retryAt,
       })),
     };
@@ -265,6 +323,10 @@ export class RetrievalEngine {
           throw new ResearchInputError("Cancellation is finishing. Try again in a moment.", 409);
         }
         if (!task) {
+          const since =
+            request.kind === "refresh" && head.initialized
+              ? (head.boundaryAt ?? head.lastSuccessfulRefresh ?? request.since)
+              : request.since;
           task = {
             id: randomUUID(),
             creatorId,
@@ -273,12 +335,7 @@ export class RetrievalEngine {
             name: creator.displayName,
             config,
             mode: request.kind === "history" ? "history" : head.initialized ? "catchup" : "initial",
-            since:
-              request.kind === "refresh"
-                ? head.initialized
-                  ? (head.boundaryAt ?? head.lastSuccessfulRefresh ?? request.since)
-                  : request.since
-                : request.since,
+            since,
             until: request.until,
             status: "partial",
             owner: null,
@@ -301,7 +358,7 @@ export class RetrievalEngine {
             reason: null,
             error: null,
             retryAt: null,
-            maxPages: request.maxPages,
+            maxPages: pageBudget(request, { since, until: request.until }),
           };
           db.prepare("INSERT INTO x_retrieval_tasks VALUES (?, ?, ?, ?, ?)").run(
             task.id,
@@ -323,7 +380,7 @@ export class RetrievalEngine {
         return task.id;
       });
     })();
-    for (const taskId of taskIds) this.launch(taskId);
+    for (const taskId of taskIds) this.launch(taskId, request);
     return this.job(id);
   }
   resume(id: string): RetrievalJob {
@@ -334,7 +391,7 @@ export class RetrievalEngine {
       throw new ResearchInputError(
         "Provider configuration changed. Start a new retrieval; your archive is preserved.",
       );
-    if (job.status === "complete") return job;
+    if (job.status === "complete" || job.status === "running") return job;
     if (tasks.some((task) => this.running.get(task.id)?.controller.signal.aborted)) {
       throw new ResearchInputError("Cancellation is finishing. Try Resume again in a moment.", 409);
     }
@@ -343,7 +400,7 @@ export class RetrievalEngine {
     this.database()
       .prepare("UPDATE x_retrieval_jobs SET cancelled = 0, finished_at = NULL WHERE id = ?")
       .run(id);
-    for (const task of tasks) if (task.status !== "complete") this.launch(task.id);
+    for (const task of tasks) if (task.status !== "complete") this.launch(task.id, job.request);
     return this.job(id);
   }
   cancel(id: string): RetrievalJob {
@@ -369,6 +426,68 @@ export class RetrievalEngine {
     }
     return this.job(id);
   }
+  /**
+   * Stops every task these creators have in flight, in whichever jobs share it, and leaves other
+   * creators' work running. Committed pages are kept; the next sync continues from them.
+   */
+  stopCreators(creatorIds: number[]): void {
+    const db = this.database();
+    const ids = new Set(creatorIds);
+    const touched = new Set<string>();
+    for (const [taskId, run] of this.running) {
+      const task = this.task(taskId);
+      if (!task || !ids.has(task.creatorId) || task.status === "complete") continue;
+      run.controller.abort();
+      task.status = "cancelled";
+      task.reason = "cancelled";
+      task.owner = null;
+      task.retryAt = null;
+      this.save(task);
+      const jobs = db
+        .prepare("SELECT job_id FROM x_retrieval_job_tasks WHERE task_id = ?")
+        .all(taskId) as Array<{ job_id: string }>;
+      for (const { job_id } of jobs) touched.add(job_id);
+    }
+    for (const jobId of touched)
+      if (this.tasks(jobId).every((t) => this.effective(t) !== "running"))
+        db.prepare(
+          "UPDATE x_retrieval_jobs SET finished_at = COALESCE(finished_at, ?) WHERE id = ?",
+        ).run(now(), jobId);
+  }
+  /**
+   * Picks unfinished background imports of older posts back up for these creators. Stopped ones
+   * resume only when asked (a manual sync). Returns how many were relaunched.
+   */
+  resumeBackfills(creatorIds: number[], { includeStopped = false } = {}): number {
+    if (!creatorIds.length) return 0;
+    const db = this.database();
+    const rows = db
+      .prepare(
+        `SELECT state_json FROM x_retrieval_tasks
+         WHERE creator_id IN (${creatorIds.map(() => "?").join(",")})
+           AND json_extract(state_json, '$.promoted') = 1
+           AND json_extract(state_json, '$.status') <> 'complete'`,
+      )
+      .all(...creatorIds) as Array<{ state_json: string }>;
+    let resumed = 0;
+    for (const task of rows.map((row) => JSON.parse(row.state_json) as Task)) {
+      if (this.running.has(task.id) || (task.status === "cancelled" && !includeStopped)) continue;
+      if (task.retryAt && Date.parse(task.retryAt) > Date.now()) continue;
+      if (task.config !== retrievalConfigKey(this.provider().id)) continue;
+      const job = db
+        .prepare(
+          `SELECT j.* FROM x_retrieval_jobs j JOIN x_retrieval_job_tasks jt ON jt.job_id = j.id
+           WHERE jt.task_id = ? ORDER BY j.cancelled, j.created_at DESC LIMIT 1`,
+        )
+        .get(task.id) as JobRow | undefined;
+      if (!job || (job.cancelled && !includeStopped)) continue;
+      if (job.cancelled) db.prepare("UPDATE x_retrieval_jobs SET cancelled = 0 WHERE id = ?").run(job.id);
+      this.reopenJobs(task.id);
+      this.launch(task.id, JSON.parse(job.request_json) as RetrievalRequest);
+      resumed++;
+    }
+    return resumed;
+  }
   /** Test/host shutdown seam: abort in-flight work; never launch recovery. */
   async stop() {
     for (const run of this.running.values()) run.controller.abort();
@@ -378,28 +497,195 @@ export class RetrievalEngine {
     await Promise.all(this.tasks(id).map((t) => this.running.get(t.id)?.promise));
     return this.job(id);
   }
-  private launch(id: string) {
+  private launch(id: string, request: RetrievalRequest) {
     if (this.running.has(id)) return;
     const task = this.task(id);
     if (!task || task.status === "complete") return;
     if (task.retryAt && Date.parse(task.retryAt) > Date.now()) return;
+    this.prime(task, request);
+    const controller = new AbortController();
+    // Defer until the registry is populated, so overlapping requests attach to the same task.
+    const promise = Promise.resolve()
+      .then(() => this.drive(task, request, controller))
+      .finally(() => this.running.delete(id));
+    this.running.set(id, { controller, promise });
+  }
+  /** Readies a task for an attempt under the budget of the request launching it. */
+  private prime(task: Task, request: RetrievalRequest) {
     if (["cursor_stall", "gap", "skipped"].includes(task.reason ?? "")) resetTraversal(task);
+    // Reused and resumed work walks the budget of the job launching it, not the one that created it.
+    task.maxPages = pageBudget(request, task);
     task.status = "running";
     task.owner = this.owner;
     task.reason = null;
     task.error = null;
+    task.errorCode = null;
     task.retryAt = null;
     this.save(task);
-    const controller = new AbortController();
-    // Defer until the registry is populated, so overlapping requests attach to the same task.
-    const promise = Promise.resolve()
-      .then(() => this.run(task, controller))
-      .finally(() => this.running.delete(id));
-    this.running.set(id, { controller, promise });
+  }
+  /** Runs attempts until the task settles, continuing automatically when enabled. */
+  private async drive(task: Task, request: RetrievalRequest, controller: AbortController) {
+    let current = task;
+    let rounds = 0,
+      waits = 0,
+      faults = 0;
+    const {
+      autoContinue = false,
+      maxRounds = 8,
+      maxWaits = 6,
+      maxFaults = 3,
+      faultDelayMs = 30_000,
+      maxWaitMs = 20 * 60_000,
+    } = this.options;
+    for (;;) {
+      await this.run(current, controller);
+      if (!autoContinue || controller.signal.aborted) return;
+      const next = this.task(current.id);
+      if (!next || !this.wanted(next.id)) return;
+      let delay: number | null = null;
+      if (next.status === "partial" && CONTINUE_REASONS.has(next.reason ?? "")) {
+        const limit = next.reason === "cursor_stall" ? 2 : maxRounds;
+        if (++rounds <= limit) delay = 0;
+      } else if (next.status === "failed" && TRANSIENT_CODES.has(next.errorCode ?? "")) {
+        if (next.retryAt) {
+          const wait = Date.parse(next.retryAt) - Date.now() + 1_000;
+          if (++waits <= maxWaits && wait <= maxWaitMs) delay = Math.max(0, wait);
+        } else if (++faults <= maxFaults) delay = faultDelayMs;
+      }
+      if (delay === null) return;
+      if (delay > 0) {
+        // Stay visibly "running" while X asks us to wait, so nothing looks stuck or failed.
+        next.status = "running";
+        next.owner = this.owner;
+        next.reason = "waiting";
+        next.retryAt = new Date(Date.now() + delay).toISOString();
+        this.save(next);
+        this.reopenJobs(next.id);
+        try {
+          await sleep(delay, controller.signal);
+        } catch {
+          const stopped = this.task(next.id);
+          if (stopped && stopped.status === "running") {
+            stopped.status = "cancelled";
+            stopped.reason = "cancelled";
+            stopped.owner = null;
+            stopped.retryAt = null;
+            this.save(stopped);
+          }
+          return;
+        }
+      }
+      const resumed = this.task(next.id);
+      if (!resumed || !this.wanted(resumed.id) || resumed.status === "complete") return;
+      // Resume restores the job's own budget; a retry clears the wait it just honored.
+      resumed.retryAt = null;
+      this.prime(resumed, request);
+      this.reopenJobs(resumed.id);
+      current = resumed;
+    }
+  }
+  /** True while at least one job still wants this task's work. */
+  private wanted(taskId: string): boolean {
+    return Boolean(
+      this.database()
+        .prepare(
+          `SELECT 1 FROM x_retrieval_job_tasks jt JOIN x_retrieval_jobs j ON j.id = jt.job_id
+           WHERE jt.task_id = ? AND j.cancelled = 0 LIMIT 1`,
+        )
+        .get(taskId),
+    );
+  }
+  private reopenJobs(taskId: string) {
+    this.database()
+      .prepare(
+        `UPDATE x_retrieval_jobs SET finished_at = NULL WHERE cancelled = 0
+         AND id IN (SELECT job_id FROM x_retrieval_job_tasks WHERE task_id = ?)`,
+      )
+      .run(taskId);
+  }
+  /**
+   * Boot recovery for the app: picks interrupted or budget-paused work from the
+   * last day back up. Never runs unless the host asks for it.
+   */
+  recover(maxAgeMs = 24 * 3600_000): string[] {
+    const resumed: string[] = [];
+    for (const job of this.jobs()) {
+      if (Date.now() - Date.parse(job.createdAt) > maxAgeMs) continue;
+      const continuable =
+        job.status === "interrupted" ||
+        (job.status === "partial" &&
+          job.creators.some(
+            (c) => c.status === "interrupted" || CONTINUE_REASONS.has(c.reason ?? ""),
+          ));
+      if (!continuable) continue;
+      try {
+        this.resume(job.id);
+        resumed.push(job.id);
+      } catch {
+        /* A rate-limit wait or config change leaves it for the next sync. */
+      }
+    }
+    return resumed;
+  }
+  /** True once an initial import has its newest pages and more of its window is left to read. */
+  private promotable(task: Task): boolean {
+    const { headDays, headPages = 5 } = this.options;
+    if (headDays === undefined || task.mode !== "initial" || !task.candidateAnchors.length)
+      return false;
+    const cutoff = Date.parse(task.until) - headDays * 86_400_000;
+    return task.pages >= headPages || (task.reach != null && Date.parse(task.reach) < cutoff);
+  }
+  /**
+   * Newer posts first: hands an initial import's newest pages to the head lane, so the creator
+   * counts as synced and catch-ups can run, then keeps walking the same traversal for the rest of
+   * the window as lower-priority history.
+   */
+  private promote(task: Task) {
+    const db = this.database();
+    db.transaction(() => {
+      const head = this.checkpoint(task.creatorId, task.config, "head");
+      head.initialized = true;
+      head.anchors = task.candidateAnchors;
+      head.boundaryAt = task.until;
+      // Current as of when this traversal started, so a catch-up picks up anything newer.
+      head.lastSuccessfulRefresh = task.until;
+      head.pendingTask = null;
+      this.saveCheckpoint(task, head);
+      task.mode = "history";
+      task.promoted = true;
+      const history = this.checkpoint(task.creatorId, task.config, "history");
+      history.pendingTask = task.id;
+      history.since = task.since;
+      history.until = task.until;
+      history.status = "running";
+      this.saveCheckpoint(task, history);
+      db.prepare("UPDATE x_retrieval_tasks SET work_key = ? WHERE id = ?").run(
+        `${task.config}:${task.userId}:history:${task.since}:${task.until}`,
+        task.id,
+      );
+      this.save(task);
+    })();
   }
   private async run(task: Task, controller: AbortController) {
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(this.durationMs)]);
-    const started = Date.now();
+    // Creators share one X connection, so only time spent reading or backing off counts against
+    // this attempt; waiting for other creators' reads does not.
+    const budgetMs = Math.max(this.durationMs, task.maxPages * this.pageMs);
+    const budget = new AbortController();
+    const signal = AbortSignal.any([controller.signal, budget.signal]);
+    let spentMs = 0;
+    const spend = async <T>(work: () => Promise<T>): Promise<T> => {
+      const startedAt = Date.now();
+      const timer = setTimeout(
+        () => budget.abort(new DOMException("The attempt time budget expired.", "TimeoutError")),
+        Math.max(0, budgetMs - spentMs),
+      );
+      try {
+        return await work();
+      } finally {
+        clearTimeout(timer);
+        spentMs += Date.now() - startedAt;
+      }
+    };
     let attemptPages = 0;
     let cursorReset = false;
     const provider = this.provider();
@@ -407,10 +693,13 @@ export class RetrievalEngine {
       for (let attempt = 0; ; attempt++) {
         signal.throwIfAborted();
         try {
-          return await this.exclusive(() => {
-            signal.throwIfAborted();
-            return operation();
-          });
+          return await this.exclusive(
+            () => {
+              signal.throwIfAborted();
+              return spend(operation);
+            },
+            { background: task.mode === "history" },
+          );
         } catch (error) {
           const failure = toXServiceError(error);
           if (
@@ -424,18 +713,21 @@ export class RetrievalEngine {
             task.retryAt = new Date(Date.now() + delay).toISOString();
             this.save(task);
           }
-          if (delay >= this.durationMs - (Date.now() - started)) throw error;
-          await new Promise<void>((resolve, reject) => {
-            const abort = () => {
-              clearTimeout(timer);
-              reject(signal.reason);
-            };
-            const timer = setTimeout(() => {
-              signal.removeEventListener("abort", abort);
-              resolve();
-            }, delay);
-            signal.addEventListener("abort", abort, { once: true });
-          });
+          if (delay >= budgetMs - spentMs) throw error;
+          await spend(
+            () =>
+              new Promise<void>((resolve, reject) => {
+                const abort = () => {
+                  clearTimeout(timer);
+                  reject(signal.reason);
+                };
+                const timer = setTimeout(() => {
+                  signal.removeEventListener("abort", abort);
+                  resolve();
+                }, delay);
+                signal.addEventListener("abort", abort, { once: true });
+              }),
+          );
         }
       }
     };
@@ -451,6 +743,7 @@ export class RetrievalEngine {
         task.resolved = true;
         this.save(task);
       }
+      if (this.promotable(task)) this.promote(task);
       while (attemptPages < task.maxPages) {
         signal.throwIfAborted();
         let page: XTimelinePage;
@@ -490,6 +783,9 @@ export class RetrievalEngine {
             i.tweet.publishedAt !== null,
         );
         const ids = ordinary.map((i) => i.tweet.id);
+        for (const i of ordinary)
+          if (!task.reach || Date.parse(i.tweet.publishedAt!) < Date.parse(task.reach))
+            task.reach = i.tweet.publishedAt;
         if (task.anchorPages < 2 && ids.length) {
           task.candidateAnchors = [...new Set([...task.candidateAnchors, ...ids])];
           task.anchorPages++;
@@ -593,6 +889,7 @@ export class RetrievalEngine {
           this.save(task);
         })();
         if (reason) break;
+        if (this.promotable(task)) this.promote(task);
       }
       if (task.status === "running") {
         task.status = "partial";
@@ -615,6 +912,7 @@ export class RetrievalEngine {
         const failure = toXServiceError(error);
         task.status = "failed";
         task.error = failure.message;
+        task.errorCode = failure.code;
         if (failure.retryAfterSeconds !== null)
           task.retryAt = new Date(Date.now() + failure.retryAfterSeconds * 1000).toISOString();
       }
@@ -644,5 +942,13 @@ export class RetrievalEngine {
 }
 const shared = globalThis as typeof globalThis & { __scopeXRetrieval?: RetrievalEngine };
 export function getRetrievalEngine(): RetrievalEngine {
-  return (shared.__scopeXRetrieval ??= new RetrievalEngine(getDb, getXProvider));
+  return (shared.__scopeXRetrieval ??= new RetrievalEngine(
+    getDb,
+    getXProvider,
+    runXExclusive,
+    180_000,
+    6_000,
+    // Real X rate-limit windows run up to 15 minutes; one request per window is cheap to keep trying.
+    { autoContinue: true, maxWaits: 12, headDays: 2 },
+  ));
 }

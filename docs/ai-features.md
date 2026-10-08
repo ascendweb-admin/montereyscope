@@ -127,7 +127,7 @@ saved:
 
 | Provider     | Quick                  | Balanced                     | Deep                      |
 | ------------ | ---------------------- | ---------------------------- | ------------------------- |
-| **Codex**    | `gpt-5.6-luna` @ `low` | `gpt-5.6-terra` @ `medium`   | `gpt-5.6-sol` @ `xhigh`   |
+| **Codex**    | `gpt-6-luna` @ `low`   | `gpt-6.1-sol` @ `medium`     | `gpt-6.1-sol` @ `xhigh`   |
 | **OpenCode** | `gpt-5.6-luna` @ `low` | `deepseek-v4-flash` @ `high` | `deepseek-v4-pro` @ `max` |
 | **Claude**   | Haiku (no effort)      | Sonnet @ `medium`            | Opus @ `xhigh`            |
 
@@ -201,14 +201,14 @@ The Generate-report dialog picks two things, and both are remembered across
 visits:
 
 **Depth profile** — how hard the report thinks and how much it covers. Like
-on Codex, each profile pairs a different model and reasoning effort with its
+on Codex, each profile pairs a model and reasoning effort with its
 own writing brief and required sections:
 
-| Profile      | Model           | Reasoning | Ceiling    | What it writes                                                                                                                 |
-| ------------ | --------------- | --------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| **Brief**    | `gpt-5.6-luna`  | `low`     | 8 minutes  | A relaxed overview to stay current: the short version, what's going on, a few quotes, what to watch next.                      |
-| **Balanced** | `gpt-5.6-terra` | `medium`  | 15 minutes | The everyday analyst report: executive overview, key themes, notable quotes, actionable takeaways.                             |
-| **Deep**     | `gpt-5.6-sol`   | `xhigh`   | 25 minutes | The complete technical brief: everything above plus a technical-detail section, points of tension, and source-by-source notes. |
+| Profile      | Model         | Reasoning | Ceiling    | What it writes                                                                                                                 |
+| ------------ | ------------- | --------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| **Brief**    | `gpt-6-luna`  | `low`     | 8 minutes  | A relaxed overview to stay current: the short version, what's going on, a few quotes, what to watch next.                      |
+| **Balanced** | `gpt-6.1-sol` | `medium`  | 15 minutes | The everyday analyst report: executive overview, key themes, notable quotes, actionable takeaways.                             |
+| **Deep**     | `gpt-6.1-sol` | `xhigh`   | 25 minutes | The complete technical brief: everything above plus a technical-detail section, points of tension, and source-by-source notes. |
 
 **Visual style** — how the document looks. Each style ships a complete,
 hand-authored stylesheet that the report must include verbatim, so a style is

@@ -1,7 +1,6 @@
 import { notFound } from "next/navigation";
 
 import { ChannelView } from "./channel-view";
-import { resolveScope } from "@/lib/ai";
 import { getCreatorById } from "@/lib/creators/service";
 import { getCachedCreatorFeed } from "@/lib/videos/service";
 import { getCachedCreatorTimeline } from "@/lib/x";
@@ -77,21 +76,10 @@ export default async function ChannelPage({ params }: ChannelPageProps) {
 
   const feed = getCachedCreatorFeed(db, creatorId);
 
-  // Transcript availability comes from the stage-1 scope resolver so the
-  // selection UI validates against the same source of truth as the chat API.
-  const scope = resolveScope(
-    db,
-    [...feed.videos, ...feed.livestreams].map((video) => video.id),
-  );
-  const hasTranscriptByVideoId = new Map(
-    scope.videos.map((video) => [video.id, video.hasTranscript]),
-  );
-
   return (
     <ChannelView
       creator={creator}
       feed={feed}
-      hasTranscriptByVideoId={hasTranscriptByVideoId}
       categories={categories}
       creatorCategories={creatorCategories}
     />

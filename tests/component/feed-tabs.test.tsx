@@ -19,7 +19,6 @@ function card(videoId: string, title: string): VideoCardModel {
     publishedLabel: "Aug 1, 2026",
     durationLabel: "10:00",
     liveStatus: "not_live",
-    hasTranscript: false,
   };
 }
 

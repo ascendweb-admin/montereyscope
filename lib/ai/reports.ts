@@ -52,6 +52,13 @@ import {
   type SourceMaterializationManifest,
 } from "./materialize";
 import { getRuntimeModel } from "./model-catalog";
+import { resolveSourceScope } from "./scope";
+import {
+  describePreparationFailures,
+  ensureTranscripts,
+  type PrepareOutcome,
+  type PreparedVideoFailure,
+} from "@/lib/transcripts/prepare";
 import {
   DEFAULT_REPORT_PROFILE,
   getReportProfile,
@@ -480,8 +487,21 @@ export function toPublicReport(
 /** Public shape with the scope resolved against the current cached feed. */
 export function publicReportFor(db: ScopeDatabase, report: AiReport): PublicReport {
   const research = db
-    .prepare("SELECT research_scope_id AS scopeId FROM ai_reports WHERE id=?")
-    .get(report.id) as { scopeId: string | null } | undefined;
+    .prepare(
+      "SELECT research_scope_id AS scopeId, research_html IS NOT NULL AS hasHtml FROM ai_reports WHERE id=?",
+    )
+    .get(report.id) as { scopeId: string | null; hasHtml: number } | undefined;
+  if (research && !research.scopeId && research.hasHtml) {
+    // An X Dashboard insight: a self-contained brief stored with the report.
+    const insight = db
+      .prepare("SELECT post_count AS posts FROM x_insights WHERE report_id = ?")
+      .get(report.id) as { posts: number } | undefined;
+    return {
+      ...toPublicReport(report),
+      sourceCount: insight?.posts ?? 0,
+      fileUrl: report.status === "done" ? `/api/ai/reports/${report.id}/file` : null,
+    };
+  }
   if (research?.scopeId) {
     const scope = db
       .prepare("SELECT summary_json FROM x_research_scopes WHERE id=?")
@@ -1009,6 +1029,8 @@ export interface ReportJobDeps {
   jobsRoot?: string;
   /** Injectable materializer; defaults to one bound to this db and jobs root. */
   materializer?: SourceMaterializer;
+  /** Injectable transcript preparation; defaults to the background fetcher. */
+  prepareTranscripts?: (videoIds: readonly string[]) => Promise<PrepareOutcome>;
 }
 
 /**
@@ -1078,6 +1100,13 @@ function readReportSnapshot(jobDir: string): SourceMaterializeOutcome {
   return { jobDir, manifest };
 }
 
+/** Videos in a scope that have no cached transcript yet. */
+function videosNeedingTranscripts(db: ScopeDatabase, sources: readonly SourceRef[]): string[] {
+  return resolveSourceScope(db, sources)
+    .sources.filter((source) => source.kind === "video" && !source.readyForAnalysis)
+    .map((source) => source.id);
+}
+
 export async function runReportJob(deps: ReportJobDeps, reportId: number): Promise<void> {
   const db = deps.db;
   const report = getReport(db, reportId);
@@ -1092,13 +1121,34 @@ export async function runReportJob(deps: ReportJobDeps, reportId: number): Promi
   }
 
   try {
-    // Only legacy queued jobs without a submission snapshot use the cache.
+    // Jobs submitted with videos still missing transcripts carry no
+    // snapshot: their captions are fetched here, then the sources are
+    // materialized from the freshly filled cache.
+    let preparationFailures: PreparedVideoFailure[] = [];
+    if (!report.jobDir) {
+      const missing = videosNeedingTranscripts(db, report.sources);
+      if (missing.length > 0) {
+        const prepare = deps.prepareTranscripts ?? ((videoIds) => ensureTranscripts(db, videoIds));
+        preparationFailures = (await prepare(missing)).failed;
+      }
+    }
     const outcome: SourceMaterializeOutcome = report.jobDir
       ? readReportSnapshot(report.jobDir)
       : reportMaterializer(deps).materializeSources(report.sources);
     const writtenFiles = outcome.manifest.sources.filter((source) => source.file !== null);
     if (writtenFiles.length === 0) {
-      transitionReport(db, reportId, "failed", { error: NO_SOURCES_ERROR });
+      const titleByVideoId = new Map(
+        outcome.manifest.sources.map((source) => [source.id, source.title]),
+      );
+      transitionReport(db, reportId, "failed", {
+        error:
+          preparationFailures.length > 0
+            ? describePreparationFailures(
+                preparationFailures,
+                (videoId) => titleByVideoId.get(videoId) ?? videoId,
+              )
+            : NO_SOURCES_ERROR,
+      });
       return;
     }
     // Remembered so deleting the report later removes these files too.
@@ -1111,9 +1161,14 @@ export async function runReportJob(deps: ReportJobDeps, reportId: number): Promi
     const truncatedTitles = outcome.manifest.truncation?.truncatedSourceKeys.map(
       (key) => titleByKey.get(key) ?? key,
     );
-    const skippedTitles = outcome.manifest.truncation?.skippedSourceKeys.map(
-      (key) => titleByKey.get(key) ?? key,
-    );
+    // Videos whose captions could not be read contribute no evidence either.
+    const skippedTitles = [
+      ...preparationFailures.map(
+        (failure) => titleByKey.get(`video:${failure.videoId}`) ?? failure.videoId,
+      ),
+      ...(outcome.manifest.truncation?.skippedSourceKeys.map((key) => titleByKey.get(key) ?? key) ??
+        []),
+    ];
     if (outcome.manifest.truncation) {
       console.warn(
         `[ai/reports] report ${reportId} hit the materialized-bytes budget ` +
@@ -1314,6 +1369,14 @@ export function createReportQueue(deps: ReportJobDeps): ReportQueue {
         typeof scope[0] === "string"
           ? videoIdsToSourceRefs(scope as readonly string[])
           : ([...scope] as SourceRef[]);
+      // A scope with videos still missing transcripts is snapshotted when
+      // the job runs, after their captions are fetched in the background.
+      if (videosNeedingTranscripts(deps.db, sources).length > 0) {
+        const report = createReport(deps.db, scope, options);
+        waiting.push(report.id);
+        void drain();
+        return report;
+      }
       const snapshot = reportMaterializer(deps).materializeSources(sources);
       let report: AiReport;
       try {

@@ -1,5 +1,3 @@
-> **Private Intel / macOS 12 test copy.** Start with [MONTEREY-TEST-BUILD.md](MONTEREY-TEST-BUILD.md) and `BUILD-MONTEREY.command`. This copy uses Electron 43.7.7 and produces an unsigned, unnotarized, unverified installer. The general release instructions below describe the original project.
-
 # scope
 
 A private, single-user YouTube creator dashboard that runs entirely on your

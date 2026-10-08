@@ -20,6 +20,7 @@ import {
   type XTweetMedia,
   type XUserIdentity,
   type XUserLookup,
+  type XUserSearchResult,
 } from "./model";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -282,4 +283,33 @@ export function mapXUserLookup(value: unknown): XUserLookup {
     throw new XProviderError("invalid_response");
   }
   return { user, pinnedTweetId: asIdString(value.pinnedTweetId) };
+}
+
+/**
+ * Normalizes a people-search payload (`{ users: [...] }`). Unusable entries
+ * are skipped; a payload without a users array is an invalid response.
+ */
+export function mapXUserSearch(value: unknown): XUserSearchResult[] {
+  if (!isRecord(value) || !Array.isArray(value.users)) {
+    throw new XProviderError("invalid_response");
+  }
+  const results: XUserSearchResult[] = [];
+  const seen = new Set<string>();
+  for (const entry of value.users) {
+    const user = mapXUser(entry);
+    if (user === null || seen.has(user.userId) || !/^[0-9A-Za-z_]{1,15}$/.test(user.handle)) {
+      continue;
+    }
+    seen.add(user.userId);
+    const record = entry as Record<string, unknown>;
+    results.push({
+      ...user,
+      verified: record.verified === true,
+      protected: record.protected === true,
+    });
+    if (results.length >= 10) {
+      break;
+    }
+  }
+  return results;
 }

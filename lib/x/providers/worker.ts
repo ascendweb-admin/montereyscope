@@ -15,8 +15,9 @@ import {
   type XTweetDraft,
   type XTimelinePage,
   type XUserLookup,
+  type XUserSearchResult,
 } from "../model";
-import { mapXTweet, mapXTimelinePage, mapXUser, mapXUserLookup } from "../mapper";
+import { mapXTweet, mapXTimelinePage, mapXUser, mapXUserLookup, mapXUserSearch } from "../mapper";
 import {
   isWorkerEnvelope,
   toWorkerErrorDetail,
@@ -37,6 +38,7 @@ const OPERATION_TIMEOUTS: Record<XBrokerOperation, number> = {
   focus: 20_000,
   "retry-storage": 30_000,
   user: 30_000,
+  user_search: 30_000,
   user_posts: 45_000,
   tweet: 30_000,
 };
@@ -311,6 +313,10 @@ class WorkerXProvider implements XProvider {
 
   async resolveUser(handle: string, signal?: AbortSignal): Promise<XUserLookup> {
     return mapXUserLookup(await this.call("user", { handle }, signal));
+  }
+
+  async searchUsers(query: string, signal?: AbortSignal): Promise<XUserSearchResult[]> {
+    return mapXUserSearch(await this.call("user_search", { query }, signal));
   }
 
   async listUserTweets(

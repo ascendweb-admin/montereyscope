@@ -14,7 +14,6 @@ import {
 import { getCreatorById, toCreatorSummary } from "@/lib/creators/service";
 import { getCachedVideo } from "@/lib/videos/service";
 import { getCachedTranscript } from "@/lib/transcripts/service";
-import { getCacheTranscriptsEnabled } from "@/lib/settings/settings";
 import { getDb } from "@/lib/db/connection";
 
 // Video metadata comes from SQLite and must reflect refreshes immediately.
@@ -39,9 +38,10 @@ const LIVE_BADGES: Record<string, { label: string; className: string }> = {
 };
 
 /**
- * Local detail page for one cached video: metadata, the transcript panel,
- * and the "Ask AI" chat entry point. The chat panel is scope-agnostic; this
- * page grounds it in this single video's cached transcript.
+ * Local detail page for one cached video: metadata, the read-only transcript
+ * view, and the "Ask AI" chat entry point. The chat panel is scope-agnostic;
+ * this page grounds it in this single video (its captions are read in the
+ * background on the first question).
  */
 export default async function VideoDetailPage({ params }: VideoDetailPageProps) {
   const { id: rawId, videoId: rawVideoId } = await params;
@@ -70,16 +70,14 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
   const cachedAbsolute = formatAbsoluteTimestamp(video.fetchedAt);
   const liveBadge = LIVE_BADGES[video.liveStatus];
 
-  // Cache-only render: extraction runs exclusively from the panel's actions.
-  const cacheTranscripts = getCacheTranscriptsEnabled(db);
-  const cachedTranscriptRecord = cacheTranscripts ? getCachedTranscript(db, video.id) : null;
-  const initialTranscript = cachedTranscriptRecord
+  // Cache-only render: captions are fetched in the background by AI analysis.
+  const cachedTranscriptRecord = getCachedTranscript(db, video.id);
+  const transcript = cachedTranscriptRecord
     ? {
         text: cachedTranscriptRecord.plainText,
         language: cachedTranscriptRecord.language,
         captionSource: cachedTranscriptRecord.source,
         fetchedAt: cachedTranscriptRecord.fetchedAt,
-        fromCache: true,
       }
     : null;
 
@@ -176,7 +174,7 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
                 creator: creator.displayName,
                 thumbnailUrl: video.thumbnailUrl,
               }}
-              description="Grounded in this video's cached transcript."
+              description="Grounded in what is said in this video."
             />
             <a
               href={video.url}
@@ -192,11 +190,8 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
       </div>
 
       <TranscriptPanel
-        creatorId={creatorId}
-        videoId={video.id}
         videoUrl={video.url}
-        initialTranscript={initialTranscript}
-        cacheEnabled={cacheTranscripts}
+        transcript={transcript}
         platform={creatorRecord.platform}
       />
     </main>

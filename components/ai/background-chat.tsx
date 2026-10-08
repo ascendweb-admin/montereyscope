@@ -163,6 +163,7 @@ const idle: ChatEngine = {
   draft: "",
   setDraft: () => {},
   turnPhase: "idle",
+  preparing: null,
   turnError: null,
   notices: [],
   mode: "deep",

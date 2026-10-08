@@ -12,7 +12,7 @@ const {
 } = require("../lib/x-connection.cjs");
 const { createXSessionStore } = require("../lib/x-session-store.cjs");
 const { startXBroker } = require("../lib/x-broker.cjs");
-const { runWorker } = require("../lib/x-worker.cjs");
+const { runWorker, failure } = require("../lib/x-worker.cjs");
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
 function deferred() {
@@ -124,6 +124,7 @@ function createHarness(t, options = {}) {
       isServicePresent: hostOptions.isServicePresent,
       store: hostOptions.store ?? sharedStore,
       platform: hostOptions.platform,
+      log: options.log,
     });
     hosts.push(host);
     return host;
@@ -591,4 +592,101 @@ test("offline startup retries the saved session without another login window", a
   await restored.retryStorage();
   assert.equal(restored.status().connected, true);
   assert.equal(h.windows.length, 1);
+});
+
+test("transaction material stays in memory and is reused until disconnect", async (t) => {
+  let fresh = true;
+  const h = createHarness(t, {
+    worker: async (_executable, request, options) => {
+      if (request.operation === "tweet" && fresh) {
+        fresh = false;
+        options.onTransaction({ homeHtml: "<html>seed</html>", ondemandText: "bundle" });
+      }
+      return { connected: true, user: { userId: "123", handle: "reader", displayName: "Reader" } };
+    },
+  });
+  await h.host.connect();
+  h.setCookies();
+  await until(() => h.host.status().connected);
+  await h.host.read("tweet", { tweetId: "123" });
+  await h.host.read("tweet", { tweetId: "124" });
+  const reads = h.calls.filter(([, request]) => request.operation === "tweet");
+  assert.equal(reads[0][1].transaction, undefined);
+  assert.deepEqual(reads[1][1].transaction, { homeHtml: "<html>seed</html>", ondemandText: "bundle" });
+  assert(!fs.readdirSync(h.dataRoot, { recursive: true }).some((name) => String(name).includes("transaction")));
+  await h.host.disconnect();
+  await h.host.connect();
+  h.setCookies();
+  await until(() => h.host.status().connected);
+  await h.host.read("tweet", { tweetId: "125" });
+  assert.equal(h.calls.at(-1)[1].transaction, undefined);
+});
+
+test("desktop worker runner hands fresh transaction material to the caller", async () => {
+  const script = path.join(os.tmpdir(), `scope-seed-worker-${process.pid}.cjs`);
+  fs.writeFileSync(
+    script,
+    `#!${process.execPath}\nprocess.stdin.resume();process.stdin.on("end",()=>process.stdout.write(JSON.stringify({ok:true,schema_version:1,data:{found:false,tweet:null},transaction:{homeHtml:"h",ondemandText:"o"}})));`,
+    { mode: 0o755 },
+  );
+  try {
+    let seen = null;
+    await runWorker(script, { operation: "tweet", params: { tweetId: "1" } }, {
+      cwd: os.tmpdir(),
+      onTransaction: (seed) => (seen = seed),
+    });
+    assert.deepEqual(seen, { homeHtml: "h", ondemandText: "o" });
+  } finally {
+    fs.rmSync(script, { force: true });
+  }
+});
+
+test("a rate-limited read logs what X said about its quota, then waits it out", async (t) => {
+  const lines = [];
+  const h = createHarness(t, {
+    log: (line) => lines.push(line),
+    worker: async (_executable, request) => {
+      if (request.operation === "user_posts")
+        throw Object.assign(failure("rate_limited"), {
+          retryAfterSeconds: 600,
+          diagnostic: { stage: "read", httpStatus: 429, rateLimit: { limit: 50, remaining: 0, reset: 1_800_000_000 } },
+        });
+      return { connected: true, user: { userId: "123", handle: "reader", displayName: "Reader" } };
+    },
+  });
+  await h.host.connect();
+  h.setCookies();
+  await until(() => h.host.status().connected);
+  await assert.rejects(h.host.read("user_posts", { userId: "1" }), { code: "rate_limited" });
+  assert.equal(
+    lines.at(-1),
+    "X user_posts failed: rate_limited (stage read, HTTP 429, quota 0/50 left, window resets 2027-01-15T08:00:00.000Z, retrying in 600s)",
+  );
+  // The window holds locally: the next read never reaches the worker or X.
+  const before = h.calls.length;
+  await assert.rejects(h.host.read("user_posts", { userId: "1" }), { code: "rate_limited" });
+  assert.equal(h.calls.length, before);
+});
+
+test("desktop worker runner keeps only the safe parts of a failure diagnostic", async () => {
+  const script = path.join(os.tmpdir(), `scope-diag-worker-${process.pid}.cjs`);
+  const envelope = {
+    ok: false,
+    error: { code: "rate_limited", retryAfterSeconds: 42 },
+    diagnostic: { stage: "read", httpStatus: 429, rateLimit: { limit: 50, remaining: 0, reset: 9, cookie: "x" }, extra: "x" },
+  };
+  fs.writeFileSync(
+    script,
+    `#!${process.execPath}\nprocess.stdin.resume();process.stdin.on("end",()=>process.stdout.write(${JSON.stringify(JSON.stringify(envelope))}));`,
+    { mode: 0o755 },
+  );
+  try {
+    await assert.rejects(runWorker(script, { operation: "tweet", params: { tweetId: "1" } }, { cwd: os.tmpdir() }), (error) => {
+      assert.equal(error.retryAfterSeconds, 42);
+      assert.deepEqual(error.diagnostic, { stage: "read", httpStatus: 429, rateLimit: { limit: 50, remaining: 0, reset: 9 } });
+      return true;
+    });
+  } finally {
+    fs.rmSync(script, { force: true });
+  }
 });

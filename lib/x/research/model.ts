@@ -19,6 +19,7 @@ export interface ResearchCreator {
   id: number;
   displayName: string;
   handle: string | null;
+  avatarUrl: string | null;
   categoryIds: number[];
 }
 export interface ResearchPost {

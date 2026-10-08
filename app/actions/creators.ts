@@ -95,7 +95,7 @@ export async function saveCreatorAction(
       return { ok: false, message: outcome.error.message };
     }
     revalidatePath("/");
-    revalidatePath("/x-research");
+    revalidatePath("/x-dashboard");
     revalidatePath(`/channels/${outcome.creator.id}`);
     const importedTweet =
       platform === "x" && "importedTweet" in outcome
@@ -139,7 +139,7 @@ export async function removeCreatorAction(id: number): Promise<RemoveOutcome> {
       return { ok: false, message: "That creator was already removed from your library." };
     }
     revalidatePath("/");
-    revalidatePath("/x-research");
+    revalidatePath("/x-dashboard");
     revalidatePath(`/channels/${id}`);
     return { ok: true };
   } catch {

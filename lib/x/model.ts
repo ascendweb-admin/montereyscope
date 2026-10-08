@@ -147,6 +147,13 @@ export interface XTimelinePage {
   skipped: number;
 }
 
+/** One account from a people search (X's own typeahead ranking). */
+export interface XUserSearchResult extends XUserIdentity {
+  /** Legacy, Blue, business, or government verification. */
+  verified: boolean;
+  protected: boolean;
+}
+
 export interface XUserLookup {
   user: XUserIdentity;
   /** A pinned post's id when the user pinned one; used for previews only. */
@@ -174,6 +181,8 @@ export interface XProvider {
   /** Retries secure-storage setup/saving without opening X sign-in again. */
   retryStorage?(): Promise<XConnectionStatus>;
   resolveUser(handle: string, signal?: AbortSignal): Promise<XUserLookup>;
+  /** People search by name or handle, best matches first (at most 10). */
+  searchUsers(query: string, signal?: AbortSignal): Promise<XUserSearchResult[]>;
   listUserTweets(
     input: { userId: string; handle: string; cursor?: string | null; limit: number },
     signal?: AbortSignal,

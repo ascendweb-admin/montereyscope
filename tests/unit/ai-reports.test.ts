@@ -1,4 +1,12 @@
-import { readFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -558,12 +566,12 @@ describe("report job through the queue (mocked spawner)", () => {
       args.find((arg) => arg.startsWith("model_reasoning_effort="))?.split('"')[1];
 
     // Brief runs the fast model at low reasoning with the brief directive...
-    expect(modelArg(harness.spawns[0].request.args)).toBe("gpt-5.6-luna");
+    expect(modelArg(harness.spawns[0].request.args)).toBe("gpt-6-luna");
     expect(effortArg(harness.spawns[0].request.args)).toBe("low");
     expect(harness.promptOf(0)).toContain(getReportProfile("brief").directive);
     expect(harness.promptOf(0)).toContain(getReportStyle("terminal").css.trimEnd());
     // ...and deep runs the flagship at xhigh with its own brief.
-    expect(modelArg(harness.spawns[1].request.args)).toBe("gpt-5.6-sol");
+    expect(modelArg(harness.spawns[1].request.args)).toBe("gpt-6.1-sol");
     expect(effortArg(harness.spawns[1].request.args)).toBe("xhigh");
     expect(harness.promptOf(1)).toContain(getReportProfile("deep").directive);
     expect(harness.promptOf(1)).toContain(getReportStyle("swiss").css.trimEnd());
@@ -571,14 +579,70 @@ describe("report job through the queue (mocked spawner)", () => {
 
   it("fails without spawning when nothing can be materialized", async () => {
     const harness = new FakeCodexHarness([{}]);
-    const queue = createReportQueue({ db, jobsRoot, spawner: harness.spawner });
+    const prepared: string[][] = [];
+    const queue = createReportQueue({
+      db,
+      jobsRoot,
+      spawner: harness.spawner,
+      prepareTranscripts: async (videoIds) => {
+        prepared.push([...videoIds]);
+        return {
+          fetched: [],
+          failed: videoIds.map((videoId) => ({
+            videoId,
+            code: "no_captions" as const,
+            message: "No original English captions are available.",
+          })),
+        };
+      },
+    });
 
     const queued = queue.submit([VIDEO_NO_TRANSCRIPT, UNKNOWN_VIDEO]);
     const failed = await waitForStatus(queued.id, ["failed"]);
 
-    expect(failed.error).toBe("None of the selected sources has cached content yet.");
+    // Only the known video without a transcript is sent for a background fetch.
+    expect(prepared).toEqual([[VIDEO_NO_TRANSCRIPT]]);
+    expect(failed.error).toBe(
+      `Left out 1 video scope couldn't read captions for: “Video ${VIDEO_NO_TRANSCRIPT}” (no English captions).`,
+    );
     expect(failed.completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(harness.spawns.length).toBe(0);
+  });
+
+  it("fails with the generic message when nothing known was selected", async () => {
+    const harness = new FakeCodexHarness([{}]);
+    const queue = createReportQueue({ db, jobsRoot, spawner: harness.spawner });
+
+    const queued = queue.submit([UNKNOWN_VIDEO]);
+    const failed = await waitForStatus(queued.id, ["failed"]);
+
+    expect(failed.error).toBe("None of the selected sources has cached content yet.");
+    expect(harness.spawns.length).toBe(0);
+  });
+
+  it("discloses videos left out for unreadable captions in the report prompt", async () => {
+    const harness = new FakeCodexHarness([{}]);
+    const queue = createReportQueue({
+      db,
+      jobsRoot,
+      spawner: harness.spawner,
+      prepareTranscripts: async (videoIds) => ({
+        fetched: [],
+        failed: videoIds.map((videoId) => ({
+          videoId,
+          code: "unavailable_video" as const,
+          message: "The platform would not serve captions for this video.",
+        })),
+      }),
+    });
+
+    const queued = queue.submit([VIDEO_ONE, VIDEO_NO_TRANSCRIPT]);
+    const done = await waitForStatus(queued.id, ["done", "failed"]);
+
+    expect(done.status).toBe("done");
+    expect(harness.promptOf(0)).toContain(
+      `The source “Video ${VIDEO_NO_TRANSCRIPT}” could not be included at all`,
+    );
   });
 
   it("maps codex failures to a client-safe error", async () => {
@@ -623,7 +687,9 @@ describe("report job through the queue (mocked spawner)", () => {
     expect(submitted.jobDir).not.toBeNull();
     const snapshotFile = path.join(submitted.jobDir!, "transcripts", `${VIDEO_TWO}.txt`);
     const submittedEvidence = readFileSync(snapshotFile, "utf8");
-    db.prepare("UPDATE transcripts SET plain_text = 'CHANGED AFTER SUBMISSION' WHERE video_id = ?").run(VIDEO_TWO);
+    db.prepare(
+      "UPDATE transcripts SET plain_text = 'CHANGED AFTER SUBMISSION' WHERE video_id = ?",
+    ).run(VIDEO_TWO);
 
     // A held-open first job means the second one must never start.
     await new Promise((resolve) => setTimeout(resolve, 50));

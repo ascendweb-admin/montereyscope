@@ -122,6 +122,23 @@
     scrollbar-gutter: stable;
   }
 
+  /*
+   * Full-height app shells (their panes scroll, the page never does) would
+   * only show the reserved gutter as a dead strip along the right edge.
+   */
+  html:has([data-viewport-shell]) {
+    scrollbar-gutter: auto;
+  }
+
+  /*
+   * A modal dialog freezes the page behind it: the background is inert, so
+   * it should not scroll either. The reserved gutter above keeps the layout
+   * from shifting when the scrollbar disappears.
+   */
+  html:has(dialog:modal) {
+    overflow: hidden;
+  }
+
   body {
     font-family: var(--font-sans);
   }
@@ -133,6 +150,33 @@
    */
   body {
     overflow-x: clip;
+  }
+
+  /*
+   * One quiet scrollbar everywhere: a thin rounded thumb on a transparent
+   * track, no arrow buttons (Linux Chromium draws classic ones otherwise).
+   * Elements must not set scrollbar-width/scrollbar-color: Chromium ignores
+   * these pseudo-elements on any element that does.
+   */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-button {
+    display: none;
+  }
+  ::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background-clip: padding-box;
+    background-color: color-mix(in oklab, var(--muted-foreground) 35%, transparent);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
   }
 }
 

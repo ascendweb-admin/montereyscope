@@ -3,8 +3,9 @@
  * track, downloads it as WebVTT with yt-dlp, converts it to plain text,
  * and caches complete successful results. Server-only.
  *
- * Extraction is user-initiated and guarded so concurrent requests for the
- * same video collapse into one run. A failed extraction never touches the
+ * Extraction runs in the background when an analysis needs a transcript
+ * (see prepare.ts) and is guarded so concurrent requests for the same video
+ * collapse into one run. Successful results are always cached. A failed extraction never touches the
  * cached transcript or the cached feed: rows are written only after a
  * track has been fully parsed. Raw subtitle markup and local temporary
  * paths never leave this module; transcript bodies are never logged.
@@ -21,7 +22,6 @@ import {
 import { runCommand } from "@/lib/ytdlp/runner";
 import type { ExecFileResult } from "@/lib/ytdlp/runner";
 import { NETWORK_UNREACHABLE_MESSAGE, YTDLP_MISSING_MESSAGE } from "@/lib/ytdlp/user-messages";
-import { getCacheTranscriptsEnabled } from "@/lib/settings/settings";
 import { vttToPlainText, VttParseError } from "./vtt-to-text";
 import { getTranscript, saveTranscript, type TranscriptRecord } from "./repository";
 import type { ScopeDatabase } from "@/lib/db/connection";
@@ -216,7 +216,7 @@ async function performResolve(
   const deps: ResolveDeps = { ...defaultResolveDeps, ...overrides };
   const intent = deps.intent ?? "get";
   const jobDeps = { command: deps.command, run: deps.run };
-  const cacheEnabled = deps.cacheEnabled ?? getCacheTranscriptsEnabled(db);
+  const cacheEnabled = deps.cacheEnabled ?? true;
 
   // 1) Cached successful result (unless refreshing or caching is disabled).
   if (cacheEnabled && intent === "get" && !deps.selection) {

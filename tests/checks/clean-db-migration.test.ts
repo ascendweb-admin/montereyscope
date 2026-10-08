@@ -62,7 +62,11 @@ describe("clean-database migration gate", () => {
       "x_analysis_jobs",
       "x_analysis_post_results",
       "x_analysis_segments",
+      "x_dashboard_seen",
       "x_feed_state",
+      "x_insight_messages",
+      "x_insight_posts",
+      "x_insights",
       "x_research_list_members",
       "x_research_lists",
       "x_research_scope_memberships",
@@ -103,6 +107,7 @@ describe("clean-database migration gate", () => {
       "019",
       "020",
       "021",
+      "022",
     ]);
 
     // WAL + foreign keys are enabled per connection by getDb().

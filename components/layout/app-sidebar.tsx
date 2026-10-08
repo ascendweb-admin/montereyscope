@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 
 import { Brand } from "@/components/layout/brand";
 import { NavLinks } from "@/components/layout/nav-link";
-import { Separator } from "@/components/ui/separator";
 
 /**
  * Desktop sidebar with the scope identity and library navigation.
@@ -19,12 +18,6 @@ export function AppSidebar({ activity }: { activity: ReactNode }) {
       </nav>
       <div className="fixed right-4 top-3 z-30 md:static md:mt-auto md:px-3 md:pb-3">
         {activity}
-      </div>
-      <div className="hidden px-4 pb-5 md:block">
-        <Separator className="mb-4" />
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          Runs on your machine at 127.0.0.1. Data never leaves this device.
-        </p>
       </div>
     </aside>
   );

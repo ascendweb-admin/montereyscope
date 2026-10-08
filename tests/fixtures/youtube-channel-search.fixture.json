@@ -1,0 +1,117 @@
+{
+  "id": "pewdiepie",
+  "title": "pewdiepie",
+  "_type": "playlist",
+  "webpage_url": "https://www.youtube.com/results?search_query=pewdiepie&sp=EgIQAg%3D%3D",
+  "extractor_key": "YoutubeSearchURL",
+  "entries": [
+    {
+      "_type": "url",
+      "ie_key": "YoutubeTab",
+      "id": "UC-lHJZR3Gqxm24_Vd_AJ5Yw",
+      "url": "https://www.youtube.com/channel/UC-lHJZR3Gqxm24_Vd_AJ5Yw",
+      "title": "PewDiePie",
+      "description": "I make videos.",
+      "channel_follower_count": 109000000,
+      "channel_is_verified": true,
+      "uploader_id": "@PewDiePie",
+      "thumbnails": [
+        {
+          "url": "//yt3.ggpht.com/vik8mAiwHQbXiFyKfZ3__p55_VBdGvwxPpuPJBBwdbF0PjJxikXhrP-C3nLQAMAxGNd_-xQCIg=s88-c-k-c0x00ffffff-no-rj-mo",
+          "height": 88,
+          "width": 88
+        },
+        {
+          "url": "//yt3.ggpht.com/vik8mAiwHQbXiFyKfZ3__p55_VBdGvwxPpuPJBBwdbF0PjJxikXhrP-C3nLQAMAxGNd_-xQCIg=s176-c-k-c0x00ffffff-no-rj-mo",
+          "height": 176,
+          "width": 176
+        }
+      ],
+      "channel": "PewDiePie",
+      "channel_id": "UC-lHJZR3Gqxm24_Vd_AJ5Yw",
+      "channel_url": "https://www.youtube.com/channel/UC-lHJZR3Gqxm24_Vd_AJ5Yw",
+      "playlist_count": null
+    },
+    {
+      "_type": "url",
+      "ie_key": "YoutubeTab",
+      "id": "UCQ4zIVlfhsmvds7WuKeL2Bw",
+      "url": "https://www.youtube.com/channel/UCQ4zIVlfhsmvds7WuKeL2Bw",
+      "title": "PewDiePie Highlights",
+      "description": "PewdiePie Highlights and Shorts.",
+      "channel_follower_count": 1230000,
+      "channel_is_verified": null,
+      "uploader_id": "@PewDiePieHighlights",
+      "thumbnails": [
+        {
+          "url": "//yt3.ggpht.com/366fjx6HQXx0VxYtBfVt6zhqHzfP0qDSl-R2nKUWovZqXWI6XXs4rEPQR1ess4i53dHX9jy4PA=s88-c-k-c0x00ffffff-no-rj-mo",
+          "height": 88,
+          "width": 88
+        },
+        {
+          "url": "//yt3.ggpht.com/366fjx6HQXx0VxYtBfVt6zhqHzfP0qDSl-R2nKUWovZqXWI6XXs4rEPQR1ess4i53dHX9jy4PA=s176-c-k-c0x00ffffff-no-rj-mo",
+          "height": 176,
+          "width": 176
+        }
+      ],
+      "channel": "PewDiePie Highlights",
+      "channel_id": "UCQ4zIVlfhsmvds7WuKeL2Bw",
+      "channel_url": "https://www.youtube.com/channel/UCQ4zIVlfhsmvds7WuKeL2Bw",
+      "playlist_count": null
+    },
+    {
+      "_type": "url",
+      "ie_key": "YoutubeTab",
+      "id": "UCHXXEn-ezIx49iEhj_2YKoA",
+      "url": "https://www.youtube.com/channel/UCHXXEn-ezIx49iEhj_2YKoA",
+      "title": "PewDiePie.",
+      "description": null,
+      "channel_follower_count": 11,
+      "channel_is_verified": null,
+      "uploader_id": "@pewdiepie.2879",
+      "thumbnails": [
+        {
+          "url": "//yt3.googleusercontent.com/ytc/AIdro_lym3vD7Y3KmZQZw8T9FVoOTM87ATZ2JNrfDAX3x77BFw=s88-c-k-c0x00ffffff-no-rj-mo",
+          "height": 88,
+          "width": 88
+        },
+        {
+          "url": "//yt3.googleusercontent.com/ytc/AIdro_lym3vD7Y3KmZQZw8T9FVoOTM87ATZ2JNrfDAX3x77BFw=s176-c-k-c0x00ffffff-no-rj-mo",
+          "height": 176,
+          "width": 176
+        }
+      ],
+      "channel": "PewDiePie.",
+      "channel_id": "UCHXXEn-ezIx49iEhj_2YKoA",
+      "channel_url": "https://www.youtube.com/channel/UCHXXEn-ezIx49iEhj_2YKoA",
+      "playlist_count": null
+    },
+    {
+      "_type": "url",
+      "ie_key": "YoutubeTab",
+      "id": "UCV0oe4iB2HuJaIJ1U07hY1A",
+      "url": "https://www.youtube.com/channel/UCV0oe4iB2HuJaIJ1U07hY1A",
+      "title": "PewDiePie.",
+      "description": "Businessy stuff: business dot pewdiepie at gmail dot com.",
+      "channel_follower_count": 64,
+      "channel_is_verified": null,
+      "uploader_id": "@pewdiepie.3390",
+      "thumbnails": [
+        {
+          "url": "//yt3.googleusercontent.com/ytc/AIdro_kPz7CuZ8_nvsxJKXmTN-o4j9CsJORf4gSRNW5SAPxE_Q=s88-c-k-c0x00ffffff-no-rj-mo",
+          "height": 88,
+          "width": 88
+        },
+        {
+          "url": "//yt3.googleusercontent.com/ytc/AIdro_kPz7CuZ8_nvsxJKXmTN-o4j9CsJORf4gSRNW5SAPxE_Q=s176-c-k-c0x00ffffff-no-rj-mo",
+          "height": 176,
+          "width": 176
+        }
+      ],
+      "channel": "PewDiePie.",
+      "channel_id": "UCV0oe4iB2HuJaIJ1U07hY1A",
+      "channel_url": "https://www.youtube.com/channel/UCV0oe4iB2HuJaIJ1U07hY1A",
+      "playlist_count": null
+    }
+  ]
+}

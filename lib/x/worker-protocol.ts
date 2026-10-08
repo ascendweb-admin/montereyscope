@@ -19,7 +19,15 @@ export const X_WORKER_PROTOCOL_VERSION = 1;
 export const X_WORKER_SCHEMA_VERSION = 1;
 
 export type XWorkerOperation =
-  "status" | "connect" | "cancel" | "focus" | "disconnect" | "user" | "user_posts" | "tweet";
+  | "status"
+  | "connect"
+  | "cancel"
+  | "focus"
+  | "disconnect"
+  | "user"
+  | "user_search"
+  | "user_posts"
+  | "tweet";
 
 /**
  * Operations the desktop broker accepts. `retry-storage` is broker-only: the

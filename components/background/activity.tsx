@@ -314,7 +314,7 @@ export function BackgroundActivity() {
               <X />
             </Button>
           </div>
-          <div className="min-h-0 overflow-y-auto overscroll-contain p-2 [scrollbar-width:thin]">
+          <div className="min-h-0 overflow-y-auto overscroll-contain p-2">
             {tasks.length === 0 ? (
               <div className="flex flex-col items-center px-6 py-10 text-center">
                 <span className="mb-4 flex size-11 items-center justify-center rounded-full border bg-muted/40 text-muted-foreground">

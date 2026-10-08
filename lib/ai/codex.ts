@@ -22,10 +22,10 @@ import type { Readable } from "node:stream";
 import { getProviderPathOverride } from "./provider-paths";
 import { resolveProviderLaunch, type ProviderLaunch } from "./provider-command";
 
-/** Model pinned for every scope AI run. */
-export const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
+/** Model used when a scope AI run does not specify one. */
+export const DEFAULT_CODEX_MODEL = "gpt-6.1-sol";
 
-/** Reasoning effort pinned for every scope AI run. */
+/** Reasoning effort used when a scope AI run does not specify one. */
 export const DEFAULT_CODEX_REASONING_EFFORT = "xhigh";
 
 /** Sandbox policy for shell commands codex runs on its own behalf. */

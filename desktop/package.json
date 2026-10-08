@@ -2,7 +2,7 @@
   "name": "scope-desktop",
   "productName": "scope",
   "desktopName": "scope.desktop",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": true,
   "description": "Private, local-first YouTube transcript and research desktop application",
   "author": "scope",

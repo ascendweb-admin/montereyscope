@@ -159,6 +159,8 @@ export type ChatStreamEvent =
   | { type: "thread"; threadId: number; created: boolean }
   | { type: "user_message"; id: number; content: string; createdAt: string }
   | { type: "status"; phase: "thinking" | "writing" }
+  /** Captions are being fetched in the background before a new thread starts. */
+  | { type: "status"; phase: "preparing"; done: number; total: number }
   | { type: "notice"; message: string }
   | { type: "delta"; text: string }
   | { type: "message"; text: string }
@@ -192,6 +194,8 @@ export type ChatErrorCode =
   | "model_not_supported"
   | "effort_unavailable"
   | "aborted"
+  | "no_ready_sources"
+  | "materialize_failed"
   | "chat_failed";
 
 /** Client-safe message per failure kind; diagnostics stay in server logs. */
@@ -223,6 +227,9 @@ const ERROR_MESSAGE_BY_CODE: Record<ChatErrorCode, string> = {
   effort_unavailable:
     "The selected reasoning depth is no longer offered. Choose a new depth in Settings → AI providers.",
   aborted: "The turn was cancelled.",
+  no_ready_sources: "None of the selected sources could be prepared for analysis.",
+  materialize_failed:
+    "scope could not prepare the sources folder for this analysis. Check the server logs and try again.",
   chat_failed: "The chat turn failed unexpectedly.",
 };
 

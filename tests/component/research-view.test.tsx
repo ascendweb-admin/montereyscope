@@ -1,12 +1,5 @@
 // @vitest-environment happy-dom
-import {
-  cleanup,
-  fireEvent,
-  render as rtlRender,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render as rtlRender, screen, within } from "@testing-library/react";
 import { BackgroundChatProvider } from "@/components/ai/background-chat";
 import type { ReactElement } from "react";
 
@@ -17,29 +10,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ResearchView,
   type ResearchCreator,
+  type ResearchTweet,
   type ResearchVideo,
 } from "@/app/research/research-view";
 
 /**
  * The AI Research two-step flow (stage 5): creator picking, cross-creator
- * video list with search + transcripts filter, and the validation gate on
- * the chat action. Rows are labeled video vs livestream and offer inline
- * transcript extraction, so the server action and router are mocked at
- * their boundaries. fetch is mocked because opening the panel refreshes
- * thread history.
+ * source list with search, and the gate on the chat action. Rows are labeled
+ * video vs livestream; transcripts are never a user step — every video can
+ * ground a chat. The router is mocked at its boundary, and fetch because
+ * opening the panel refreshes thread history and starts the caption
+ * prefetch.
  */
 
-const { refreshMock, getTranscriptActionMock } = vi.hoisted(() => ({
-  refreshMock: vi.fn(),
-  getTranscriptActionMock: vi.fn(),
-}));
-
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ refresh: refreshMock }),
-}));
-
-vi.mock("@/components/background/operations", () => ({
-  getTranscriptAction: getTranscriptActionMock,
+  useRouter: () => ({ push: vi.fn() }),
 }));
 
 const CREATORS: ResearchCreator[] = [
@@ -64,24 +49,36 @@ function video(
     publishedAt: "2026-08-01T00:00:00Z",
     durationSeconds: 600,
     liveStatus: "not_live",
-    hasTranscript: true,
     ...overrides,
   };
 }
 
 const VIDEOS: ResearchVideo[] = [
   video({ id: "vidA000001", creatorId: 1, title: "Alpha deep dive" }),
-  video({ id: "vidA000002", creatorId: 1, title: "Alpha quick update", hasTranscript: false }),
+  video({ id: "vidA000002", creatorId: 1, title: "Alpha quick update" }),
   video({ id: "vidB000001", creatorId: 2, title: "Beta interview" }),
-  video({ id: "vidB000002", creatorId: 2, title: "Beta stream", hasTranscript: false }),
+  video({ id: "vidB000002", creatorId: 2, title: "Beta stream" }),
   video({
     id: "vidB000003",
     creatorId: 2,
     title: "Beta live show",
     liveStatus: "was_live",
-    hasTranscript: false,
   }),
 ];
+
+const SUMMARY_TWEET: ResearchTweet = {
+  id: "1234567890123456789",
+  creatorId: 1,
+  creatorName: "Alpha Channel",
+  authorHandle: "alpha",
+  authorName: "Alpha Channel",
+  text: "A post whose full text is not cached yet",
+  publishedAt: "2026-08-02T00:00:00Z",
+  url: "https://x.com/alpha/status/1234567890123456789",
+  mediaPreviewUrl: null,
+  contentStatus: "summary",
+  readyForAnalysis: false,
+};
 
 function renderView() {
   return render(<ResearchView creators={CREATORS} videos={VIDEOS} categories={CATEGORIES} />);
@@ -104,8 +101,6 @@ function chatPanel(): HTMLElement {
 const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>();
 
 beforeEach(() => {
-  refreshMock.mockClear();
-  getTranscriptActionMock.mockReset();
   fetchMock.mockReset();
   fetchMock.mockImplementation(async (input) => {
     const url = String(input);
@@ -115,6 +110,9 @@ beforeEach(() => {
         status: 200,
         json: async () => ({ threads: [] }),
       } as unknown as Response;
+    }
+    if (url === "/api/ai/prepare") {
+      return { ok: true, status: 202, json: async () => ({ pending: 0 }) } as unknown as Response;
     }
     throw new Error(`unexpected fetch: ${url}`);
   });
@@ -182,14 +180,26 @@ describe("ResearchView", () => {
     expect(screen.getByText("1 source selected")).toBeTruthy();
   });
 
-  it("filters to transcripted videos with the transcripts toggle", () => {
-    renderView();
+  it("offers the readiness filter only when posts are missing their full text", () => {
+    const { unmount } = renderView();
     pickCreator("Alpha Channel");
+    // Every video can be analyzed, so there is nothing to filter out.
+    expect(screen.queryByRole("button", { name: "Ready for analysis" })).toBeNull();
+    unmount();
 
+    render(
+      <ResearchView
+        creators={CREATORS}
+        videos={VIDEOS}
+        tweets={[SUMMARY_TWEET]}
+        categories={CATEGORIES}
+      />,
+    );
+    pickCreator("Alpha Channel");
     fireEvent.click(screen.getByRole("button", { name: "Ready for analysis" }));
 
-    expect(screen.getByText("1 of 2 sources shown")).toBeTruthy();
-    expect(screen.queryByRole("checkbox", { name: "Select Alpha quick update" })).toBeNull();
+    expect(screen.getByText("2 of 3 sources shown")).toBeTruthy();
+    expect(screen.getByRole("checkbox", { name: "Select Alpha quick update" })).toBeTruthy();
   });
 
   it("opens the chat with a cross-creator scope", () => {
@@ -208,17 +218,44 @@ describe("ResearchView", () => {
     within(panel).getByText("2 sources across 2 creators");
   });
 
-  it("keeps the chat action disabled while the selection has no transcripts", () => {
+  it("lets any video ground a chat and starts reading it in the background", () => {
     renderView();
     pickCreator("Alpha Channel");
     selectVideo("Alpha quick update");
+
+    expect(screen.queryByText(/will be skipped/)).toBeNull();
+    const chatButton = screen.getByRole("button", {
+      name: "Chat about selection",
+    }) as HTMLButtonElement;
+    expect(chatButton.disabled).toBe(false);
+
+    fireEvent.click(chatButton);
+
+    within(chatPanel()).getByText("1 source across 1 creator");
+    const prepareCall = fetchMock.mock.calls.find(([input]) => String(input) === "/api/ai/prepare");
+    expect(JSON.parse(String(prepareCall?.[1]?.body))).toEqual({ videoIds: ["vidA000002"] });
+  });
+
+  it("keeps the chat action disabled for posts without their full text", () => {
+    render(
+      <ResearchView
+        creators={CREATORS}
+        videos={VIDEOS}
+        tweets={[SUMMARY_TWEET]}
+        categories={CATEGORIES}
+      />,
+    );
+    pickCreator("Alpha Channel");
+    fireEvent.click(screen.getByRole("checkbox", { name: /Select A post whose full text/ }));
 
     expect(screen.getByText(/1 without cached content will be skipped/)).toBeTruthy();
     const chatButton = screen.getByRole("button", {
       name: "Chat about selection",
     }) as HTMLButtonElement;
     expect(chatButton.disabled).toBe(true);
-    expect(screen.getByText(/None of the selected sources has cached content yet/)).toBeTruthy();
+    expect(
+      screen.getByText(/None of the selected posts has its full text cached yet/),
+    ).toBeTruthy();
   });
 
   it("drops a creator's picks when that creator is deselected", () => {
@@ -246,89 +283,12 @@ describe("ResearchView", () => {
     expect(screen.getAllByRole("checkbox")).toHaveLength(3);
   });
 
-  it("offers inline transcript extraction on rows without one", async () => {
-    getTranscriptActionMock.mockResolvedValue({
-      ok: true,
-      transcript: {
-        text: "transcript body",
-        language: "en",
-        captionSource: "automatic",
-        fetchedAt: "2026-08-28T00:00:00.000Z",
-        fromCache: false,
-      },
-    });
+  it("never offers a transcript step on video rows", () => {
     renderView();
     pickCreator("Alpha Channel");
-
-    // Transcripted rows show a badge; untranscripted rows offer the action.
-    expect(screen.getByText("Transcript")).toBeTruthy();
-    const getButtons = screen.getAllByRole("button", { name: "Get transcript" });
-    expect(getButtons).toHaveLength(1);
-
-    fireEvent.click(getButtons[0]);
-
-    await waitFor(() => {
-      expect(refreshMock).toHaveBeenCalled();
-    });
-    expect(getTranscriptActionMock).toHaveBeenCalledWith(1, "vidA000002", "get");
-    expect(screen.getByRole("status").textContent).toContain(
-      "Transcript extracted for this video.",
-    );
-  });
-
-  it("surfaces extraction failures without refreshing", async () => {
-    getTranscriptActionMock.mockResolvedValue({
-      ok: false,
-      errorCode: "no_captions",
-      message: "This video has no captions at all — YouTube lists no subtitle tracks for it.",
-    });
-    renderView();
-    pickCreator("Alpha Channel");
-
-    fireEvent.click(screen.getByRole("button", { name: "Get transcript" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("status").textContent).toContain(
-        "This video has no captions at all — YouTube lists no subtitle tracks for it.",
-      );
-    });
-    expect(refreshMock).not.toHaveBeenCalled();
-  });
-
-  it("runs one extraction at a time across rows", async () => {
-    let release: (() => void) | undefined;
-    getTranscriptActionMock.mockReturnValue(
-      new Promise((resolve) => {
-        release = () =>
-          resolve({
-            ok: true,
-            transcript: {
-              text: "t",
-              language: "en",
-              captionSource: "automatic",
-              fetchedAt: "2026-08-28T00:00:00.000Z",
-              fromCache: false,
-            },
-          });
-      }),
-    );
-    renderView();
     pickCreator("Beta Channel");
 
-    const buttons = screen.getAllByRole("button", { name: "Get transcript" });
-    expect(buttons).toHaveLength(2);
-
-    fireEvent.click(buttons[0]);
-    // The clicked row shows progress; every other extraction stays locked.
-    expect(screen.getByRole("button", { name: /Extracting/ })).toBeTruthy();
-    for (const button of screen.getAllByRole("button", { name: "Get transcript" })) {
-      expect((button as HTMLButtonElement).disabled).toBe(true);
-    }
-
-    release?.();
-    await waitFor(() => {
-      expect(refreshMock).toHaveBeenCalled();
-    });
-    expect(screen.getAllByRole("button", { name: "Get transcript" })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: /Get transcript/ })).toBeNull();
+    expect(screen.queryByText("Transcript")).toBeNull();
   });
 });

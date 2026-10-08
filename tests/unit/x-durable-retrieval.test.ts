@@ -464,6 +464,7 @@ it("pauses when the attempt time budget expires without advancing the cursor", a
     () => provider,
     undefined,
     25,
+    0,
   );
   provider.listUserTweets = async (_input, signal) =>
     new Promise((_, reject) =>
@@ -476,6 +477,50 @@ it("pauses when the attempt time budget expires without advancing the cursor", a
   expect(engine.job(job.id).creators[0].reason).toBe("time_budget");
   expect(pending().cursor).toBeNull();
   expect(countAllTweets(db)).toBe(0);
+});
+it("does not count time spent waiting behind other creators' reads against the attempt", async () => {
+  // Every read queues for 60ms, longer than the whole 25ms active-time budget.
+  const queued = async <T>(operation: () => Promise<T>) => {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    return operation();
+  };
+  engine = new RetrievalEngine(
+    () => db,
+    () => provider,
+    queued,
+    25,
+    0,
+  );
+  source = source.slice(0, 250);
+  const job = engine.start(request());
+  expect((await engine.wait(job.id)).status).toBe("complete");
+  expect(calls).toHaveLength(3);
+});
+it("scales an automatic page budget to each creator's window", async () => {
+  const job = engine.start(
+    request({
+      maxPages: null,
+      since: "2026-09-01T00:00:00.000Z",
+      until: "2026-10-01T00:00:00.000Z",
+    }),
+  );
+  await engine.wait(job.id);
+  // 30 days at 1.5 pages per day plus the boundary margin.
+  expect(pending().maxPages).toBe(49);
+  expect(calls).toHaveLength(20); // The fixture timeline ends first.
+});
+it("continues an unfinished task with the budget of the fetch or resume that launches it", async () => {
+  const first = engine.start(request({ maxPages: 1 }));
+  await engine.wait(first.id);
+  expect(calls).toHaveLength(1);
+  const second = engine.start(request({ maxPages: 3 }));
+  await engine.wait(second.id);
+  expect(pending().maxPages).toBe(3);
+  expect(calls.map((c) => c.cursor)).toEqual([null, "100", "200", "300"]);
+  engine.resume(first.id);
+  await engine.wait(first.id);
+  expect(pending().maxPages).toBe(1);
+  expect(calls.map((c) => c.cursor).slice(-1)).toEqual(["400"]);
 });
 it("qualifies skipped provider entries and does not falsely complete initialization", async () => {
   provider.listUserTweets = async () => ({
@@ -604,4 +649,256 @@ it("does not lose a Resume click while the cancelled provider operation is still
   engine.resume(job.id);
   await engine.wait(job.id);
   expect(engine.job(job.id).status).toBe("complete");
+});
+
+describe("automatic continuation", () => {
+  const auto = (options: ConstructorParameters<typeof RetrievalEngine>[5] = {}) =>
+    new RetrievalEngine(
+      () => db,
+      () => provider,
+      undefined,
+      180_000,
+      6_000,
+      { autoContinue: true, ...options },
+    );
+
+  it("keeps walking past the page budget until the import finishes", async () => {
+    engine = auto();
+    source = source.slice(0, 450);
+    const job = engine.start(request({ maxPages: 2 }));
+    const done = await engine.wait(job.id);
+    expect(done.status).toBe("complete");
+    expect(calls.map((c) => c.cursor)).toEqual([null, "100", "200", "300", "400"]);
+    expect(checkpoint().initialized).toBe(true);
+  });
+
+  it("stops continuing after its round limit so a runaway import cannot loop forever", async () => {
+    engine = auto({ maxRounds: 1 });
+    const job = engine.start(request({ maxPages: 1 }));
+    const done = await engine.wait(job.id);
+    expect(done.status).toBe("partial");
+    expect(done.creators[0].reason).toBe("page_budget");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("waits out an X rate limit while staying visibly running, then continues", async () => {
+    vi.useFakeTimers();
+    try {
+      engine = auto();
+      let limited = true;
+      provider.listUserTweets = vi.fn(async () => {
+        if (limited) {
+          limited = false;
+          throw new XProviderError("rate_limited", undefined, 600);
+        }
+        return { items: [item(0)], nextCursor: null, exhausted: true, skipped: 0 };
+      });
+      const job = engine.start(request());
+      await vi.advanceTimersByTimeAsync(10);
+      const waiting = engine.job(job.id);
+      expect(waiting.status).toBe("running");
+      expect(waiting.creators[0].reason).toBe("waiting");
+      expect(Date.parse(waiting.creators[0].retryAt!)).toBeGreaterThan(Date.now() + 590_000);
+      await vi.advanceTimersByTimeAsync(602_000);
+      const done = await engine.wait(job.id);
+      expect(done.status).toBe("complete");
+      expect(done.creators[0].retryAt).toBeNull();
+      expect(provider.listUserTweets).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancelling during a rate-limit wait stops the work for good", async () => {
+    vi.useFakeTimers();
+    try {
+      engine = auto();
+      provider.listUserTweets = vi.fn(async () => {
+        throw new XProviderError("rate_limited", undefined, 600);
+      });
+      const job = engine.start(request());
+      await vi.advanceTimersByTimeAsync(10);
+      engine.cancel(job.id);
+      await engine.wait(job.id);
+      await vi.advanceTimersByTimeAsync(700_000);
+      expect(engine.job(job.id).status).toBe("cancelled");
+      expect(provider.listUserTweets).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries transient network failures a bounded number of times", async () => {
+    vi.useFakeTimers();
+    try {
+      engine = auto({ faultDelayMs: 1, maxFaults: 2 });
+      provider.listUserTweets = vi.fn(async () => {
+        throw new XProviderError("network");
+      });
+      const job = engine.start(request());
+      await vi.advanceTimersByTimeAsync(30_000);
+      const done = await engine.wait(job.id);
+      expect(done.status).toBe("failed");
+      // One attempt plus two retries, each with the in-attempt transient retries (3 reads).
+      expect(provider.listUserTweets).toHaveBeenCalledTimes(9);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never retries a session problem automatically", async () => {
+    engine = auto({ faultDelayMs: 1 });
+    provider.listUserTweets = vi.fn(async () => {
+      throw new XProviderError("session_expired");
+    });
+    const job = engine.start(request());
+    expect((await engine.wait(job.id)).status).toBe("failed");
+    expect(provider.listUserTweets).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers work interrupted by an app restart", async () => {
+    source = source.slice(0, 450);
+    const job = engine.start(request({ maxPages: 1 }));
+    await engine.wait(job.id);
+    persistTask({ ...pending(), status: "running", owner: "exited-process" });
+    await engine.stop();
+    engine = auto();
+    expect(engine.job(job.id).status).toBe("interrupted");
+    expect(engine.recover()).toEqual([job.id]);
+    expect((await engine.wait(job.id)).status).toBe("complete");
+  });
+});
+
+describe("newer posts first", () => {
+  const backgrounds: boolean[] = [];
+  const headFirst = (options = {}) =>
+    new RetrievalEngine(
+      () => db,
+      () => provider,
+      async (operation, opts) => {
+        backgrounds.push(opts?.background ?? false);
+        return operation();
+      },
+      180_000,
+      6_000,
+      { headDays: 2, headPages: 3, ...options },
+    );
+  beforeEach(() => {
+    backgrounds.length = 0;
+  });
+
+  it("marks a new creator synced after its newest pages and imports the rest in the background", async () => {
+    engine = headFirst();
+    const job = engine.start(request());
+    await engine.wait(job.id);
+    expect(countAllTweets(db)).toBe(2001); // Includes recurring pin.
+    // One traversal, no page read twice.
+    expect(calls.map((c) => c.cursor)).toEqual([null, ...Array.from({ length: 19 }, (_, n) => String((n + 1) * 100))]);
+    expect(checkpoint()).toMatchObject({
+      initialized: true,
+      lastSuccessfulRefresh: request().until,
+      boundaryAt: request().until,
+      pendingTask: null,
+    });
+    expect(checkpoint().anchors).toHaveLength(200);
+    expect(checkpoint("history")).toMatchObject({ since: request().since, status: "provider_end", pendingTask: null });
+    expect(pending()).toMatchObject({ mode: "history", promoted: true, status: "complete" });
+    // Resolve + three head pages ask first; the older pages yield to everything else.
+    expect(backgrounds.slice(0, 4)).toEqual([false, false, false, false]);
+    expect(backgrounds.slice(4).every(Boolean)).toBe(true);
+
+    // The next sync is an ordinary catch-up against the head anchors.
+    source = [...Array.from({ length: 15 }, (_, n) => item(-15 + n)), ...source];
+    calls = [];
+    const refresh = engine.start(request({ until: "2026-10-03T00:00:00.000Z" }));
+    expect((await engine.wait(refresh.id)).status).toBe("complete");
+    expect(engine.job(refresh.id).creators[0]).toMatchObject({ mode: "catchup", reason: "overlap" });
+    expect(countAllTweets(db)).toBe(2016);
+    expect(calls.map((c) => c.cursor)).toEqual([null, "100", "200"]);
+  });
+
+  it("hands a stalled long initial import to the background as soon as it runs again", async () => {
+    engine = headFirst({ headPages: 50 });
+    const job = engine.start(request({ maxPages: 4 }));
+    await engine.wait(job.id);
+    expect(checkpoint().initialized).toBe(false);
+    engine = headFirst({ headPages: 4 });
+    calls = [];
+    backgrounds.length = 0;
+    engine.resume(job.id);
+    await engine.wait(job.id);
+    // Promoted before reading on, from the anchors it already had.
+    expect(checkpoint()).toMatchObject({ initialized: true, lastSuccessfulRefresh: request().until });
+    expect(calls[0].cursor).toBe("400");
+    expect(backgrounds.every(Boolean)).toBe(true);
+  });
+
+  it("resumes a background import that stopped, but leaves one the user stopped alone", async () => {
+    engine = headFirst();
+    let reads = 0;
+    const list = provider.listUserTweets;
+    provider.listUserTweets = vi.fn(async (input, signal) => {
+      if (++reads === 5) throw new XProviderError("protected_account");
+      return list(input, signal);
+    });
+    const job = engine.start(request());
+    await engine.wait(job.id);
+    expect(pending()).toMatchObject({ mode: "history", status: "failed" });
+    expect(engine.resumeBackfills([creatorId])).toBe(1);
+    await engine.wait(job.id);
+    expect(pending().status).toBe("complete");
+    expect(countAllTweets(db)).toBe(2001);
+    expect(engine.resumeBackfills([creatorId])).toBe(0);
+  });
+
+  it("stops one creator's work in every job that shares it, leaving the others running", async () => {
+    const other = addCreator(db, {
+      platform: "x",
+      platformUserId: "424242",
+      youtubeChannelId: null,
+      displayName: "Other",
+      handle: "other",
+      channelUrl: "https://x.com/other",
+      avatarUrl: null,
+    }).creator.id;
+    const resolveFixture = provider.resolveUser;
+    provider.resolveUser = async (handle, signal) => {
+      const found = await resolveFixture(handle === "other" ? "fixture" : handle, signal);
+      return handle === "other" ? { ...found, user: { ...found.user, userId: "424242" } } : found;
+    };
+    // Reads hang until aborted, so both tasks stay in flight.
+    provider.listUserTweets = (_input, signal) =>
+      new Promise((_, reject) =>
+        signal!.addEventListener("abort", () => reject(new XProviderError("cancelled")), { once: true }),
+      );
+    engine = new RetrievalEngine(() => db, () => provider, async (operation) => operation());
+    const both = engine.start(request({ creatorIds: [creatorId, other] }));
+    const mine = engine.start(request({ label: "Mine" }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    engine.stopCreators([creatorId]);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const progress = engine.job(both.id).creators;
+    expect(progress.find((c) => c.creatorId === creatorId)?.status).toBe("cancelled");
+    expect(progress.find((c) => c.creatorId === other)?.status).toBe("running");
+    expect(engine.job(mine.id)).toMatchObject({ status: "partial" });
+    expect(engine.job(mine.id).finishedAt).not.toBeNull();
+    engine.stopCreators([other]);
+  });
+});
+
+it("lets waiting foreground X reads go before background ones", async () => {
+  const { runXExclusive } = await import("@/lib/x/service");
+  const order: string[] = [];
+  let release!: () => void;
+  const holder = runXExclusive(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  const older = runXExclusive(async () => void order.push("background"), { background: true });
+  const recent = runXExclusive(async () => void order.push("foreground"));
+  release();
+  await Promise.all([holder, older, recent]);
+  expect(order).toEqual(["foreground", "background"]);
 });

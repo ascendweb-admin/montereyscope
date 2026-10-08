@@ -11,12 +11,10 @@ import {
   getAiChatModeSettings,
   setAiBackend,
   setAiChatModeSettings,
-  setCacheTranscriptsEnabled,
   setPreferredCaptionLanguages,
   setRecentItemsPerTab,
   validateAiBackend,
   validateAiChatModeSettings,
-  validateCacheTranscriptsEnabled,
   validatePreferredCaptionLanguages,
   validateRecentItemsPerTab,
 } from "@/lib/settings/settings";
@@ -67,29 +65,6 @@ export async function savePreferredCaptionLanguagesAction(
     const saved = setPreferredCaptionLanguages(getDb(), validated.value);
     revalidatePath("/settings");
     return { ok: true, savedValue: saved, adjusted: validated.adjusted };
-  } catch {
-    return { ok: false, message: "The setting could not be saved. Please try again." };
-  }
-}
-
-export interface SaveCacheTranscriptsOutcome {
-  ok: boolean;
-  savedValue?: boolean;
-  message?: string;
-}
-
-/** Persists whether successful transcripts are cached locally. */
-export async function saveCacheTranscriptsAction(
-  value: unknown,
-): Promise<SaveCacheTranscriptsOutcome> {
-  const validated = validateCacheTranscriptsEnabled(value);
-  if (!validated.ok) {
-    return { ok: false, message: validated.message };
-  }
-  try {
-    const saved = setCacheTranscriptsEnabled(getDb(), validated.value);
-    revalidatePath("/settings");
-    return { ok: true, savedValue: saved };
   } catch {
     return { ok: false, message: "The setting could not be saved. Please try again." };
   }

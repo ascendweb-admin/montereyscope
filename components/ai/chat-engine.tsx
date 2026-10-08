@@ -63,6 +63,7 @@ export type ChatStreamEvent =
   | { type: "thread"; threadId: number; created: boolean }
   | { type: "user_message"; id: number; content: string; createdAt: string }
   | { type: "status"; phase: "thinking" | "writing" }
+  | { type: "status"; phase: "preparing"; done: number; total: number }
   | { type: "notice"; message: string }
   | { type: "delta"; text: string }
   | { type: "message"; text: string }
@@ -101,6 +102,20 @@ interface ActiveSegment {
 
 export type TurnPhase = "idle" | "working" | "writing";
 
+/** Background caption fetching that runs before a new conversation's first answer. */
+export interface PreparingProgress {
+  done: number;
+  total: number;
+}
+
+/** Status line for the preparing step, e.g. "Reading the videos — 3 of 8 ready…". */
+export function preparingLabel(progress: PreparingProgress): string {
+  if (progress.total === 1) {
+    return "Reading the video…";
+  }
+  return `Reading the videos — ${progress.done} of ${progress.total} ready…`;
+}
+
 /**
  * Friendly alert heading per failure code; the alert body carries the
  * actionable detail from the server. Raw codes never reach the UI text.
@@ -125,7 +140,7 @@ const ERROR_TITLES: Record<string, string> = {
   chat_failed: "Something went wrong.",
   network: "scope's server isn't reachable.",
   no_transcripts: "No cached sources in this selection.",
-  no_ready_sources: "No ready sources in this selection.",
+  no_ready_sources: "Nothing in this selection could be analyzed.",
   scope_too_large: "The selection is too large.",
   thread_not_found: "That conversation doesn't exist.",
   materialize_failed: "The sources couldn't be prepared.",
@@ -288,6 +303,8 @@ export interface ChatEngine {
   draft: string;
   setDraft: (draft: string) => void;
   turnPhase: TurnPhase;
+  /** Set while the selected videos' captions are fetched before the first answer. */
+  preparing: PreparingProgress | null;
   turnError: TurnError | null;
   /** Scope-level disclosures from the server (e.g. byte-budget truncation). */
   notices: string[];
@@ -330,6 +347,7 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
   const [threadSources, setThreadSources] = useState<SourceRef[]>([]);
   const [draft, setDraft] = useState("");
   const [turnPhase, setTurnPhase] = useState<TurnPhase>("idle");
+  const [preparing, setPreparing] = useState<PreparingProgress | null>(null);
   const [turnError, setTurnError] = useState<TurnError | null>(null);
   const [turnMode, setTurnMode] = useState<ChatModeId>(DEFAULT_CHAT_MODE);
   const [notices, setNotices] = useState<string[]>([]);
@@ -506,6 +524,7 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
     (event: ChatStreamEvent): void => {
       switch (event.type) {
         case "thread": {
+          setPreparing(null);
           setThreadId(event.threadId);
           if (event.created) {
             onThreadCreatedRef.current?.(event.threadId);
@@ -526,6 +545,13 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
           break;
         }
         case "status": {
+          if (event.phase === "preparing") {
+            setPreparing(
+              event.done < event.total ? { done: event.done, total: event.total } : null,
+            );
+            break;
+          }
+          setPreparing(null);
           if (event.phase === "writing") {
             setTurnPhase("writing");
           }
@@ -576,7 +602,12 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
         }
         case "error": {
           turnCompleteRef.current = true;
-          optimisticIdRef.current = null;
+          setPreparing(null);
+          if (optimisticIdRef.current) {
+            // The turn failed before the message was stored (e.g. none of the
+            // selected videos could be read): it goes back to the composer.
+            removeOptimisticUser();
+          }
           setTurnPhase("idle");
           if (event.code === "aborted" && stoppedByUserRef.current) {
             // The user pressed Stop; the partial text stays, clearly marked.
@@ -589,7 +620,7 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
         }
       }
     },
-    [ensureReveal, failTurn, markInterrupted, openSegment],
+    [ensureReveal, failTurn, markInterrupted, openSegment, removeOptimisticUser],
   );
 
   const runTurn = useCallback(
@@ -653,6 +684,7 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
         console.error("[ai/chat-engine] chat request failed:", error);
         failTurn("network", "scope could not reach the chat service. Is the server running?");
       } finally {
+        setPreparing(null);
         if (abortRef.current === controller) {
           abortRef.current = null;
         }
@@ -903,6 +935,7 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
     draft,
     setDraft,
     turnPhase,
+    preparing,
     turnError,
     notices,
     mode,

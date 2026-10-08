@@ -638,11 +638,15 @@ describe("ChatPanel — generate report (stage 6)", () => {
   function routeThreadAndReportRequests(
     postReports?: (body: unknown) => Response,
     postChat?: () => Response,
+    backend = "codex",
   ): void {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       if (url === "/api/ai/chat/threads") {
         return threadListBody(THREADS);
+      }
+      if (url === "/api/settings/ai-backend") {
+        return jsonResponse({ value: backend });
       }
       if (url === "/api/ai/chat") {
         if (postChat) {
@@ -687,6 +691,40 @@ describe("ChatPanel — generate report (stage 6)", () => {
     expect(reportBodies()).toEqual([{ videoIds: SCOPE, profile: "balanced", style: "editorial" }]);
     // The dialog closes once the job is queued.
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it.each([
+    ["codex", "your Codex plan’s usage"],
+    ["opencode", "your OpenCode Go usage"],
+    ["claude", "your Claude plan’s usage"],
+  ])("names the selected provider (%s) in the usage note", async (backend, usage) => {
+    routeThreadAndReportRequests(undefined, undefined, backend);
+    renderPanel();
+
+    const dialog = await openReportDialog();
+
+    await within(dialog).findByText(new RegExp(usage));
+  });
+
+  it("keeps the usage note provider-neutral when the setting cannot be read", async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === "/api/ai/chat/threads") {
+        return threadListBody(THREADS);
+      }
+      return jsonResponse({ error: { code: "failed" } }, 500);
+    });
+    renderPanel();
+
+    const dialog = await openReportDialog();
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/settings/ai-backend")).toBe(
+        true,
+      ),
+    );
+    expect(within(dialog).getByText(/your AI provider’s usage/)).toBeTruthy();
+    expect(within(dialog).queryByText(/Codex/)).toBeNull();
   });
 
   it("sends the picked profile and style", async () => {

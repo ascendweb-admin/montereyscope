@@ -15,6 +15,8 @@ interface AppDialogProps {
   children: ReactNode;
   /** Extra classes on the dialog panel. */
   className?: string;
+  /** Extra classes on the body wrapper below the header. */
+  bodyClassName?: string;
   /**
    * While busy the dialog cannot be dismissed (Escape, backdrop, close
    * button) so in-flight work is never orphaned mid-confirmation.
@@ -35,6 +37,7 @@ export function AppDialog({
   description,
   children,
   className,
+  bodyClassName,
   busy = false,
 }: AppDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -109,7 +112,7 @@ export function AppDialog({
         }
       }}
       className={cn(
-        "relative m-auto max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-lg overflow-y-auto rounded-xl border bg-card p-0 text-card-foreground shadow-lg backdrop:bg-black/50 backdrop:backdrop-blur-sm",
+        "fixed m-auto max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-lg overflow-y-auto overscroll-contain rounded-xl border bg-card p-0 text-card-foreground shadow-lg backdrop:bg-black/50 backdrop:backdrop-blur-sm",
         className,
       )}
     >
@@ -128,7 +131,7 @@ export function AppDialog({
           </p>
         ) : null}
       </div>
-      <div className="px-6 py-5">{children}</div>
+      <div className={cn("px-6 py-5", bodyClassName)}>{children}</div>
     </dialog>
   );
 }

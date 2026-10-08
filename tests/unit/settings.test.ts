@@ -281,7 +281,7 @@ describe("provider-specific chat mode settings", () => {
       codex: {
         quick: { model: "gpt-5.6-sol", reasoningEffort: "ultra" },
         balanced: { model: "gpt-6-astra", reasoningEffort: null },
-        deep: { model: "gpt-5.6-sol", reasoningEffort: "xhigh" },
+        deep: { model: "gpt-6.1-sol", reasoningEffort: "xhigh" },
       },
       opencode: {
         quick: { model: "gpt-5.6-luna", reasoningEffort: "low" },

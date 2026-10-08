@@ -1,7 +1,6 @@
 name: Monterey Intel test DMG
 
-# Run only on request. This uses a standard Intel Mac runner, which is free
-# within a private repository's included allowance. Check billing before use.
+# Run only on request, on the standard Intel runner in this public build repo.
 on:
   workflow_dispatch:
 
@@ -19,13 +18,31 @@ jobs:
       - name: Build unsigned Intel Monterey test DMG
         run: bash BUILD-MONTEREY.command
 
+      - name: Test Claude authentication and recovery on macOS
+        run: >-
+          node node_modules/vitest/vitest.mjs run
+          tests/unit/ai-claude-macos-status.test.ts
+          tests/unit/ai-auth-exec-macos.test.ts
+          tests/unit/ai-claude-auth.test.ts
+          tests/unit/ai-auth-manager-lifecycle.test.ts
+          tests/unit/ai-auth-routes.test.ts
+          tests/integration/ai-claude-process.test.ts
+          tests/component/ai-backend-setting.test.tsx
+
       - name: Verify the actual packaged backend
         run: node desktop/scripts/check-monterey-backend.cjs desktop/dist/mac/scope.app
+
+      - name: Verify DMG integrity and record checksum
+        working-directory: desktop/dist
+        run: |
+          hdiutil verify scope-0.1.10-macos-x64-monterey-claude-fix.dmg
+          shasum -a 256 scope-0.1.10-macos-x64-monterey-claude-fix.dmg > scope-0.1.10-macos-x64-monterey-claude-fix.dmg.sha256
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
-          name: scope-monterey-intel-startup-fix
-          path: desktop/dist/scope-0.1.9-macos-x64-monterey-startup-fix.dmg
+          name: scope-monterey-intel-0.1.10-claude-fix
+          path: desktop/dist/scope-0.1.10-macos-x64-monterey-claude-fix.dmg*
+          compression-level: 0
           if-no-files-found: error
           retention-days: 1

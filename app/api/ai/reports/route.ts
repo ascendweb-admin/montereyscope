@@ -9,8 +9,8 @@ import { researchError } from "@/lib/x/research/http";
  * "Generate report" action passes the current thread's scope unchanged. The
  * depth profile (brief/balanced/deep) and visual style are optional and
  * validated against the known ids; omitted values use the defaults. The
- * scope is validated against the cached feed (at least one cached transcript
- * required) before a queued row is inserted, and the job itself runs in the
+ * scope is validated against the cached feed (at least one video or one
+ * complete post required) before a queued row is inserted, and the job itself runs in the
  * background through the process-wide sequential queue — the response is 202
  * with the queued row.
  *
@@ -196,8 +196,10 @@ export async function POST(request: Request) {
     return tooLarge;
   }
 
+  // Videos without a transcript still count: the report job fetches their
+  // captions before it starts writing.
   const scope = resolveSourceScope(db, sources);
-  if (!scope.sources.some((source) => source.readyForAnalysis)) {
+  if (!scope.sources.some((source) => source.readyForAnalysis || source.kind === "video")) {
     return jsonError(
       422,
       "no_ready_sources",

@@ -741,5 +741,50 @@ export const ALL_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_x_research_turn_thread ON x_research_turns(thread_id);
       ALTER TABLE ai_reports ADD COLUMN research_html TEXT;
     `,
+  },  {
+    id: "022",
+    name: "x_dashboard_seen_and_insights",
+    sql: `
+      -- When each dashboard scope ('all' or 'list:<id>') was last viewed; drives unread counts.
+      CREATE TABLE x_dashboard_seen (
+        scope_key TEXT PRIMARY KEY,
+        seen_at TEXT NOT NULL
+      );
+      -- One AI analysis of a feed scope, with its follow-up conversation.
+      CREATE TABLE x_insights (
+        id TEXT PRIMARY KEY,
+        list_id INTEGER REFERENCES x_research_lists(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        preset TEXT,
+        scope_json TEXT NOT NULL,
+        post_count INTEGER NOT NULL,
+        backend TEXT NOT NULL,
+        model TEXT NOT NULL,
+        reasoning_effort TEXT,
+        session_id TEXT,
+        status TEXT NOT NULL CHECK (status IN ('running', 'complete', 'failed', 'cancelled')),
+        error TEXT,
+        report_id INTEGER,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      CREATE INDEX idx_x_insights_created ON x_insights(created_at DESC);
+      CREATE TABLE x_insight_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        insight_id TEXT NOT NULL REFERENCES x_insights(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'complete'
+          CHECK (status IN ('running', 'complete', 'failed', 'cancelled')),
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      CREATE INDEX idx_x_insight_messages ON x_insight_messages(insight_id, id);
+      -- The posts an insight read, frozen at creation so citations and follow-ups stay stable.
+      CREATE TABLE x_insight_posts (
+        insight_id TEXT NOT NULL REFERENCES x_insights(id) ON DELETE CASCADE,
+        tweet_id TEXT NOT NULL,
+        PRIMARY KEY (insight_id, tweet_id)
+      );
+    `,
   },
 ];

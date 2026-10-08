@@ -67,6 +67,34 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(client._auth_token, 'synthetic')
         self.assertEqual(client._ct0, 'csrf')
 
+    def test_people_search_reads_typeahead_users_only(self):
+        from unittest.mock import MagicMock
+        client = MagicMock()
+        client._api_request.return_value = dict(users=[
+            dict(id_str='123', screen_name='PewDiePie', name='PewDiePie', ext_is_blue_verified=True,
+                 profile_image_url_https='https://pbs.twimg.com/profile_images/1/a_normal.jpg'),
+            dict(id=456, screen_name='quiet_one', name=' ', is_protected=True, profile_image_url_https='http://insecure'),
+            dict(id_str='789', screen_name='not a handle', name='Broken'),
+            'garbage',
+        ], topics=[dict(topic='ignored')])
+        with patch.object(worker, 'client_for', return_value=(client, {})):
+            result = worker.dispatch(dict(protocol=1, operation='user_search', params=dict(query=' pewdiepie '),
+                                          credentials=dict(cookieHeader='synthetic')))
+        url = client._api_request.call_args.args[0]
+        self.assertTrue(url.startswith('https://x.com/i/api/1.1/search/typeahead.json?'))
+        self.assertIn('q=pewdiepie&', url)
+        self.assertEqual(result['users'], [
+            dict(userId='123', handle='PewDiePie', displayName='PewDiePie',
+                 avatarUrl='https://pbs.twimg.com/profile_images/1/a_normal.jpg', verified=True, protected=False),
+            dict(userId='456', handle='quiet_one', displayName='quiet_one', avatarUrl=None, verified=False, protected=True),
+        ])
+        for bad in ('', 'x' * 101, 'line\nbreak', None):
+            with self.assertRaises(worker.Failure):
+                worker.search_users(client, bad)
+        client._api_request.return_value = dict(errors=[])
+        with self.assertRaises(worker.Failure):
+            worker.search_users(client, 'pewdiepie')
+
     def test_full_text_entities_nullable_metrics_and_ids(self):
         raw = post()
         raw['note_tweet'] = dict(note_tweet_results=dict(result=dict(text='long 📈 &amp; note ' * 100)))
@@ -134,6 +162,53 @@ class NormalizationTests(unittest.TestCase):
             third = worker.dispatch(request)
             self.assertEqual([item['tweet']['id'] for page in [first, second, third] for item in page['items']], ['1','2','3','4','5'])
             self.assertEqual(client.variables['userId'], '123')
+
+    def test_timeline_reads_never_look_up_the_handle_again(self):
+        class Client:
+            calls = []
+
+            def _graphql_get(self, operation, variables, _features):
+                self.calls.append(operation)
+                return dict(data=dict(user=dict(result=dict(timeline_v2=dict(timeline=dict(
+                    instructions=timeline([post('1')])))))))
+        client = Client()
+        with patch.object(worker, 'client_for', return_value=(client, {})):
+            worker.dispatch(dict(protocol=1, operation='user_posts', credentials=dict(cookieHeader='synthetic'),
+                                 params=dict(userId='123', handle='author', limit=20)))
+        self.assertEqual(client.calls, ['UserTweets'])
+
+    def test_transaction_seed_shape_is_validated(self):
+        self.assertIsNone(worker.transaction_seed(None))
+        self.assertIsNone(worker.transaction_seed(dict(homeHtml='', ondemandText='x')))
+        self.assertIsNone(worker.transaction_seed(dict(homeHtml='x' * (worker.MAX_SEED_HTML + 1), ondemandText='x')))
+        self.assertEqual(worker.transaction_seed(dict(homeHtml='<html>', ondemandText='js', extra=1)),
+                         dict(homeHtml='<html>', ondemandText='js'))
+
+    def test_seeded_client_skips_homepage_download_and_fresh_seed_is_returned(self):
+        seed = dict(homeHtml='<html></html>', ondemandText='js')
+        with patch('twitter_cli.client.ClientTransaction') as transaction, \
+             patch('twitter_cli.client._update_features_from_html'), \
+             patch('twitter_cli.client._get_cffi_session') as session:
+            worker.client_for('auth_token=a; ct0=b', seed)
+            transaction.assert_called_once()
+            session.assert_not_called()
+        worker.FRESH_TRANSACTION.clear()
+        with patch('twitter_cli.client.TwitterClient._ensure_client_transaction'):
+            client, _ = worker.client_for('auth_token=a; ct0=b')
+            client._save_ct_cache('<html>fresh</html>', 'bundle')
+        self.assertEqual(worker.FRESH_TRANSACTION, dict(homeHtml='<html>fresh</html>', ondemandText='bundle'))
+        worker.FRESH_TRANSACTION.clear()
+
+    def test_rate_limit_wait_follows_x_headers(self):
+        self.assertEqual(worker.retry_after({'retry-after': '30'}, now=1000), 30)
+        self.assertEqual(worker.retry_after({'x-rate-limit-reset': '1600'}, now=1000), 601)
+        self.assertEqual(worker.retry_after({'x-rate-limit-reset': '900'}, now=1000), 60)
+        self.assertEqual(worker.retry_after({'x-rate-limit-reset': '99999'}, now=1000), 60)
+        self.assertEqual(worker.retry_after({}, now=1000), 60)
+        self.assertEqual(worker.rate_limit({'x-rate-limit-limit': '50', 'x-rate-limit-remaining': '0',
+                                            'x-rate-limit-reset': '1600'}),
+                         dict(limit=50, remaining=0, reset=1600))
+        self.assertIsNone(worker.rate_limit({}))
 
     def test_upstream_constructor_and_private_read_contract(self):
         import inspect

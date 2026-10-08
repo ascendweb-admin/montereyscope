@@ -1,9 +1,6 @@
 "use client";
 
-import { useBackgroundTasks } from "@/components/background/task-store";
-
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useId, useMemo, useState } from "react";
 import {
   ArrowUpRight,
@@ -18,17 +15,14 @@ import {
   X,
 } from "lucide-react";
 
-import { getTranscriptAction } from "@/components/background/operations";
 import { ChatPanel } from "@/components/ai/chat-panel";
 import type { ChatSource } from "@/components/ai/citation";
 import { ScopeSelectionBar, type ScopeSelectionNote } from "@/components/ai/scope-selection-bar";
 import { creatorAvatarStyle } from "@/components/library/creator-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/pending";
 import { XLogo } from "@/components/ui/platform-logos";
 import { SelectionCheckbox } from "@/components/ui/selection-checkbox";
-import { useToast } from "@/components/ui/toast";
 import { localAvatarSrc } from "@/lib/creators/avatar";
 import { sourceKey, type SourceRef } from "@/lib/content/model";
 import { formatDate, formatDuration } from "@/lib/format";
@@ -65,7 +59,6 @@ export interface ResearchVideo {
   durationSeconds: number | null;
   /** Same stored live status that splits the channel tabs. */
   liveStatus: "not_live" | "is_live" | "was_live" | "upcoming" | "unknown";
-  hasTranscript: boolean;
 }
 
 export interface ResearchTweet {
@@ -93,8 +86,9 @@ interface ResearchViewProps {
 
 type ResearchItem = ({ kind: "video" } & ResearchVideo) | ({ kind: "tweet" } & ResearchTweet);
 
+/** Videos are always analyzable (captions are read on demand); posts need full text. */
 function itemReady(item: ResearchItem): boolean {
-  return item.kind === "video" ? item.hasTranscript : item.readyForAnalysis;
+  return item.kind === "video" || item.readyForAnalysis;
 }
 
 function itemLabel(item: ResearchItem): string {
@@ -107,10 +101,10 @@ function itemLabel(item: ResearchItem): string {
  * posts — ending in the shared chat panel. Search and the "Ready for
  * analysis" filter narrow the list without ever discarding a selection made
  * from a previous view; deselecting a creator does drop that creator's
- * picks, since they are no longer part of the visible universe. Rows without
- * cached content offer an inline extraction (videos, one yt-dlp job at a
- * time), and the chat action stays honestly disabled until the selection
- * contains at least one ready source.
+ * picks, since they are no longer part of the visible universe. Videos are
+ * always analyzable — their captions are read in the background when the
+ * chat starts — and the chat action stays honestly disabled only when the
+ * selection holds nothing but posts without their full text.
  */
 export function ResearchView({ creators, videos, tweets = [], categories }: ResearchViewProps) {
   const [selectedCreatorIds, setSelectedCreatorIds] = useState<ReadonlySet<number>>(
@@ -124,19 +118,8 @@ export function ResearchView({ creators, videos, tweets = [], categories }: Rese
   >(() => new Set());
   const [chatOpen, setChatOpen] = useState(false);
   const [note, setNote] = useState<ScopeSelectionNote | null>(null);
-  /** The row currently running an inline transcript extraction, if any. */
-  const [localExtractingVideoId, setExtractingVideoId] = useState<string | null>(null);
-  const tasks = useBackgroundTasks();
-  const activeExtraction = tasks.find(
-    (task) => task.key.startsWith("transcript:") && task.status === "running",
-  );
-  const extractingVideoId =
-    localExtractingVideoId ??
-    (activeExtraction ? activeExtraction.key.slice("transcript:".length) : null);
 
   const baseId = useId();
-  const router = useRouter();
-  const { showToast, toastElement } = useToast();
 
   // Everything the chosen creators contribute, newest first across kinds.
   const universe = useMemo<ResearchItem[]>(() => {
@@ -321,29 +304,6 @@ export function ResearchView({ creators, videos, tweets = [], categories }: Rese
     setChatOpen(true);
   };
 
-  // Quick per-row transcript extraction: cache-first get with the user's
-  // preferred languages. One yt-dlp job at a time; the list re-renders from
-  // the server on success so the row flips to its Transcript badge.
-  const extractTranscript = async (video: ResearchVideo): Promise<void> => {
-    if (extractingVideoId !== null) {
-      return;
-    }
-    setExtractingVideoId(video.id);
-    const result = await getTranscriptAction(video.creatorId, video.id, "get");
-    setExtractingVideoId(null);
-    if (!result.ok) {
-      showToast(
-        result.errorCode === "language_choice"
-          ? "None of your preferred caption languages is available for this video — open it to pick a track."
-          : result.message,
-        "error",
-      );
-      return;
-    }
-    showToast("Transcript extracted for this video.", "success");
-    router.refresh();
-  };
-
   // Closing the panel when its scope empties adjusts state during render —
   // not in an effect — per React's guidance for reacting to derived changes
   // (the same pattern the chat panel uses for scope resets).
@@ -362,7 +322,7 @@ export function ResearchView({ creators, videos, tweets = [], categories }: Rese
   const disabledHint =
     selectedKeys.size === 0
       ? "Select at least one source to chat about it."
-      : "None of the selected sources has cached content yet. Fetch transcripts or posts first.";
+      : "None of the selected posts has its full text cached yet. Fetch them from the creator's page first.";
   const scopeCreatorCount = useMemo(() => {
     const keys = new Set(plan.sources.map((source) => sourceKey(source)));
     return new Set(
@@ -379,8 +339,8 @@ export function ResearchView({ creators, videos, tweets = [], categories }: Rese
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">AI Research</h1>
         <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-          Pick creators, choose any of their cached videos and X posts, and ask AI about them
-          together — grounded in the cached content.
+          Pick creators, choose any of their videos and X posts, and ask AI about them together —
+          answers are grounded in what they actually say.
         </p>
       </header>
 
@@ -567,20 +527,22 @@ export function ResearchView({ creators, videos, tweets = [], categories }: Rese
                   </button>
                 ) : null}
               </div>
-              <button
-                type="button"
-                aria-pressed={readyOnly}
-                onClick={() => setReadyOnly((value) => !value)}
-                className={cn(
-                  "inline-flex h-9 shrink-0 items-center gap-2 rounded-md border px-3 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
-                  readyOnly
-                    ? "border-ring bg-accent text-accent-foreground"
-                    : "bg-card text-muted-foreground shadow-sm hover:bg-accent/50 hover:text-foreground",
-                )}
-              >
-                <Filter aria-hidden="true" className="size-4" />
-                Ready for analysis
-              </button>
+              {readyOnly || universe.some((item) => !itemReady(item)) ? (
+                <button
+                  type="button"
+                  aria-pressed={readyOnly}
+                  onClick={() => setReadyOnly((value) => !value)}
+                  className={cn(
+                    "inline-flex h-9 shrink-0 items-center gap-2 rounded-md border px-3 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
+                    readyOnly
+                      ? "border-ring bg-accent text-accent-foreground"
+                      : "bg-card text-muted-foreground shadow-sm hover:bg-accent/50 hover:text-foreground",
+                  )}
+                >
+                  <Filter aria-hidden="true" className="size-4" />
+                  Ready for analysis
+                </button>
+              ) : null}
               <p className="text-xs text-muted-foreground sm:ml-auto">
                 {visible.length} of {universe.length} {universe.length === 1 ? "source" : "sources"}{" "}
                 shown
@@ -618,9 +580,6 @@ export function ResearchView({ creators, videos, tweets = [], categories }: Rese
                       checkboxId={`${baseId}-video-${item.id}`}
                       selected={selectedKeys.has(sourceKey(item))}
                       onToggle={() => toggleItem(item)}
-                      extractionPending={extractingVideoId !== null}
-                      extractingThis={extractingVideoId === item.id}
-                      onExtract={() => void extractTranscript(item)}
                     />
                   ) : (
                     <ResearchTweetRow
@@ -664,8 +623,6 @@ export function ResearchView({ creators, videos, tweets = [], categories }: Rese
         sources={sources}
         description={description}
       />
-
-      {toastElement}
     </main>
   );
 }
@@ -741,18 +698,11 @@ function ResearchRow({
   checkboxId,
   selected,
   onToggle,
-  extractionPending,
-  extractingThis,
-  onExtract,
 }: {
   video: ResearchVideo;
   checkboxId: string;
   selected: boolean;
   onToggle: () => void;
-  /** True while any row runs an inline extraction — one yt-dlp job at a time. */
-  extractionPending: boolean;
-  extractingThis: boolean;
-  onExtract: () => void;
 }) {
   return (
     <li
@@ -801,33 +751,6 @@ function ResearchRow({
           </span>
         </label>
         <SourceKindBadge liveStatus={video.liveStatus} />
-        {video.hasTranscript ? (
-          <Badge variant="secondary" className="shrink-0 gap-1">
-            <FileText aria-hidden="true" className="size-3" />
-            Transcript
-          </Badge>
-        ) : (
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 shrink-0 gap-1.5 px-2.5 text-xs"
-            disabled={extractionPending}
-            aria-busy={extractingThis}
-            onClick={onExtract}
-          >
-            {extractingThis ? (
-              <>
-                <Spinner className="size-3.5" />
-                Extracting…
-              </>
-            ) : (
-              <>
-                <FileText aria-hidden="true" className="size-3.5" />
-                Get transcript
-              </>
-            )}
-          </Button>
-        )}
         <a
           href={`/channels/${video.creatorId}/videos/${video.id}`}
           aria-label={`Open ${video.title}`}

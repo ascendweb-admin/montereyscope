@@ -44,6 +44,7 @@ const execFileAsync = promisify(execFile);
 
 const { createXConnection } = require("./lib/x-connection.cjs");
 const { startXBroker } = require("./lib/x-broker.cjs");
+const { createRumbleSearch, startRumbleSearchBroker } = require("./lib/rumble-search.cjs");
 const { runWorker } = require("./lib/x-worker.cjs");
 const { revealMainWindow, startupWindowAvailable } = require("./lib/window-lifecycle.cjs");
 const {
@@ -55,6 +56,7 @@ const {
 } = require("./lib/x-storage-policy.cjs");
 let xConnection = null;
 let xBroker = null;
+let rumbleSearchBroker = null;
 
 const APP_ID = "com.scope.desktop";
 const isSmokeRun = process.env.SCOPE_DESKTOP_SMOKE === "1";
@@ -584,6 +586,12 @@ function startBackend(port, token) {
     env.SCOPE_X_BROKER_ORIGIN = xBroker.origin;
     env.SCOPE_X_BROKER_TOKEN = xBroker.token;
   }
+  delete env.SCOPE_RUMBLE_SEARCH_ORIGIN;
+  delete env.SCOPE_RUMBLE_SEARCH_TOKEN;
+  if (rumbleSearchBroker) {
+    env.SCOPE_RUMBLE_SEARCH_ORIGIN = rumbleSearchBroker.origin;
+    env.SCOPE_RUMBLE_SEARCH_TOKEN = rumbleSearchBroker.token;
+  }
   delete env.SCOPE_X_FAKE_PROVIDER;
   delete env.SCOPE_X_WORKER;
   delete env.LOCAL_SCOPE_X_WORKER;
@@ -667,6 +675,7 @@ async function completeShutdown(exitCode = 0) {
   shuttingDown = true;
   await xConnection?.close();
   await xBroker?.close();
+  await rumbleSearchBroker?.close();
   await stopBackend();
   shutdownComplete = true;
   log(`Desktop host exiting with code ${exitCode}.`);
@@ -934,8 +943,14 @@ async function bootstrap() {
     executable: workerPath,
     runWorker,
     isServicePresent: secretServiceAvailable,
+    log,
   });
   xBroker = await startXBroker(xConnection);
+  // An in-memory partition: search requests carry no app cookies or tokens.
+  const rumbleSearchSession = session.fromPartition("scope-rumble-search");
+  rumbleSearchBroker = await startRumbleSearchBroker(
+    createRumbleSearch({ fetchImpl: (url, options) => rumbleSearchSession.fetch(url, options) }),
+  );
   const xOperations = Object.freeze(
     Object.assign(Object.create(null), {
       status: () => xConnection.status(),

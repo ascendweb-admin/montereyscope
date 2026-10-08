@@ -17,8 +17,6 @@ export interface VideoCardModel {
   publishedLabel: string | null;
   durationLabel: string | null;
   liveStatus: "not_live" | "is_live" | "was_live" | "upcoming" | "unknown";
-  /** Whether a cached transcript exists — shown while selecting (stage 5). */
-  hasTranscript: boolean;
 }
 
 /** When present, the card is a selection target instead of a link. */
@@ -137,11 +135,6 @@ export function VideoCard({
   return (
     <div className={cn(CARD_CLASSES, selection.selected ? SELECTED_CLASSES : undefined)}>
       {body}
-      {!video.hasTranscript ? (
-        <span className="absolute top-2 right-2 z-20 rounded-md bg-black/80 px-1.5 py-0.5 text-[11px] font-medium text-white">
-          No transcript
-        </span>
-      ) : null}
       <SelectionCheckbox
         id={checkboxId}
         className="absolute top-2 left-2 z-20"

@@ -9,6 +9,7 @@ import {
   ResearchInputError,
 } from "@/lib/x/research/repository";
 import { getRetrievalEngine } from "@/lib/x/research/retrieval";
+import { MAX_PAGE_BUDGET } from "@/lib/x/research/retrieval-model";
 export const dynamic = "force-dynamic";
 export function GET(request: Request) {
   try {
@@ -47,7 +48,9 @@ export async function POST(request: Request) {
       return value;
     };
     const initialDays = bounded(input.initialDays, 30, 365);
-    const maxPages = bounded(input.maxPages, 10, 100);
+    // Omitted or null scales each creator's page budget to its retrieval window.
+    const maxPages =
+      input.maxPages == null ? null : bounded(input.maxPages, MAX_PAGE_BUDGET, MAX_PAGE_BUDGET);
     let bounds = {
       since: new Date(Date.now() - initialDays * 86400000).toISOString(),
       until: new Date().toISOString(),

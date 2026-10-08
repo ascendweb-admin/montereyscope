@@ -37,19 +37,13 @@ interface ChannelViewProps {
   creator: CreatorRecord;
   /** Video platforms only; X creators pass the timeline instead. */
   feed?: CreatorCachedFeed;
-  /** Per-video transcript availability, resolved on the server via resolveScope. */
-  hasTranscriptByVideoId?: ReadonlyMap<string, boolean>;
   /** X creators only. */
   timeline?: CreatorTimelineData;
   categories: readonly CategorySummary[];
   creatorCategories: CreatorCategory[];
 }
 
-function toCardModel(
-  creatorId: number,
-  video: VideoRecord,
-  hasTranscriptByVideoId: ReadonlyMap<string, boolean>,
-): VideoCardModel {
+function toCardModel(creatorId: number, video: VideoRecord): VideoCardModel {
   return {
     videoId: video.id,
     title: video.title,
@@ -58,7 +52,6 @@ function toCardModel(
     publishedLabel: formatDate(video.publishedAt),
     durationLabel: video.durationSeconds === null ? null : formatDuration(video.durationSeconds),
     liveStatus: video.liveStatus,
-    hasTranscript: hasTranscriptByVideoId.get(video.id) ?? false,
   };
 }
 
@@ -71,7 +64,6 @@ function toCardModel(
 export function ChannelView({
   creator,
   feed,
-  hasTranscriptByVideoId,
   timeline,
   categories,
   creatorCategories,
@@ -95,13 +87,8 @@ export function ChannelView({
     livestreams: [],
     totalCachedCount: 0,
   };
-  const transcriptById = hasTranscriptByVideoId ?? new Map<string, boolean>();
-  const videoCards = videoFeed.videos.map((video) =>
-    toCardModel(creator.id, video, transcriptById),
-  );
-  const livestreamCards = videoFeed.livestreams.map((video) =>
-    toCardModel(creator.id, video, transcriptById),
-  );
+  const videoCards = videoFeed.videos.map((video) => toCardModel(creator.id, video));
+  const livestreamCards = videoFeed.livestreams.map((video) => toCardModel(creator.id, video));
 
   return (
     <main id="main" className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 md:px-8 md:py-10">

@@ -10,6 +10,7 @@ const OPERATIONS = new Set([
   "focus",
   "retry-storage",
   "user",
+  "user_search",
   "user_posts",
   "tweet",
 ]);
@@ -22,6 +23,14 @@ function validateParams(operation, params) {
   )
     throw failure("invalid_response");
   if (operation === "tweet" && !/^\d{1,20}$/.test(params.tweetId || ""))
+    throw failure("invalid_response");
+  if (
+    operation === "user_search" &&
+    (typeof params.query !== "string" ||
+      params.query.trim().length === 0 ||
+      params.query.length > 100 ||
+      /[\u0000-\u001f\u007f]/.test(params.query))
+  )
     throw failure("invalid_response");
   if (operation === "user_posts") {
     if (
@@ -77,7 +86,7 @@ async function startXBroker(connection) {
         throw failure("invalid_response");
       const params = request.params ?? {};
       validateParams(request.operation, params);
-      const data = ["user", "user_posts", "tweet"].includes(request.operation)
+      const data = ["user", "user_search", "user_posts", "tweet"].includes(request.operation)
         ? await connection.read(request.operation, params)
         : request.operation === "retry-storage"
           ? await connection.retryStorage()

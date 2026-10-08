@@ -1,12 +1,7 @@
 import { SettingsForm } from "./settings-form";
 import { getAiAuthStatus } from "@/lib/ai/auth";
-import {
-  getAiBackend,
-  getAiChatModeSettings,
-  getCacheTranscriptsEnabled,
-  getRecentItemsPerTab,
-} from "@/lib/settings/settings";
-import { getCacheCounts } from "@/lib/maintenance/service";
+import { getAiBackend, getAiChatModeSettings, getRecentItemsPerTab } from "@/lib/settings/settings";
+import { getCacheCounts, getCacheSizes } from "@/lib/maintenance/service";
 import { getXConnectionStatus } from "@/lib/x";
 import { getDb } from "@/lib/db/connection";
 
@@ -25,8 +20,8 @@ export const metadata = {
 export default async function SettingsPage() {
   const db = getDb();
   const recentItemsPerTab = getRecentItemsPerTab(db);
-  const cacheTranscriptsEnabled = getCacheTranscriptsEnabled(db);
   const counts = getCacheCounts(db);
+  const sizes = getCacheSizes(db);
   const aiBackend = getAiBackend(db);
   const aiChatModeSettings = getAiChatModeSettings(db);
   // Rendered on the server so the AI section shows real login state with no
@@ -40,17 +35,17 @@ export default async function SettingsPage() {
       <div className="mb-8">
         <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Pick the AI backend and tune how scope refreshes feeds and extracts transcripts.
-          Everything applies on this machine only.
+          Pick the AI backend and tune how scope refreshes feeds. Everything applies on this machine
+          only.
         </p>
       </div>
 
       <SettingsForm
         currentValue={recentItemsPerTab}
-        cacheTranscriptsEnabled={cacheTranscriptsEnabled}
         cachedTranscriptCount={counts.cachedTranscripts}
         cachedVideoCount={counts.cachedVideos}
         cachedTweetCount={counts.cachedTweets}
+        cacheSizes={sizes}
         aiBackend={aiBackend}
         aiChatModeSettings={aiChatModeSettings}
         aiAuthStatus={aiAuthStatus}

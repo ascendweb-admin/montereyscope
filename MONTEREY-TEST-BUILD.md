@@ -1,7 +1,7 @@
 # Scope for Intel / macOS 12: private test build
 
-This package is a separate copy of Scope 0.1.9 from commit
-`652309da75aafcdfdd9db4428d87fcbbd7b416dd`. It uses **Electron 43.7.7**
+This package is a separate copy of Scope 0.1.10 from commit
+`f502960dc16524d47bd77da8b65f6b210559ba98`. It uses **Electron 43.7.7**
 and targets **macOS 12 (Monterey), Intel x64**. Its interface and features
 come from that source snapshot. The original project retains Electron 44.2.0.
 
@@ -33,7 +33,7 @@ enabled; the command does not verify or launch the completed installer.
 The output folder opens when the build finishes. The installer is:
 
 ```text
-desktop/dist/scope-0.1.9-macos-x64-monterey-startup-fix.dmg
+desktop/dist/scope-0.1.10-macos-x64-monterey-claude-fix.dmg
 ```
 
 Open the DMG, drag **scope** into **Applications**, eject it, and launch
@@ -68,7 +68,7 @@ The workflow builds this Monterey copy, not the main project's Electron 44
 release. A completed cloud build does not verify that the app runs on
 Monterey; the friend still needs to test the installer on his Mac.
 
-The current `monterey-startup-fix` installer separates desktop readiness
+The current `monterey-claude-fix` installer separates desktop readiness
 from the downloader version check. Before uploading it, the cloud workflow
 starts the backend using the Electron runtime from the actual app bundle,
 checks the database, authenticated startup endpoint, library page, and bundled

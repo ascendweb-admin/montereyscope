@@ -9,13 +9,7 @@ import { ScopeSelectionBar, type ScopeSelectionNote } from "@/components/ai/scop
 import { FeedTabs } from "@/components/channel/feed-tabs";
 import type { VideoCardModel } from "@/components/channel/video-card";
 import { Button } from "@/components/ui/button";
-import {
-  formatScopeCapMessage,
-  formatSkippedTranscripts,
-  MAX_SCOPE_VIDEOS,
-  planChatScope,
-  type ScopeCandidate,
-} from "@/lib/ai/scope-selection";
+import { formatScopeCapMessage, MAX_SCOPE_VIDEOS, planChatScope } from "@/lib/ai/scope-selection";
 
 interface SelectableFeedProps {
   videos: VideoCardModel[];
@@ -27,10 +21,9 @@ interface SelectableFeedProps {
 /**
  * The channel feed with selection (stage 5): a "Select videos" toggle puts
  * checkboxes on every card across both tabs, and the floating action bar —
- * which only appears once something is selected — validates the selection
- * against cached-transcript availability before opening the shared chat
- * panel. Videos without transcripts stay selectable but are excluded from
- * the chat scope, with a note naming exactly what was skipped.
+ * which only appears once something is selected — opens the shared chat
+ * panel over the selection. Every video can be analyzed: captions are read
+ * in the background when the chat starts.
  */
 export function SelectableFeed({
   videos,
@@ -45,18 +38,15 @@ export function SelectableFeed({
 
   // The scope follows the feed order (videos, then livestreams), not click
   // order, so the same selection always produces the same conversation key.
-  const candidates = useMemo<ScopeCandidate[]>(
+  const plan = useMemo(
     () =>
-      [...videos, ...livestreams]
-        .filter((video) => selectedIds.has(video.videoId))
-        .map((video) => ({
-          id: video.videoId,
-          title: video.title,
-          hasTranscript: video.hasTranscript,
-        })),
+      planChatScope(
+        [...videos, ...livestreams]
+          .filter((video) => selectedIds.has(video.videoId))
+          .map((video) => ({ id: video.videoId, title: video.title })),
+      ),
     [videos, livestreams, selectedIds],
   );
-  const plan = useMemo(() => planChatScope(candidates), [candidates]);
   // Feed order doubles as the citation index: the chat panel resolves the
   // answers' transcript references into titled source chips against it.
   const sources = useMemo<ChatSource[]>(
@@ -101,18 +91,9 @@ export function SelectableFeed({
 
   const openChat = (): void => {
     if (plan.videoIds.length === 0) {
-      setNote({
-        tone: "danger",
-        message:
-          "None of the selected videos has a cached transcript yet. Open a video and extract captions before chatting about it.",
-      });
       return;
     }
-    setNote(
-      plan.skippedNoTranscript.length > 0
-        ? { tone: "info", message: formatSkippedTranscripts(plan.skippedNoTranscript) }
-        : null,
-    );
+    setNote(null);
     setChatOpen(true);
   };
 
@@ -128,10 +109,8 @@ export function SelectableFeed({
     }
   }
 
-  const skippedCount = plan.skippedNoTranscript.length;
   const description = creatorName
-    ? `${plan.videoIds.length} ${plan.videoIds.length === 1 ? "video" : "videos"} from ${creatorName}` +
-      (skippedCount > 0 ? ` · ${skippedCount} skipped (no transcript)` : "")
+    ? `${plan.videoIds.length} ${plan.videoIds.length === 1 ? "video" : "videos"} from ${creatorName}`
     : undefined;
 
   return (
@@ -161,7 +140,7 @@ export function SelectableFeed({
           <ScopeSelectionBar
             className="pointer-events-auto"
             count={selectedIds.size}
-            skippedCount={skippedCount}
+            skippedCount={0}
             onChat={openChat}
             onClear={clearSelection}
             note={note}

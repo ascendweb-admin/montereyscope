@@ -187,7 +187,9 @@ export function researchReportHtml(db: ScopeDatabase, reportId: number): string 
       "SELECT research_html AS html, research_scope_id AS scopeId FROM ai_reports WHERE id=?",
     )
     .get(reportId) as { html: string | null; scopeId: string | null } | undefined;
-  if (!row?.html || !row.scopeId) return null;
+  if (!row?.html) return null;
+  // X Dashboard insights save a complete page with its own source appendix.
+  if (!row.scopeId) return row.html;
   let html = row.html;
   for (const post of corpusPosts(db, row.scopeId, false)) {
     const tweet = post.tweet;

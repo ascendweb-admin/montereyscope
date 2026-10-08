@@ -54,7 +54,7 @@ it("snapshots the entire list for refresh regardless of selected creators, witho
     label: "Entire list",
     creatorIds: [a, b],
     initialDays: 30,
-    maxPages: 10,
+    maxPages: null,
   });
 });
 it("historical retrieval uses only selected list creators and inclusive timezone calendar bounds", async () => {
@@ -85,7 +85,7 @@ it("rejects creators outside the historical list, invalid dates and unbounded bu
   for (const body of [
     { kind: "history", listId: list.id, creatorIds: [b] },
     { kind: "history", creatorIds: [a], start: "bad", end: "bad" },
-    { kind: "refresh", creatorIds: [a], maxPages: 101 },
+    { kind: "refresh", creatorIds: [a], maxPages: 301 },
     { kind: "refresh", creatorIds: [a], initialDays: 0 },
     { kind: "something", creatorIds: [a] },
   ])

@@ -60,7 +60,7 @@ export interface ProviderModelOption {
 }
 
 const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
-const CODEX_SOL_TERRA_EFFORTS = [...CODEX_EFFORTS, "ultra"] as const;
+const CODEX_EXTENDED_EFFORTS = [...CODEX_EFFORTS, "ultra"] as const;
 
 const OPENCODE_LUNA_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
 
@@ -79,6 +79,22 @@ const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 export const AI_MODEL_OPTIONS: Record<AiBackendId, readonly ProviderModelOption[]> = {
   codex: [
     {
+      id: "gpt-6-luna",
+      runtimeId: "gpt-6-luna",
+      label: "GPT-6 Luna",
+      description: "Fast and economical for everyday questions",
+      reasoningEfforts: CODEX_EFFORTS,
+      defaultReasoningEffort: "medium",
+    },
+    {
+      id: "gpt-6.1-sol",
+      runtimeId: "gpt-6.1-sol",
+      label: "GPT-6.1 Sol",
+      description: "Thorough reasoning for analysis and complex work",
+      reasoningEfforts: CODEX_EXTENDED_EFFORTS,
+      defaultReasoningEffort: "low",
+    },
+    {
       id: "gpt-5.6-luna",
       runtimeId: "gpt-5.6-luna",
       label: "GPT-5.6 Luna",
@@ -91,7 +107,7 @@ export const AI_MODEL_OPTIONS: Record<AiBackendId, readonly ProviderModelOption[
       runtimeId: "gpt-5.6-terra",
       label: "GPT-5.6 Terra",
       description: "A balanced model for regular analysis",
-      reasoningEfforts: CODEX_SOL_TERRA_EFFORTS,
+      reasoningEfforts: CODEX_EXTENDED_EFFORTS,
       defaultReasoningEffort: "medium",
     },
     {
@@ -99,7 +115,7 @@ export const AI_MODEL_OPTIONS: Record<AiBackendId, readonly ProviderModelOption[
       runtimeId: "gpt-5.6-sol",
       label: "GPT-5.6 Sol",
       description: "The most thorough Codex model",
-      reasoningEfforts: CODEX_SOL_TERRA_EFFORTS,
+      reasoningEfforts: CODEX_EXTENDED_EFFORTS,
       defaultReasoningEffort: "xhigh",
     },
     {
@@ -394,9 +410,9 @@ export type AiChatModeSettings = {
 /** Defaults are intentionally explicit: they are also the product's first-run experience. */
 export const DEFAULT_AI_CHAT_MODE_SETTINGS = {
   codex: {
-    quick: { model: "gpt-5.6-luna", reasoningEffort: "low" },
-    balanced: { model: "gpt-5.6-terra", reasoningEffort: "medium" },
-    deep: { model: "gpt-5.6-sol", reasoningEffort: "xhigh" },
+    quick: { model: "gpt-6-luna", reasoningEffort: "low" },
+    balanced: { model: "gpt-6.1-sol", reasoningEffort: "medium" },
+    deep: { model: "gpt-6.1-sol", reasoningEffort: "xhigh" },
   },
   opencode: {
     quick: { model: "gpt-5.6-luna", reasoningEffort: "low" },

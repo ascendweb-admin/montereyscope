@@ -1,7 +1,5 @@
 "use client";
 
-import { useBackgroundTasks } from "@/components/background/task-store";
-
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -15,14 +13,12 @@ import {
   History,
   Newspaper,
   Radio,
-  RefreshCw,
   Search,
   Sparkles,
   Users,
   X,
 } from "lucide-react";
 
-import { getTranscriptAction } from "@/components/background/operations";
 import { ChatPanel } from "@/components/ai/chat-panel";
 import type { ChatSource } from "@/components/ai/citation";
 import {
@@ -39,10 +35,9 @@ import { PlatformFilter } from "@/components/library/platform-filter";
 import { RefreshAllButton } from "@/components/library/refresh-all-button";
 import { AlertNote } from "@/components/ui/alert-note";
 import { Badge } from "@/components/ui/badge";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { PendingIndicator, Spinner } from "@/components/ui/pending";
 import { RumbleLogo, XLogo, YouTubeLogo } from "@/components/ui/platform-logos";
-import { useToast } from "@/components/ui/toast";
 import type { CreatorPlatform } from "@/lib/creators/repository";
 import type { TweetViewModel } from "@/lib/x/view-model";
 import { localAvatarSrc } from "@/lib/creators/avatar";
@@ -54,17 +49,16 @@ import { cn } from "@/lib/utils";
 /**
  * The Feed page: the newest cached videos and livestreams across every
  * saved creator, one list, newest first. Rows pull their data from the
- * local cache; the two per-row actions — transcript extraction and the
- * "Ask AI" side panel — reuse the same server action and chat panel as the
- * channel and research pages, so behavior never drifts between them.
+ * local cache; "Ask AI" opens the same chat panel as the channel and
+ * research pages, so behavior never drifts between them. Captions are read
+ * in the background when a chat needs them — a row only offers a read-only
+ * transcript view once one has been cached.
  *
  * The toolbar narrows the list by kind, platform, and the user's creator
- * categories (plus search) — all client-side over the prebuilt items. One
- * yt-dlp extraction runs at a time across the whole list (the row-level
- * buttons disable while a job is in flight); opening an already-cached
- * transcript is a local read and stays available during one. A changed chat
- * target re-keys the shared panel into a fresh conversation — the same
- * behavior as the stage-5 research selections.
+ * categories (plus search) — all client-side over the prebuilt items.
+ * Opening a cached transcript is a local read. A changed chat target re-keys
+ * the shared panel into a fresh conversation — the same behavior as the
+ * stage-5 research selections.
  */
 
 export type FeedItemLiveStatus = "not_live" | "is_live" | "was_live" | "upcoming" | "unknown";
@@ -149,21 +143,6 @@ interface FeedViewProps {
   uncategorizedCreatorCount: number;
 }
 
-/** Which transcript job a row is running; each maps to a server intent. */
-type TranscriptJobKind = "extract" | "view" | "refresh";
-
-const JOB_WORDING: Record<TranscriptJobKind, string> = {
-  extract: "Extracting the transcript with yt-dlp…",
-  view: "Opening your cached transcript…",
-  refresh: "Re-extracting the transcript…",
-};
-
-const JOB_INTENT: Record<TranscriptJobKind, "get" | "refresh"> = {
-  extract: "get",
-  view: "get",
-  refresh: "refresh",
-};
-
 /** Same stored-status rule the repository uses to split the channel tabs. */
 function isLivestream(liveStatus: FeedItemLiveStatus): boolean {
   return liveStatus === "is_live" || liveStatus === "was_live" || liveStatus === "upcoming";
@@ -188,7 +167,6 @@ export function FeedView({
   uncategorizedCreatorCount,
 }: FeedViewProps) {
   const router = useRouter();
-  const { showToast, toastElement } = useToast();
 
   const [filter, setFilter] = useState<FeedFilter>("all");
   const [platform, setPlatform] = useState<CreatorPlatform | "all">("all");
@@ -200,20 +178,8 @@ export function FeedView({
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [transcripts, setTranscripts] = useState<Record<string, FeedTranscript>>({});
   const [errors, setErrors] = useState<Record<string, FeedTranscriptError | null>>({});
-  /** The one in-flight transcript job across the whole list, if any. */
-  const [localJob, setJob] = useState<{ videoId: string; kind: TranscriptJobKind } | null>(null);
-  const tasks = useBackgroundTasks();
-  const activeTranscript = tasks.find(
-    (task) => task.key.startsWith("transcript:") && task.status === "running",
-  );
-  const job = useMemo(
-    () =>
-      localJob ??
-      (activeTranscript
-        ? { videoId: activeTranscript.key.slice("transcript:".length), kind: "extract" as const }
-        : null),
-    [localJob, activeTranscript],
-  );
+  /** Rows currently loading their cached transcript. */
+  const [loadingIds, setLoadingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [chatTarget, setChatTarget] = useState<FeedItemModel | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [detailTweet, setDetailTweet] = useState<FeedTweetItemModel | null>(null);
@@ -222,13 +188,9 @@ export function FeedView({
     let videos = 0;
     let livestreams = 0;
     let tweets = 0;
-    let ready = 0;
     for (const item of items) {
       if (item.kind === "tweet") {
         tweets += 1;
-        if (item.readyForAnalysis) {
-          ready += 1;
-        }
         continue;
       }
       if (isLivestream(item.liveStatus)) {
@@ -236,11 +198,8 @@ export function FeedView({
       } else {
         videos += 1;
       }
-      if (item.hasTranscript) {
-        ready += 1;
-      }
     }
-    return { all: items.length, videos, livestreams, tweets, ready };
+    return { all: items.length, videos, livestreams, tweets };
   }, [items]);
 
   const filtered = useMemo(() => {
@@ -324,50 +283,49 @@ export function FeedView({
   }, []);
 
   /**
-   * Runs one transcript job through the shared server action. Extraction
-   * and refresh are serialized list-wide; "view" only reads the local
-   * cache (the row only offers it when a cached transcript exists).
+   * Loads a row's cached transcript for the read-only view. The row only
+   * offers it when a cached transcript exists, so this is a local read.
    */
-  const runJob = useCallback(
-    async (item: FeedVideoItemModel, kind: TranscriptJobKind): Promise<void> => {
-      if (job !== null) {
-        return;
+  const loadTranscript = useCallback(async (item: FeedVideoItemModel): Promise<void> => {
+    setLoadingIds((prev) => new Set(prev).add(item.id));
+    setErrors((prev) => ({ ...prev, [item.id]: null }));
+    try {
+      const response = await fetch(
+        `/api/creators/${item.creatorId}/videos/${encodeURIComponent(item.id)}/transcript`,
+      );
+      const body = (await response.json()) as {
+        transcript?: FeedTranscript;
+        error?: { code?: string; message?: string };
+      };
+      if (!response.ok || !body.transcript) {
+        throw new Error(body.error?.message ?? "scope could not open this transcript.");
       }
-      setJob({ videoId: item.id, kind });
-      setErrors((prev) => ({ ...prev, [item.id]: null }));
-      const result = await getTranscriptAction(item.creatorId, item.id, JOB_INTENT[kind]);
-      setJob(null);
-
-      if (!result.ok) {
-        setErrors((prev) => ({
-          ...prev,
-          [item.id]: { code: result.errorCode, message: result.message ?? "Extraction failed." },
-        }));
-        return;
-      }
-
+      const transcript = body.transcript;
       setTranscripts((prev) => ({
         ...prev,
         [item.id]: {
-          text: result.transcript.text,
-          language: result.transcript.language,
-          captionSource: result.transcript.captionSource,
-          fetchedAt: result.transcript.fetchedAt,
+          text: transcript.text,
+          language: transcript.language,
+          captionSource: transcript.captionSource,
+          fetchedAt: transcript.fetchedAt,
         },
       }));
-
-      if (kind === "extract") {
-        showToast("Transcript extracted for this source.", "success");
-        setExpandedIds((prev) => new Set(prev).add(item.id));
-        // Re-render the server data so the header's cached-transcript count
-        // and the row's flag reflect the new extraction (row state survives).
-        router.refresh();
-      } else if (kind === "refresh") {
-        showToast("Transcript refreshed.", "success");
-      }
-    },
-    [job, showToast, router],
-  );
+    } catch (error) {
+      setErrors((prev) => ({
+        ...prev,
+        [item.id]: {
+          code: "unavailable",
+          message: error instanceof Error ? error.message : "scope could not open this transcript.",
+        },
+      }));
+    } finally {
+      setLoadingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
+    }
+  }, []);
 
   const toggleTranscript = useCallback(
     (item: FeedVideoItemModel): void => {
@@ -381,13 +339,12 @@ export function FeedView({
         }
         return next;
       });
-      // Opening a transcript the page has not seen yet fetches the cached
-      // copy; rows without one go through the extraction flow instead.
+      // Opening a transcript the page has not seen yet reads the cached copy.
       if (!wasExpanded && transcripts[item.id] === undefined && item.hasTranscript) {
-        void runJob(item, "view");
+        void loadTranscript(item);
       }
     },
-    [expandedIds, transcripts, runJob],
+    [expandedIds, transcripts, loadTranscript],
   );
 
   const openChat = useCallback((item: FeedItemModel): void => {
@@ -466,7 +423,7 @@ export function FeedView({
           <h1 className="text-2xl font-semibold tracking-tight">Feed</h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
             The newest videos, livestreams, and X posts from your {creators.length} saved{" "}
-            {creators.length === 1 ? "creator" : "creators"} — {counts.ready} ready for analysis.
+            {creators.length === 1 ? "creator" : "creators"}.
           </p>
         </div>
         <RefreshAllButton creators={creators} onRefreshed={() => router.refresh()} />
@@ -584,12 +541,10 @@ export function FeedView({
                       transcript={transcripts[item.id] ?? null}
                       expanded={expandedIds.has(item.id)}
                       hasTranscript={item.hasTranscript || transcripts[item.id] !== undefined}
-                      activeJob={job?.videoId === item.id ? job.kind : null}
-                      jobElsewhere={job !== null && job.videoId !== item.id}
+                      loading={loadingIds.has(item.id)}
                       error={errors[item.id] ?? null}
                       onToggleTranscript={() => toggleTranscript(item)}
-                      onExtract={() => void runJob(item, "extract")}
-                      onRefresh={() => void runJob(item, "refresh")}
+                      onRetry={() => void loadTranscript(item)}
                       onAsk={() => openChat(item)}
                     />
                   ),
@@ -629,7 +584,7 @@ export function FeedView({
         sources={chatSources}
         description={
           chatTarget?.kind === "video"
-            ? `Grounded in the cached transcript of “${chatTarget.title}”.`
+            ? `Grounded in what is said in “${chatTarget.title}”.`
             : chatTarget?.kind === "tweet"
               ? `Grounded in the cached post by @${chatTarget.authorHandle}.`
               : undefined
@@ -641,8 +596,6 @@ export function FeedView({
         open={tweetViewModel !== null}
         onClose={() => setDetailTweet(null)}
       />
-
-      {toastElement}
     </main>
   );
 }
@@ -653,14 +606,11 @@ interface FeedRowProps {
   expanded: boolean;
   /** Cached transcript exists (from the server render or this session). */
   hasTranscript: boolean;
-  /** The transcript job this row is running, if any. */
-  activeJob: TranscriptJobKind | null;
-  /** True while another row runs an extraction — one yt-dlp job at a time. */
-  jobElsewhere: boolean;
+  /** True while the cached transcript is being loaded for the view. */
+  loading: boolean;
   error: FeedTranscriptError | null;
   onToggleTranscript: () => void;
-  onExtract: () => void;
-  onRefresh: () => void;
+  onRetry: () => void;
   onAsk: () => void;
 }
 
@@ -669,17 +619,14 @@ function FeedRow({
   transcript,
   expanded,
   hasTranscript,
-  activeJob,
-  jobElsewhere,
+  loading,
   error,
   onToggleTranscript,
-  onExtract,
-  onRefresh,
+  onRetry,
   onAsk,
 }: FeedRowProps) {
   const detailHref = `/channels/${item.creatorId}/videos/${item.id}`;
   const externalLabel = item.creatorPlatform === "rumble" ? "Open on Rumble" : "Open on YouTube";
-  const busy = activeJob !== null;
 
   return (
     <li className="overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm transition-colors motion-reduce:transition-none hover:border-ring/40">
@@ -759,37 +706,13 @@ function FeedRow({
                 size="sm"
                 onClick={onToggleTranscript}
                 aria-expanded={expanded}
-                aria-busy={activeJob === "view"}
-                disabled={activeJob === "view"}
+                aria-busy={loading}
+                disabled={loading}
               >
-                {activeJob === "view" ? (
-                  <Spinner className="size-3.5" />
-                ) : (
-                  <FileText aria-hidden="true" />
-                )}
+                {loading ? <Spinner className="size-3.5" /> : <FileText aria-hidden="true" />}
                 {expanded ? "Hide transcript" : "Transcript"}
               </Button>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onExtract}
-                disabled={busy || jobElsewhere}
-                aria-busy={activeJob === "extract"}
-              >
-                {activeJob === "extract" ? (
-                  <>
-                    <Spinner className="size-3.5" />
-                    Extracting…
-                  </>
-                ) : (
-                  <>
-                    <FileText aria-hidden="true" />
-                    Get transcript
-                  </>
-                )}
-              </Button>
-            )}
+            ) : null}
             <a
               href={item.url}
               target="_blank"
@@ -807,52 +730,25 @@ function FeedRow({
       {expanded ? (
         <div className="border-t bg-muted/20 p-4">
           <span role="status" aria-live="polite" className="sr-only">
-            {busy ? JOB_WORDING[activeJob] : ""}
+            {loading ? "Opening the transcript…" : ""}
           </span>
 
-          {busy ? (
-            <PendingIndicator
-              label={JOB_WORDING[activeJob]}
-              hint={activeJob === "view" ? undefined : "This can take up to a minute."}
-            />
+          {loading ? (
+            <PendingIndicator label="Opening the transcript…" />
           ) : error ? (
-            error.code === "language_choice" ? (
-              <AlertNote tone="warning" title="Pick a caption language.">
-                {error.message}{" "}
-                <Link
-                  href={detailHref}
-                  className={cn(
-                    buttonVariants({ variant: "outline", size: "sm" }),
-                    "ml-1 no-underline",
-                  )}
-                >
-                  Open the video page
-                </Link>
-              </AlertNote>
-            ) : (
-              <AlertNote
-                tone="danger"
-                title={`${error.code.replace(/_/g, " ")}.`}
-                action={
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={hasTranscript ? onRefresh : onExtract}
-                  >
-                    Try again
-                  </Button>
-                }
-              >
-                {error.message}
-              </AlertNote>
-            )
+            <AlertNote
+              tone="danger"
+              title="The transcript could not be opened."
+              action={
+                <Button variant="outline" size="sm" onClick={onRetry}>
+                  Try again
+                </Button>
+              }
+            >
+              {error.message}
+            </AlertNote>
           ) : transcript ? (
-            <TranscriptBody
-              item={item}
-              transcript={transcript}
-              onRefresh={onRefresh}
-              refreshDisabled={jobElsewhere}
-            />
+            <TranscriptBody item={item} transcript={transcript} />
           ) : null}
         </div>
       ) : null}
@@ -863,13 +759,9 @@ function FeedRow({
 function TranscriptBody({
   item,
   transcript,
-  onRefresh,
-  refreshDisabled,
 }: {
   item: FeedVideoItemModel;
   transcript: FeedTranscript;
-  onRefresh: () => void;
-  refreshDisabled: boolean;
 }) {
   const [copyState, setCopyState] = useState<"copied" | "failed" | null>(null);
   const [justCopied, setJustCopied] = useState(false);
@@ -927,10 +819,6 @@ function TranscriptBody({
               Copy
             </>
           )}
-        </Button>
-        <Button variant="outline" size="sm" onClick={onRefresh} disabled={refreshDisabled}>
-          <RefreshCw aria-hidden="true" />
-          Refresh
         </Button>
         <Link
           href={`/channels/${item.creatorId}/videos/${item.id}`}

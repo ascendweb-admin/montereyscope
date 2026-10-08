@@ -6,8 +6,10 @@ import { researchError } from "@/lib/x/research/http";
  * POST /api/ai/chat — one AI chat turn, streamed to the client as SSE.
  *
  * Body: {videoIds, message, mode?} starts a new thread in that chat mode
- * (scope is validated against the cached feed and transcripts are
- * materialized into a fresh job dir that doubles as the Codex work dir),
+ * (scope is validated against the cached feed, missing transcripts are
+ * fetched in the background — reported as `preparing` status events — and
+ * the sources are materialized into a fresh job dir that doubles as the
+ * Codex work dir),
  * {threadId, message, mode?} resumes an existing Codex session with just the
  * new message — a changed mode switches model, reasoning effort, and working
  * directive from this turn on. Codex runs in a read-only sandbox on the Node
@@ -27,9 +29,17 @@ import {
   streamChatTurn,
   MAX_SCOPE_VIDEOS,
   type ChatStreamEvent,
+  type ChatTurnCommand,
   type SourceMaterializationManifest,
+  type SourceScopeResolution,
 } from "@/lib/ai";
-import { DEFAULT_CHAT_MODE, isChatModeId } from "@/lib/ai/chat-modes";
+import { DEFAULT_CHAT_MODE, isChatModeId, type ChatModeId } from "@/lib/ai/chat-modes";
+import type { ScopeDatabase } from "@/lib/db/connection";
+import {
+  describePreparationFailures,
+  ensureTranscripts,
+  type PrepareOutcome,
+} from "@/lib/transcripts/prepare";
 import { getThread } from "@/lib/ai/threads";
 import { normalizeSourceRefs, videoIdsToSourceRefs, type SourceRef } from "@/lib/content/model";
 import { getDb } from "@/lib/db/connection";
@@ -259,6 +269,139 @@ async function nextWithHeartbeat(
   }
 }
 
+interface NewThreadInput {
+  message: string;
+  title: string;
+  sources: SourceRef[];
+  mode: ChatModeId;
+  scope: SourceScopeResolution;
+}
+
+/**
+ * Starts a new thread: fetches any missing transcripts first (streaming
+ * `preparing` progress so the client can show it as part of the answer),
+ * then materializes the sources and hands over to the chat turn. Videos
+ * whose captions could not be read are left out and disclosed in a notice;
+ * when nothing at all can ground the conversation the turn ends with an
+ * error before a thread is created.
+ */
+async function* prepareAndStartThread(
+  db: ScopeDatabase,
+  input: NewThreadInput,
+  signal: AbortSignal,
+): AsyncGenerator<ChatStreamEvent> {
+  const missingVideoIds = input.scope.sources
+    .filter((source) => source.kind === "video" && !source.readyForAnalysis)
+    .map((source) => source.id);
+
+  let prepared: PrepareOutcome = { fetched: [], failed: [] };
+  if (missingVideoIds.length > 0) {
+    const pending: ChatStreamEvent[] = [];
+    let wake: (() => void) | null = null;
+    let finished = false;
+    let failure: unknown = null;
+    void ensureTranscripts(db, missingVideoIds, {
+      signal,
+      onProgress: (progress) => {
+        pending.push({ type: "status", phase: "preparing", ...progress });
+        wake?.();
+      },
+    })
+      .then(
+        (outcome) => {
+          prepared = outcome;
+        },
+        (error: unknown) => {
+          failure = error ?? new Error("Transcript preparation failed.");
+        },
+      )
+      .finally(() => {
+        finished = true;
+        wake?.();
+      });
+    for (;;) {
+      while (pending.length > 0) {
+        yield pending.shift()!;
+      }
+      if (finished) {
+        break;
+      }
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+      });
+      wake = null;
+    }
+    if (failure !== null) {
+      if (signal.aborted) {
+        yield { type: "error", code: "aborted", message: "The turn was cancelled." };
+        return;
+      }
+      console.error("[ai/chat] transcript preparation failed:", failure);
+      yield {
+        type: "error",
+        code: "chat_failed",
+        message: "scope could not prepare the selected videos. Please try again.",
+      };
+      return;
+    }
+  }
+
+  const titleById = new Map(input.scope.sources.map((source) => [source.id, source.title]));
+  const failedIds = new Set(prepared.failed.map((failure) => failure.videoId));
+  const failureNotice = describePreparationFailures(
+    prepared.failed,
+    (videoId) => titleById.get(videoId) ?? videoId,
+  );
+  const canGround = input.scope.sources.some(
+    (source) => source.readyForAnalysis || (source.kind === "video" && !failedIds.has(source.id)),
+  );
+  if (!canGround) {
+    const ytdlpMissing = prepared.failed.find((failure) => failure.code === "ytdlp_missing");
+    yield {
+      type: "error",
+      code: "no_ready_sources",
+      message: ytdlpMissing
+        ? ytdlpMissing.message
+        : `${failureNotice} Pick other sources and try again.`,
+    };
+    return;
+  }
+
+  let outcome;
+  try {
+    outcome = materializeSources(db, input.sources, {
+      jobsRoot: jobsRoot(),
+      maxTotalBytes: maxMaterializedBytes(),
+    });
+  } catch (error) {
+    // Disk trouble or a bad jobs root: a readable refusal instead of a raw failure.
+    console.error("[ai/chat] source materialization failed:", error);
+    yield {
+      type: "error",
+      code: "materialize_failed",
+      message:
+        "scope could not prepare the sources folder for this analysis. Check the server logs and try again.",
+    };
+    return;
+  }
+
+  const notice = [failureNotice, scopeTruncationNotice(outcome.manifest)]
+    .filter((part): part is string => Boolean(part))
+    .join(" ");
+  const command: ChatTurnCommand = {
+    kind: "new",
+    message: input.message,
+    title: input.title,
+    sources: input.sources,
+    // The job directory doubles as the CLI work dir and stays the same for
+    // every later turn of the thread.
+    workDir: outcome.jobDir,
+    mode: input.mode,
+    notice: notice.length > 0 ? notice : undefined,
+  };
+  yield* streamChatTurn({ db, signal }, command);
+}
+
 export async function POST(request: Request) {
   const guardedRequest = request.clone();
   let body: ChatRequestBody;
@@ -335,7 +478,9 @@ export async function POST(request: Request) {
       return tooLarge;
     }
     const scope = resolveSourceScope(db, requested);
-    if (!scope.sources.some((source) => source.readyForAnalysis)) {
+    // Videos without a transcript still count: their captions are fetched
+    // as part of the turn. Only posts without complete text cannot ground.
+    if (!scope.sources.some((source) => source.readyForAnalysis || source.kind === "video")) {
       return jsonError(
         422,
         "no_ready_sources",
@@ -346,31 +491,13 @@ export async function POST(request: Request) {
         },
       );
     }
-    // The job directory doubles as the CLI work dir and stays the same for
-    // every later turn of the thread.
-    let outcome;
-    try {
-      outcome = materializeSources(db, requested, {
-        jobsRoot: jobsRoot(),
-        maxTotalBytes: maxMaterializedBytes(),
-      });
-    } catch (error) {
-      // Disk trouble or a bad jobs root: a readable refusal instead of a raw 500.
-      console.error("[ai/chat] source materialization failed:", error);
-      return jsonError(
-        500,
-        "materialize_failed",
-        "scope could not prepare the sources folder for this analysis. Check the server logs and try again.",
-      );
-    }
     return {
       kind: "new" as const,
       message,
       title: threadTitle(message),
       sources: requested,
-      workDir: outcome.jobDir,
       mode,
-      notice: scopeTruncationNotice(outcome.manifest),
+      scope,
     };
   })();
 
@@ -386,11 +513,13 @@ export async function POST(request: Request) {
     abort();
   }
 
-  const lockThreadId = command.kind === "resume" ? command.thread.id : null;
-  const events = withThreadTurnLock(
-    lockThreadId,
-    streamChatTurn({ db, signal: localAbort.signal }, command),
-  );
+  const events =
+    command.kind === "resume"
+      ? withThreadTurnLock(
+          command.thread.id,
+          streamChatTurn({ db, signal: localAbort.signal }, command),
+        )
+      : prepareAndStartThread(db, command, localAbort.signal);
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({

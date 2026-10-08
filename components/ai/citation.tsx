@@ -38,7 +38,11 @@ export function indexChatSources(sources: readonly ChatSource[]): Map<string, Ch
 }
 
 /** Hover grace period so sweeping the cursor across text never flashes cards. */
-const OPEN_DELAY_MS = 150;
+export const CITATION_OPEN_DELAY_MS = 150;
+
+/** The citation pill's look, shared with the X Dashboard's post citations. */
+export const CITATION_PILL =
+  "inline-flex max-w-[min(12rem,100%)] items-center gap-1 rounded-full border border-primary/25 bg-primary/[0.07] py-px pr-2 align-middle text-[0.85em] leading-5 font-medium whitespace-nowrap outline-none focus-visible:ring-2 focus-visible:ring-ring";
 /** Preview card geometry, kept in sync with the w-72 card below. */
 const CARD_WIDTH = 288;
 const CARD_GAP = 8;
@@ -84,7 +88,7 @@ export function SourceCitation({ source, className }: { source: ChatSource; clas
     openTimer.current = window.setTimeout(() => {
       openTimer.current = null;
       openCard(target);
-    }, OPEN_DELAY_MS);
+    }, CITATION_OPEN_DELAY_MS);
   };
 
   const closeCard = (): void => {
@@ -128,10 +132,7 @@ export function SourceCitation({ source, className }: { source: ChatSource; clas
           closeCard();
         }
       }}
-      className={cn(
-        "inline-flex max-w-[min(12rem,100%)] items-center gap-1 rounded-full border border-primary/25 bg-primary/[0.07] py-px pr-2 pl-1.5 align-middle text-[0.85em] leading-5 font-medium whitespace-nowrap outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        className,
-      )}
+      className={cn(CITATION_PILL, "pl-1.5", className)}
     >
       {isTweet ? (
         <XLogo aria-hidden="true" className="size-2.5 shrink-0 text-foreground" />

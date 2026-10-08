@@ -12,9 +12,10 @@ import type { VideoCardModel } from "@/components/channel/video-card";
 
 /**
  * Channel feed selection (stage 5). Behavioral only: checkboxes across both
- * tabs, the floating action bar's count, and the validation gate that
- * excludes videos without transcripts before the chat panel opens. fetch is
- * mocked because opening the panel refreshes thread history.
+ * tabs, the floating action bar's count, and the chat panel opening over the
+ * whole selection — transcripts are never a user step. fetch is mocked
+ * because opening the panel refreshes thread history and starts the
+ * background caption prefetch.
  */
 
 // The chat panel navigates to /chat when expanded; the router is mocked at
@@ -32,19 +33,17 @@ function card(
     publishedLabel: "Aug 1, 2026",
     durationLabel: "10:00",
     liveStatus: "not_live",
-    hasTranscript: true,
     ...overrides,
   };
 }
 
 const VIDEO_A = card({ videoId: "vidA000001", title: "Video A" });
-const VIDEO_B = card({ videoId: "vidB000001", title: "Video B", hasTranscript: false });
+const VIDEO_B = card({ videoId: "vidB000001", title: "Video B" });
 const VIDEO_C = card({ videoId: "vidC000001", title: "Video C" });
 const STREAM_A = card({
   videoId: "strA000001",
   title: "Stream A",
   liveStatus: "was_live",
-  hasTranscript: false,
 });
 
 function renderFeed() {
@@ -80,6 +79,9 @@ beforeEach(() => {
         status: 200,
         json: async () => ({ threads: [] }),
       } as unknown as Response;
+    }
+    if (url === "/api/ai/prepare") {
+      return { ok: true, status: 202, json: async () => ({ pending: 0 }) } as unknown as Response;
     }
     throw new Error(`unexpected fetch: ${url}`);
   });
@@ -131,57 +133,45 @@ describe("SelectableFeed", () => {
     expect(screen.getByText("2 videos selected")).toBeTruthy();
   });
 
-  it("marks videos without a transcript while selecting", () => {
+  it("never asks about transcripts while selecting", () => {
     renderFeed();
     fireEvent.click(screen.getByRole("button", { name: "Select videos" }));
-    expect(screen.getByText("No transcript")).toBeTruthy();
+    selectCheckbox("Video B");
+    expect(screen.queryByText(/transcript/i)).toBeNull();
+    expect(screen.queryByText(/will be skipped/)).toBeNull();
   });
 
-  it("opens the chat with the validated scope and reports skipped videos", () => {
+  it("opens the chat over every selected video and starts reading them", () => {
     renderFeed();
     fireEvent.click(screen.getByRole("button", { name: "Select videos" }));
     selectCheckbox("Video A");
-    selectCheckbox("Video B");
-
-    expect(screen.getByText(/1 without a transcript will be skipped/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Chat about selection" }));
-
-    const panel = chatPanel();
-    expect(panel.hasAttribute("inert")).toBe(false);
-    // The panel is grounded in the transcripted video only, and says so.
-    within(panel).getByText("1 video from Sample Creator · 1 skipped (no transcript)");
-    expect(screen.getByText(/Skipped 1 video without a cached transcript/)).toBeTruthy();
-  });
-
-  it("refuses to chat when none of the selection has a transcript", () => {
-    renderFeed();
-    fireEvent.click(screen.getByRole("button", { name: "Select videos" }));
     selectCheckbox("Video B");
     fireEvent.click(screen.getByRole("tab", { name: /Livestreams/ }));
     selectCheckbox("Stream A");
 
     fireEvent.click(screen.getByRole("button", { name: "Chat about selection" }));
 
-    expect(chatPanel().hasAttribute("inert")).toBe(true);
-    expect(
-      screen.getByText(/None of the selected videos has a cached transcript yet/),
-    ).toBeTruthy();
+    const panel = chatPanel();
+    expect(panel.hasAttribute("inert")).toBe(false);
+    within(panel).getByText("3 videos from Sample Creator");
+    // Captions for the selection start downloading in the background.
+    const prepareCall = fetchMock.mock.calls.find(([input]) => String(input) === "/api/ai/prepare");
+    expect(JSON.parse(String(prepareCall?.[1]?.body))).toEqual({
+      videoIds: ["vidA000001", "vidB000001", "strA000001"],
+    });
   });
 
-  it("closes the chat when the validated scope empties out", () => {
+  it("closes the chat when the selection empties out", () => {
     renderFeed();
     fireEvent.click(screen.getByRole("button", { name: "Select videos" }));
     const videoA = selectCheckbox("Video A");
-    selectCheckbox("Video B");
     fireEvent.click(screen.getByRole("button", { name: "Chat about selection" }));
     expect(chatPanel().hasAttribute("inert")).toBe(false);
 
-    // Unchecking the last transcripted video leaves nothing to ground on:
-    // the panel closes while the remaining pick stays selected in the bar.
     fireEvent.click(videoA);
 
     expect(chatPanel().hasAttribute("inert")).toBe(true);
-    expect(screen.getByText("1 video selected")).toBeTruthy();
+    expect(screen.queryByText(/selected/)).toBeNull();
   });
 
   it("clear empties the selection and hides the bar", () => {

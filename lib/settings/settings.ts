@@ -541,3 +541,65 @@ export function getAiChatModeSelection(
 ): ChatModeSelection {
   return cloneSelection(getAiChatModeSettings(db)[backend][mode]);
 }
+
+// ---------------------------------------------------------------------------
+// X Dashboard sync
+// ---------------------------------------------------------------------------
+
+export const X_SYNC_SETTINGS_KEY = "x_dashboard_sync";
+/** Minutes between background syncs of every saved X creator; 0 turns it off. */
+export const X_AUTO_SYNC_OPTIONS = [0, 15, 30, 60, 180] as const;
+/** How far back a creator's first import reaches. */
+export const X_INITIAL_HISTORY_OPTIONS = [7, 14, 30, 90] as const;
+
+export interface XSyncSettings {
+  autoSyncMinutes: (typeof X_AUTO_SYNC_OPTIONS)[number];
+  initialHistoryDays: (typeof X_INITIAL_HISTORY_OPTIONS)[number];
+}
+export const DEFAULT_X_SYNC_SETTINGS: XSyncSettings = {
+  autoSyncMinutes: 30,
+  initialHistoryDays: 30,
+};
+
+/** Validates untrusted input; unknown fields are ignored, bad values rejected. */
+export function validateXSyncSettings(
+  value: unknown,
+  base: XSyncSettings = DEFAULT_X_SYNC_SETTINGS,
+): { ok: true; value: XSyncSettings } | { ok: false; message: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return { ok: false, message: "Send the X sync settings as an object." };
+  const input = value as Record<string, unknown>;
+  const next = { ...base };
+  if (input.autoSyncMinutes !== undefined) {
+    if (!X_AUTO_SYNC_OPTIONS.includes(input.autoSyncMinutes as never))
+      return { ok: false, message: "Choose an auto-sync interval from the list." };
+    next.autoSyncMinutes = input.autoSyncMinutes as XSyncSettings["autoSyncMinutes"];
+  }
+  if (input.initialHistoryDays !== undefined) {
+    if (!X_INITIAL_HISTORY_OPTIONS.includes(input.initialHistoryDays as never))
+      return { ok: false, message: "Choose an initial history length from the list." };
+    next.initialHistoryDays = input.initialHistoryDays as XSyncSettings["initialHistoryDays"];
+  }
+  return { ok: true, value: next };
+}
+
+/** Reads the X sync settings; a damaged row falls back to the defaults. */
+export function getXSyncSettings(db: ScopeDatabase): XSyncSettings {
+  const row = db
+    .prepare<[string], SettingsRow>("SELECT value FROM settings WHERE key = ?")
+    .get(X_SYNC_SETTINGS_KEY);
+  if (!row) return { ...DEFAULT_X_SYNC_SETTINGS };
+  try {
+    const parsed = validateXSyncSettings(JSON.parse(row.value));
+    return parsed.ok ? parsed.value : { ...DEFAULT_X_SYNC_SETTINGS };
+  } catch {
+    return { ...DEFAULT_X_SYNC_SETTINGS };
+  }
+}
+
+export function setXSyncSettings(db: ScopeDatabase, value: unknown): XSyncSettings {
+  const validated = validateXSyncSettings(value, getXSyncSettings(db));
+  if (!validated.ok) throw new Error(validated.message);
+  persistSetting(db, X_SYNC_SETTINGS_KEY, JSON.stringify(validated.value));
+  return validated.value;
+}

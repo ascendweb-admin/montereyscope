@@ -87,7 +87,7 @@ unset ELECTRON_SKIP_BINARY_DOWNLOAD ELECTRON_MIRROR ELECTRON_CUSTOM_DIR ELECTRON
 export ELECTRON_CACHE="$tools/electron-cache"
 export ELECTRON_BUILDER_CACHE="$tools/electron-builder-cache"
 
-echo "Building Scope 0.1.9 for Intel / Monterey with Electron 43.7.7..."
+echo "Building Scope 0.1.10 for Intel / Monterey with Electron 43.7.7..."
 echo "The DMG will be unsigned, unnotarized, and unverified."
 npm ci --no-audit --no-fund
 npm ci --prefix desktop --no-audit --no-fund
@@ -97,7 +97,7 @@ npm ci --prefix desktop --no-audit --no-fund
 npm run desktop:dist:mac:x64
 
 echo ""
-echo "Build finished. Open desktop/dist/scope-0.1.9-macos-x64-monterey-startup-fix.dmg"
+echo "Build finished. Open desktop/dist/scope-0.1.10-macos-x64-monterey-claude-fix.dmg"
 echo "Drag scope into Applications, then launch it to begin your test."
 if [[ "${CI:-}" != "true" ]]; then
   /usr/bin/open "$PWD/desktop/dist"

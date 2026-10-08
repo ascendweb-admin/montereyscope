@@ -8,7 +8,7 @@ import {
   clearTranscriptCacheAction,
   clearTweetCacheAction,
 } from "@/app/actions/maintenance";
-import { saveCacheTranscriptsAction, saveRecentItemsPerTabAction } from "@/app/actions/settings";
+import { saveRecentItemsPerTabAction } from "@/app/actions/settings";
 import { AiBackendSetting } from "@/app/settings/ai-backend-setting";
 import { XConnectionCard } from "@/app/settings/x-connection-card";
 import type { XConnectionStatus } from "@/lib/x/model";
@@ -20,13 +20,15 @@ import { ThemeSetting } from "./theme-setting";
 import type { AiBackendId } from "@/lib/ai/backend-id";
 import type { AiAuthSnapshot } from "@/lib/ai/auth-types";
 import type { AiChatModeSettings } from "@/lib/ai/model-catalog";
+import type { CacheSizes } from "@/lib/maintenance/service";
+import { formatBytes } from "@/lib/format";
 
 interface SettingsFormProps {
   currentValue: number;
-  cacheTranscriptsEnabled: boolean;
   cachedTranscriptCount: number;
   cachedVideoCount: number;
   cachedTweetCount: number;
+  cacheSizes: CacheSizes;
   aiBackend: AiBackendId;
   aiChatModeSettings: AiChatModeSettings;
   aiAuthStatus: AiAuthSnapshot | null;
@@ -38,17 +40,18 @@ interface SettingsFormProps {
 type ToastTone = "success" | "error" | "info";
 
 /**
- * Application settings: the stage 3 feed window, stage 4 transcript
- * preferences, and the stage 5 local-cache controls plus appearance. The
+ * Application settings: the stage 3 feed window and the stage 5 local-cache
+ * controls plus appearance. Transcripts have no settings of their own — they
+ * are read in the background whenever AI analysis needs them. The
  * stage 9 AI backend section lives above the form — it saves through its own
  * action and carries its own server-rendered auth status.
  */
 export function SettingsForm({
   currentValue,
-  cacheTranscriptsEnabled,
   cachedTranscriptCount,
   cachedVideoCount,
   cachedTweetCount,
+  cacheSizes,
   aiBackend,
   aiChatModeSettings,
   aiAuthStatus,
@@ -138,11 +141,6 @@ export function SettingsForm({
             )}
           </div>
         </section>
-
-        <TranscriptSettingsSection
-          initiallyCached={cacheTranscriptsEnabled}
-          showToast={showToast}
-        />
       </form>
 
       <XConnectionCard initialStatus={xStatus} cachedTweetCount={cachedTweetCount} />
@@ -151,6 +149,7 @@ export function SettingsForm({
         initialTranscriptCount={cachedTranscriptCount}
         initialVideoCount={cachedVideoCount}
         initialTweetCount={cachedTweetCount}
+        initialSizes={cacheSizes}
         showToast={showToast}
       />
 
@@ -174,90 +173,23 @@ export function SettingsForm({
   );
 }
 
-function TranscriptSettingsSection({
-  initiallyCached,
-  showToast,
-}: {
-  initiallyCached: boolean;
-  showToast: (message: string, tone: ToastTone) => void;
-}) {
-  const [cached, setCached] = useState(initiallyCached);
-  const [pending, setPending] = useState(false);
-
-  const saveCaching = async (next: boolean): Promise<void> => {
-    setPending(true);
-    const outcome = await saveCacheTranscriptsAction(next);
-    setPending(false);
-    if (!outcome.ok) {
-      showToast(outcome.message ?? "The setting could not be saved.", "error");
-      return;
-    }
-    setCached(outcome.savedValue ?? next);
-    showToast(
-      outcome.savedValue
-        ? "Successful transcripts will be cached locally."
-        : "Transcripts will no longer be cached.",
-      "success",
-    );
-  };
-
-  return (
-    <section
-      aria-labelledby="transcripts-heading"
-      className="rounded-xl border bg-card p-5 shadow-sm sm:p-6"
-    >
-      <h2 id="transcripts-heading" className="text-base font-semibold tracking-tight">
-        Transcripts
-      </h2>
-      <p className="mt-1 max-w-prose text-sm text-muted-foreground">
-        How scope picks a caption track when you press <strong>Get transcript</strong> on a video.
-      </p>
-
-      <div className="mt-4 rounded-lg border bg-background p-4">
-        <p className="text-sm font-medium">English captions only</p>
-        <p className="mt-1 max-w-prose text-xs text-muted-foreground">
-          Scope uses human-made English captions when available, otherwise original English
-          auto-generated captions. Automatic translations are excluded. Use Refresh transcript to
-          replace an older cached transcript.
-        </p>
-      </div>
-
-      <div className="mt-6 flex flex-col gap-2">
-        <span className="text-sm font-medium">Cache transcripts</span>
-        <label htmlFor="cache-transcripts" className="flex max-w-prose items-start gap-3 text-sm">
-          <input
-            id="cache-transcripts"
-            type="checkbox"
-            checked={cached}
-            onChange={(event) => void saveCaching(event.target.checked)}
-            disabled={pending}
-            aria-busy={pending}
-            className="mt-0.5 size-4 accent-current"
-          />
-          <span>
-            Keep successful transcripts in the local database so reopening a video is instant.
-            Failed extractions never change or remove cached transcripts either way.
-          </span>
-        </label>
-      </div>
-    </section>
-  );
-}
-
 function LocalCacheSection({
   initialTranscriptCount,
   initialVideoCount,
   initialTweetCount,
+  initialSizes,
   showToast,
 }: {
   initialTranscriptCount: number;
   initialVideoCount: number;
   initialTweetCount: number;
+  initialSizes: CacheSizes;
   showToast: (message: string, tone: ToastTone) => void;
 }) {
   const [transcriptCount, setTranscriptCount] = useState(initialTranscriptCount);
   const [videoCount, setVideoCount] = useState(initialVideoCount);
   const [tweetCount, setTweetCount] = useState(initialTweetCount);
+  const [sizes, setSizes] = useState(initialSizes);
   const [confirming, setConfirming] = useState<"transcripts" | "feeds" | "tweets" | null>(null);
   const [busy, setBusy] = useState<"transcripts" | "feeds" | "tweets" | null>(null);
 
@@ -274,6 +206,7 @@ function LocalCacheSection({
       return;
     }
     setTranscriptCount(0);
+    setSizes((current) => ({ ...current, cachedTranscriptBytes: 0 }));
     setConfirming(null);
     showToast(
       outcome.deletedCount === 0
@@ -292,6 +225,8 @@ function LocalCacheSection({
       return;
     }
     setVideoCount(0);
+    setTranscriptCount(0);
+    setSizes((current) => ({ ...current, cachedVideoBytes: 0, cachedTranscriptBytes: 0 }));
     setConfirming(null);
     showToast(
       outcome.deletedCount === 0
@@ -310,6 +245,7 @@ function LocalCacheSection({
       return;
     }
     setTweetCount(0);
+    setSizes((current) => ({ ...current, cachedTweetBytes: 0 }));
     setConfirming(null);
     showToast(
       outcome.deletedCount === 0
@@ -335,13 +271,21 @@ function LocalCacheSection({
       <ul className="mt-4 flex flex-col divide-y divide-border rounded-lg border">
         <li className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 text-sm">
-            <p className="font-medium">Cached transcripts</p>
+            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 font-medium">
+              Cached transcripts
+              <span
+                className="text-xs font-normal tabular-nums text-muted-foreground"
+                title="Approximate cache size"
+              >
+                {formatBytes(sizes.cachedTranscriptBytes)}
+              </span>
+            </p>
             <p className="text-muted-foreground">
               {transcriptCount === 0
                 ? "None stored right now."
                 : `${transcriptCount} ${transcriptCount === 1 ? "transcript" : "transcripts"} stored.`}{" "}
-              Clearing means pressing <strong>Get transcript</strong> fetches captions again with
-              yt-dlp.
+              These are read in the background when you ask AI about a video. Clearing means they
+              are read again the next time.
             </p>
           </div>
           <Button
@@ -356,7 +300,15 @@ function LocalCacheSection({
         </li>
         <li className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 text-sm">
-            <p className="font-medium">Cached feed metadata</p>
+            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 font-medium">
+              Cached feed metadata
+              <span
+                className="text-xs font-normal tabular-nums text-muted-foreground"
+                title="Approximate cache size"
+              >
+                {formatBytes(sizes.cachedVideoBytes)}
+              </span>
+            </p>
             <p className="text-muted-foreground">
               {videoCount === 0
                 ? "No video entries stored right now."
@@ -377,7 +329,15 @@ function LocalCacheSection({
         </li>
         <li className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 text-sm">
-            <p className="font-medium">Cached X posts</p>
+            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 font-medium">
+              Cached X posts
+              <span
+                className="text-xs font-normal tabular-nums text-muted-foreground"
+                title="Approximate cache size"
+              >
+                {formatBytes(sizes.cachedTweetBytes)}
+              </span>
+            </p>
             <p className="text-muted-foreground">
               {tweetCount === 0
                 ? "No posts stored right now."
@@ -414,9 +374,8 @@ function LocalCacheSection({
         <p className="text-sm text-muted-foreground">
           This removes all {transcriptCount} stored{" "}
           {transcriptCount === 1 ? "transcript" : "transcripts"}. Your saved creators, their cached
-          video lists, and your settings are kept. The next time you press{" "}
-          <strong>Get transcript</strong> on a video, scope fetches captions again with yt-dlp and
-          caches the result if caching is enabled.
+          video lists, and your settings are kept. The next time you ask AI about a video, scope
+          reads its captions again in the background.
         </p>
       </ConfirmDialog>
 

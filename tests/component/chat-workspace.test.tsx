@@ -87,7 +87,6 @@ const VIDEOS = [
     creatorName: "Alpha Channel",
     thumbnailUrl: null,
     categoryIds: [1],
-    hasTranscript: true,
   },
   {
     id: "vidA000002",
@@ -96,7 +95,6 @@ const VIDEOS = [
     creatorName: "Alpha Channel",
     thumbnailUrl: null,
     categoryIds: [1],
-    hasTranscript: false,
   },
   {
     id: "vidB000001",
@@ -105,7 +103,6 @@ const VIDEOS = [
     creatorName: "Beta Channel",
     thumbnailUrl: null,
     categoryIds: [],
-    hasTranscript: true,
   },
 ];
 
@@ -324,7 +321,7 @@ describe("ChatWorkspace — picking sources for a fresh chat", () => {
     expect(within(dialog).getByRole("region", { name: "Beta Channel" })).toBeTruthy();
   });
 
-  it("opens the picker, refuses transcript-less rows, and confirms a scope", async () => {
+  it("opens the picker, offers every video, and confirms a scope", async () => {
     routeThreads();
     const stream = controlledSse();
     fetchMock.mockImplementation(async (input) => {
@@ -339,13 +336,14 @@ describe("ChatWorkspace — picking sources for a fresh chat", () => {
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Choose sources")).toBeTruthy();
 
-    // The picker defaults to ready sources; reveal unavailable rows to verify
-    // they remain visible-but-disabled when that convenience filter is off.
-    fireEvent.click(within(dialog).getByRole("button", { name: "Ready for analysis" }));
-    const noTranscript = within(dialog).getByRole("checkbox", {
+    // Every video is selectable — captions are read when the chat starts —
+    // so there is no readiness filter and no transcript badge to explain.
+    expect(within(dialog).queryByRole("button", { name: "Ready for analysis" })).toBeNull();
+    expect(within(dialog).queryByText("Transcript")).toBeNull();
+    const quickUpdate = within(dialog).getByRole("checkbox", {
       name: "Select Alpha quick update",
     }) as HTMLInputElement;
-    expect(noTranscript.disabled).toBe(true);
+    expect(quickUpdate.disabled).toBe(false);
 
     fireEvent.click(within(dialog).getByRole("checkbox", { name: "Select Alpha deep dive" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Use 1 source" }));
@@ -353,6 +351,9 @@ describe("ChatWorkspace — picking sources for a fresh chat", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.getByText("Ready to chat about 1 source")).toBeTruthy();
     expect((screen.getByLabelText("Your message") as HTMLTextAreaElement).disabled).toBe(false);
+    // Confirming the picker starts reading the chosen videos in the background.
+    const prepareCall = fetchMock.mock.calls.find(([input]) => String(input) === "/api/ai/prepare");
+    expect(JSON.parse(String(prepareCall?.[1]?.body))).toEqual({ videoIds: ["vidA000001"] });
 
     await sendMessage("Summarize the deep dive");
     stream.push([
@@ -368,6 +369,96 @@ describe("ChatWorkspace — picking sources for a fresh chat", () => {
     ]);
     // A created conversation lands in the address bar.
     await waitFor(() => expect(window.location.search).toBe("?thread=12"));
+  });
+
+  it("keeps ticks in a draft until confirmed, and selects a creator's sources at once", async () => {
+    routeThreads();
+    renderWorkspace();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Choose sources" })[0]);
+    let dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "Select Beta interview" }));
+    expect(within(dialog).getByRole("button", { name: "Use 1 source" })).toBeTruthy();
+
+    // Cancel discards the draft: the next open starts from the committed (empty) scope.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.queryByText("Ready to chat about 1 source")).toBeNull();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Choose sources" })[0]);
+    dialog = await screen.findByRole("dialog");
+    expect(
+      (within(dialog).getByRole("checkbox", { name: "Select Beta interview" }) as HTMLInputElement)
+        .checked,
+    ).toBe(false);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Select all from Alpha Channel" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Use 2 sources" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByText("Ready to chat about 2 sources")).toBeTruthy();
+  });
+
+  it("names post groups after the saved creator, not a reposted author", async () => {
+    renderWorkspace({
+      tweets: [
+        {
+          id: "1900000000000000001",
+          creatorId: 6,
+          authorHandle: "muir",
+          authorName: "Muir",
+          text: "A post Tulip King reposted",
+          mediaPreviewUrl: null,
+          categoryIds: [],
+          readyForAnalysis: true,
+        },
+      ],
+      creators: [{ id: 6, displayName: "Tulip King", avatarUrl: null, platform: "x" }],
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Choose sources" })[0]);
+    const dialog = await screen.findByRole("dialog");
+
+    expect(within(dialog).getByRole("region", { name: "Tulip King" })).toBeTruthy();
+    expect(within(dialog).queryByRole("region", { name: "Muir" })).toBeNull();
+    // The card still credits the account that actually wrote the post.
+    expect(within(dialog).getByText("@muir")).toBeTruthy();
+  });
+
+  it("narrows sources to one platform", async () => {
+    renderWorkspace({
+      tweets: [
+        {
+          id: "1900000000000000002",
+          creatorId: 6,
+          authorHandle: "tulipking",
+          authorName: "Tulip King",
+          text: "A post on X",
+          mediaPreviewUrl: null,
+          categoryIds: [],
+          readyForAnalysis: true,
+        },
+      ],
+      creators: [
+        { id: 1, displayName: "Alpha Channel", avatarUrl: null, platform: "youtube" },
+        { id: 2, displayName: "Beta Channel", avatarUrl: null, platform: "rumble" },
+        { id: 6, displayName: "Tulip King", avatarUrl: null, platform: "x" },
+      ],
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Choose sources" })[0]);
+    const dialog = await screen.findByRole("dialog");
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Filter by platform: All platforms" }),
+    );
+    fireEvent.click(within(dialog).getByRole("menuitemradio", { name: /^Rumble/ }));
+    expect(within(dialog).getByRole("region", { name: "Beta Channel" })).toBeTruthy();
+    expect(within(dialog).queryByRole("region", { name: "Alpha Channel" })).toBeNull();
+    expect(within(dialog).queryByRole("region", { name: "Tulip King" })).toBeNull();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Filter by platform: Rumble" }));
+    fireEvent.click(within(dialog).getByRole("menuitemradio", { name: /^X/ }));
+    expect(within(dialog).getByRole("region", { name: "Tulip King" })).toBeTruthy();
+    expect(within(dialog).queryByRole("region", { name: "Beta Channel" })).toBeNull();
   });
 
   it("prefills the scope from the collapsed panel's expand (?videos=)", async () => {

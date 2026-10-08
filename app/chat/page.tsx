@@ -1,10 +1,11 @@
 import { ChatWorkspace } from "./chat-view";
-import { listThreads, resolveScope } from "@/lib/ai";
+import { listThreads } from "@/lib/ai";
 import { listAllVideosWithCreator } from "@/lib/videos/service";
 import { listFeedTweets } from "@/lib/x/repository";
 import { normalizeSourceRefs, type SourceRef } from "@/lib/content/model";
 import { getDb } from "@/lib/db/connection";
 import { listCategories, listCreatorCategoryAssignments } from "@/lib/categories";
+import { listCreators } from "@/lib/creators/repository";
 
 // Threads and the cached source lists live in SQLite and must reflect new
 // turns, deletions, and refreshes immediately.
@@ -98,16 +99,6 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
   const requestedVideoIds = parseScopeIds(params.videos).filter((id) => knownVideoIds.has(id));
   const requestedSources = parseSourceParams(params.sources, knownVideoIds, knownTweetIds);
 
-  // Transcript availability comes from the shared scope resolver so every
-  // chat surface agrees on what can ground a conversation.
-  const scope = resolveScope(
-    db,
-    videos.map((video) => video.id),
-  );
-  const hasTranscriptByVideoId = new Map(
-    scope.videos.map((video) => [video.id, video.hasTranscript]),
-  );
-
   // A valid thread deep link wins over a pending scope; the thread's own
   // scope is what its conversation continues in.
   const initialThreadId = requestedThreadId;
@@ -123,8 +114,10 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
         title: video.title,
         creatorName: video.creatorName,
         thumbnailUrl: video.thumbnailUrl,
+        publishedAt: video.publishedAt,
+        durationSeconds: video.durationSeconds,
+        liveStatus: video.liveStatus,
         categoryIds: (assignments.get(video.creatorId) ?? []).map((category) => category.id),
-        hasTranscript: hasTranscriptByVideoId.get(video.id) ?? false,
       }))}
       tweets={tweetRecords.map((record) => ({
         id: record.tweet.id,
@@ -138,6 +131,12 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
         categoryIds: (assignments.get(record.creatorId) ?? []).map((category) => category.id),
         readyForAnalysis:
           record.tweet.contentStatus === "complete" && record.tweet.text.trim().length > 0,
+      }))}
+      creators={listCreators(db).map((creator) => ({
+        id: creator.id,
+        displayName: creator.displayName,
+        avatarUrl: creator.avatarUrl,
+        platform: creator.platform,
       }))}
       categories={categories}
       initialThreads={listThreads(db).map((thread) => ({

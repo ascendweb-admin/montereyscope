@@ -53,6 +53,23 @@ function setDetails(cookie) {
   };
 }
 
+/** Transaction seeds age out like twitter-cli's own on-disk cache would. */
+const TRANSACTION_SEED_TTL_MS = 60 * 60 * 1000;
+
+/** One log line per failed X read: what failed and what X said about its quota. */
+function describeFailure(operation, error) {
+  const d = error.diagnostic ?? {};
+  const rate = d.rateLimit ?? {};
+  const parts = [
+    d.stage && `stage ${d.stage}`,
+    d.httpStatus && `HTTP ${d.httpStatus}`,
+    Number.isInteger(rate.remaining) && `quota ${rate.remaining}/${rate.limit ?? "?"} left`,
+    Number.isInteger(rate.reset) && `window resets ${new Date(rate.reset * 1000).toISOString()}`,
+    Number.isFinite(error.retryAfterSeconds) && `retrying in ${error.retryAfterSeconds}s`,
+  ].filter(Boolean);
+  return `X ${operation} failed: ${error.code}${parts.length ? ` (${parts.join(", ")})` : ""}`;
+}
+
 /** Credentials live here, never in Next, renderer state, or a persistent Chromium partition. */
 function createXConnection({
   BrowserWindow,
@@ -67,6 +84,7 @@ function createXConnection({
   store = null,
   isServicePresent = () => false,
   platform = process.platform,
+  log = () => {},
 }) {
   const sessionStore =
     store ??
@@ -98,6 +116,8 @@ function createXConnection({
     retryAt = 0,
     closed = false,
     clearing = Promise.resolve();
+  // x.com homepage + ondemand bundle for transaction ids: memory only, never on disk.
+  let transactionSeed = null;
   const active = new Set();
   const watchers = new Map();
 
@@ -157,6 +177,7 @@ function createXConnection({
   }
   function invalidate() {
     generation++;
+    transactionSeed = null;
     for (const controller of active) controller.abort();
     active.clear();
     clearTimeout(pollTimer);
@@ -259,18 +280,26 @@ function createXConnection({
         const controller = new AbortController();
         active.add(controller);
         try {
+          const seed =
+            transactionSeed && Date.now() - transactionSeed.at < TRANSACTION_SEED_TTL_MS
+              ? { homeHtml: transactionSeed.homeHtml, ondemandText: transactionSeed.ondemandText }
+              : undefined;
           const result = await runWorker(
             executable,
-            { operation, params, credentials },
+            { operation, params, credentials, ...(seed ? { transaction: seed } : {}) },
             {
               cwd: path.join(dataRoot, "x-worker"),
               signal: controller.signal,
+              onTransaction: (fresh) => {
+                if (expectedGeneration === generation) transactionSeed = { ...fresh, at: Date.now() };
+              },
             },
           );
           if (expectedGeneration !== generation || closed) throw failure("cancelled");
           return result;
         } catch (error) {
           if (expectedGeneration === generation) {
+            if (error.code !== "cancelled") log(describeFailure(operation, error));
             if (error.code === "rate_limited")
               retryAt = Date.now() + 1000 * (error.retryAfterSeconds ?? 60);
             if (
@@ -561,7 +590,7 @@ function createXConnection({
       return status();
     },
     async read(operation, params) {
-      if (!new Set(["user", "user_posts", "tweet"]).has(operation))
+      if (!new Set(["user", "user_search", "user_posts", "tweet"]).has(operation))
         throw failure("invalid_response");
       if (phase !== "connected" || !cookieHeader) throw failure(errorCode || "not_connected");
       return exclusive(operation, params, { cookieHeader });

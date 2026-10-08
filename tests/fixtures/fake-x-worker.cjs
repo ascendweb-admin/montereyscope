@@ -110,6 +110,14 @@ process.stdin.on("end", () => {
     case "user":
       data = { user, pinnedTweetId: null };
       break;
+    case "user_search":
+      data = {
+        users: [
+          { ...user, verified: true, protected: false },
+          { userId: "999", handle: "somebody", displayName: "Somebody", avatarUrl: null },
+        ],
+      };
+      break;
     case "user_posts": {
       const limit = Number(request.params && request.params.limit) || 20;
       const cursor = request.params && request.params.cursor;

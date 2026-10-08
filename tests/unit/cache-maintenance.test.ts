@@ -18,7 +18,9 @@ import {
 import {
   clearCachedFeedMetadata,
   clearTranscriptCache,
+  clearTweetCache,
   getCacheCounts,
+  getCacheSizes,
 } from "@/lib/maintenance/service";
 
 const tempDirs: string[] = [];
@@ -111,6 +113,70 @@ describe("cache counts (shown in confirmations before deletion)", () => {
     clearAllTranscripts(db);
     clearAllCachedFeeds(db);
     expect(getCacheCounts(db)).toEqual({ cachedTranscripts: 0, cachedVideos: 0, cachedTweets: 0 });
+  });
+});
+
+describe("cache sizes", () => {
+  it("measures UTF-8 transcript data separately from video metadata", () => {
+    const before = getCacheSizes(db);
+    expect(before.cachedTranscriptBytes).toBeGreaterThan(0);
+    expect(before.cachedVideoBytes).toBeGreaterThan(0);
+    expect(before.cachedTweetBytes).toBe(0);
+
+    const text = "Caption café 🎬\u0000".repeat(1_000);
+    saveTranscript(
+      db,
+      { videoId: "Video00001", language: "en", source: "manual", plainText: text },
+      "2026-08-21T10:00:00.000Z",
+    );
+    const after = getCacheSizes(db);
+    expect(after.cachedTranscriptBytes - before.cachedTranscriptBytes).toBeGreaterThanOrEqual(
+      Buffer.byteLength(text) - Buffer.byteLength("One."),
+    );
+    expect(after.cachedVideoBytes).toBe(before.cachedVideoBytes);
+    expect(after.cachedTweetBytes).toBe(0);
+  });
+
+  it("includes X timeline and feed state without duplicating shared post bodies", () => {
+    const text = "A cached post.".repeat(1_000);
+    db.prepare(
+      `INSERT INTO tweets (id, author_user_id, author_handle, author_name, url, text)
+       VALUES ('post1', 'author1', 'author', 'Author', 'https://x.com/author/status/1', ?)`,
+    ).run(text);
+    const creatorIds = db.prepare("SELECT id FROM creators ORDER BY id").all() as { id: number }[];
+    const postBytes = getCacheSizes(db).cachedTweetBytes;
+    expect(postBytes).toBeGreaterThan(Buffer.byteLength(text));
+
+    for (const creator of creatorIds) {
+      db.prepare("INSERT INTO creator_tweets (creator_id, tweet_id) VALUES (?, 'post1')").run(
+        creator.id,
+      );
+      db.prepare("INSERT INTO x_feed_state (creator_id, config_key) VALUES (?, 'test')").run(
+        creator.id,
+      );
+    }
+    const linkedBytes = getCacheSizes(db).cachedTweetBytes;
+    expect(linkedBytes).toBeGreaterThan(postBytes);
+    expect(linkedBytes - postBytes).toBeLessThan(Buffer.byteLength(text));
+    clearTweetCache(db);
+    expect(getCacheSizes(db).cachedTweetBytes).toBe(0);
+  });
+
+  it("reports zero for cleared caches even while database pages and creators remain", () => {
+    const videoBytes = getCacheSizes(db).cachedVideoBytes;
+    clearTranscriptCache(db);
+    expect(getCacheSizes(db)).toEqual({
+      cachedTranscriptBytes: 0,
+      cachedVideoBytes: videoBytes,
+      cachedTweetBytes: 0,
+    });
+
+    clearCachedFeedMetadata(db);
+    expect(getCacheSizes(db)).toEqual({
+      cachedTranscriptBytes: 0,
+      cachedVideoBytes: 0,
+      cachedTweetBytes: 0,
+    });
   });
 });
 

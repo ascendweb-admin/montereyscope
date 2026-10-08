@@ -10,7 +10,8 @@ const TONE_STYLES: Record<AlertTone, string> = {
     "border-destructive/40 bg-red-50 text-red-900 dark:border-destructive/30 dark:bg-red-950 dark:text-red-100",
   warning:
     "border-amber-500/40 bg-amber-50 text-amber-900 dark:border-amber-500/30 dark:bg-amber-950 dark:text-amber-100",
-  success: "",
+  success:
+    "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-100",
   info: "border-border bg-muted/40 text-card-foreground",
 };
 

@@ -17,12 +17,34 @@ async function main() {
   const resources = path.join(appPath, "Contents", "Resources");
   const serverRoot = path.join(resources, "app-server");
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "scope-monterey-backend-"));
+  const claude = path.join(scratch, "claude");
+  const claudeStatus = path.join(scratch, "claude-status");
+  fs.writeFileSync(
+    claude,
+    `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\\n' '2.1.241 (Claude Code)'
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  if [ "$(cat "$(dirname "$0")/claude-status")" = "unavailable" ]; then
+    printf '%s\\n' 'Test fixture: Keychain temporarily unavailable' >&2
+    exit 1
+  fi
+  printf '%s\\n' '{"loggedIn":true,"authMethod":"oauth"}'
+  exit 0
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
   const slowTool = path.join(scratch, "slow-ytdlp");
   fs.writeFileSync(slowTool, "#!/bin/sh\n/bin/sleep 4\nprintf '2026.08.19\\n'\n", { mode: 0o755 });
   for (const [name, tool] of [
     ["bundled downloader", path.join(resources, "bin", "yt-dlp")],
     ["slow downloader", slowTool],
   ]) {
+    fs.writeFileSync(claudeStatus, "unavailable");
     const port = await allocateLoopbackPort();
     const token = crypto.randomBytes(32).toString("hex");
     const origin = `http://127.0.0.1:${port}`;
@@ -39,6 +61,11 @@ async function main() {
       SCOPE_DB_PATH: path.join(scratch, "library.db"),
       SCOPE_AI_JOBS_ROOT: path.join(scratch, "ai-jobs"),
       SCOPE_YTDLP_PATH: tool,
+      SCOPE_CLAUDE_PATH: claude,
+      SCOPE_CODEX_PATH: path.join(scratch, "no-codex"),
+      SCOPE_OPENCODE_BIN: path.join(scratch, "no-opencode"),
+      XDG_DATA_HOME: path.join(scratch, "xdg-data"),
+      XDG_CONFIG_HOME: path.join(scratch, "xdg-config"),
     };
     const child = spawn(executable, [path.join(serverRoot, "server.js")], {
       cwd: serverRoot,
@@ -96,8 +123,17 @@ async function main() {
           "Slow-tool regression fixture must exercise the timeout mismatch",
         );
       }
+      const failedClaude = await (await get("/api/ai/auth")).json();
+      assert.equal(failedClaude.claude.statusError?.code, "status_unavailable");
+      fs.writeFileSync(claudeStatus, "signed-in");
+      // Let the two-second status cache expire before simulating Check again.
+      await new Promise((resolve) => setTimeout(resolve, 2_100));
+      const recoveredClaude = await (await get("/api/ai/auth")).json();
+      assert.equal(recoveredClaude.claude.authenticated, true);
+      assert.equal(recoveredClaude.claude.subscription, true);
+      assert.equal(recoveredClaude.claude.statusError, null);
       console.log(
-        `PASS: ${name}; packaged backend, database, authenticated readiness, library page, and downloader health.`,
+        `PASS: ${name}; packaged backend, database, authenticated readiness, library page, downloader health, and Claude status recovery.`,
       );
     } catch (error) {
       console.error(output);

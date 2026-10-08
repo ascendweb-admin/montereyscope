@@ -34,6 +34,8 @@ import { setAiBackend, setAiChatModeSettings } from "@/lib/settings/settings";
 import { ModelCatalogService, setModelCatalogForTests } from "@/lib/ai/models/catalog";
 import { bundledCatalogModels } from "@/lib/ai/models/bundled";
 import { getDefaultAiChatModeSettings } from "@/lib/ai/model-catalog";
+import { saveTranscript } from "@/lib/transcripts/repository";
+import { setTranscriptResolverForTests } from "@/lib/transcripts/prepare";
 
 const { runCodexMock, runOpencodeMock, runClaudeMock } = vi.hoisted(() => ({
   runCodexMock: vi.fn(),
@@ -243,9 +245,15 @@ beforeEach(() => {
   runClaudeMock.mockImplementation(() => {
     throw new Error("this test must script runClaude before making a request");
   });
+  // Background caption fetching never reaches yt-dlp in these tests.
+  setTranscriptResolverForTests(async () => ({
+    ok: false,
+    error: { code: "no_captions", message: "No original English captions are available." },
+  }));
 });
 
 afterEach(() => {
+  setTranscriptResolverForTests(null);
   setModelCatalogForTests(null);
   closeDatabase();
   delete process.env.LOCALTUBE_DB_PATH;
@@ -319,8 +327,8 @@ describe("POST /api/ai/chat — new thread", () => {
     expect(options.resumeSessionId).toBeUndefined();
     expect(options.prompt).toContain(SYSTEM_INSTRUCTION);
     expect(options.prompt).toContain("Which video hooks viewers faster?");
-    // The default mode is deep: the pre-mode model, effort, and ceiling.
-    expect(options.model).toBe("gpt-5.6-sol");
+    // The default mode is deep: Sol at extra-high reasoning with a 15-minute ceiling.
+    expect(options.model).toBe("gpt-6.1-sol");
     expect(options.reasoningEffort).toBe("xhigh");
     expect(options.timeoutMs).toBe(15 * 60_000);
 
@@ -453,28 +461,116 @@ describe("POST /api/ai/chat — new thread", () => {
     ]);
   });
 
-  it("rejects a new thread when no selected video has a cached transcript", async () => {
+  it("fetches missing transcripts in the background before the thread starts", async () => {
+    seedFeed();
+    const fetched: string[] = [];
+    setTranscriptResolverForTests(async (db, videoId) => {
+      fetched.push(videoId);
+      const fetchedAt = new Date().toISOString();
+      saveTranscript(
+        db,
+        {
+          videoId,
+          language: "en",
+          source: "automatic",
+          plainText: `Fresh captions for ${videoId}.`,
+        },
+        fetchedAt,
+      );
+      return {
+        ok: true,
+        transcript: {
+          text: `Fresh captions for ${videoId}.`,
+          language: "en",
+          captionSource: "automatic",
+          fetchedAt,
+          fromCache: false,
+        },
+      };
+    });
+    runCodexMock.mockImplementation(() => scriptRun(scriptSuccessfulTurn("Read it.")));
+
+    const response = await postChat({
+      videoIds: [VIDEO_WITH_TRANSCRIPT, VIDEO_WITHOUT_TRANSCRIPT],
+      message: "Compare them.",
+    });
+    expect(response.status).toBe(200);
+    const parsed = parseSse(await response.text());
+
+    // Only the video without a transcript is fetched, with progress first.
+    expect(fetched).toEqual([VIDEO_WITHOUT_TRANSCRIPT]);
+    expect(parsed.slice(0, 3).map((entry) => [entry.event, entry.data])).toEqual([
+      ["status", { type: "status", phase: "preparing", done: 0, total: 1 }],
+      ["status", { type: "status", phase: "preparing", done: 1, total: 1 }],
+      ["thread", expect.objectContaining({ created: true })],
+    ]);
+    expect(parsed.some((entry) => entry.event === "notice")).toBe(false);
+    expect(parsed.at(-1)?.event).toBe("done");
+
+    // Both videos were materialized into the work dir the AI reads.
+    const workDir = lastRunOptions().workDir;
+    expect(existsSync(path.join(workDir, "transcripts", `${VIDEO_WITH_TRANSCRIPT}.txt`))).toBe(
+      true,
+    );
+    expect(existsSync(path.join(workDir, "transcripts", `${VIDEO_WITHOUT_TRANSCRIPT}.txt`))).toBe(
+      true,
+    );
+  });
+
+  it("leaves out videos whose captions cannot be read and says so", async () => {
+    seedFeed();
+    runCodexMock.mockImplementation(() => scriptRun(scriptSuccessfulTurn("Partial answer.")));
+
+    const response = await postChat({
+      videoIds: [VIDEO_WITH_TRANSCRIPT, VIDEO_WITHOUT_TRANSCRIPT],
+      message: "Compare them.",
+    });
+    const parsed = parseSse(await response.text());
+    const notice = parsed.find((entry) => entry.event === "notice");
+    expect(notice?.data?.message).toBe(
+      `Left out 1 video scope couldn't read captions for: “Video ${VIDEO_WITHOUT_TRANSCRIPT}” (no English captions).`,
+    );
+    expect(parsed.at(-1)?.event).toBe("done");
+    const workDir = lastRunOptions().workDir;
+    expect(existsSync(path.join(workDir, "transcripts", `${VIDEO_WITHOUT_TRANSCRIPT}.txt`))).toBe(
+      false,
+    );
+  });
+
+  it("ends the turn without a thread when no selected video can be read", async () => {
     seedFeed();
     const response = await postChat({
       videoIds: [VIDEO_WITHOUT_TRANSCRIPT, UNKNOWN_VIDEO],
       message: "Anything?",
     });
 
-    expect(response.status).toBe(422);
-    const body = (await response.json()) as {
-      error: { code: string };
-      unknownSources: Array<{ kind: string; id: string }>;
-      notReadySources: Array<{ kind: string; id: string }>;
-    };
-    expect(body.error.code).toBe("no_ready_sources");
-    expect(body.notReadySources).toEqual([{ kind: "video", id: VIDEO_WITHOUT_TRANSCRIPT }]);
-    expect(body.unknownSources).toEqual([{ kind: "video", id: UNKNOWN_VIDEO }]);
+    expect(response.status).toBe(200);
+    const parsed = parseSse(await response.text());
+    expect(parsed.map((entry) => entry.event)).toEqual(["status", "status", "error"]);
+    expect(parsed[2].data).toMatchObject({
+      code: "no_ready_sources",
+      message: expect.stringContaining(`“Video ${VIDEO_WITHOUT_TRANSCRIPT}” (no English captions)`),
+    });
     expect(runCodexMock).not.toHaveBeenCalled();
 
     const threadCount = getDb()
       .prepare<[], { n: number }>("SELECT COUNT(*) AS n FROM ai_threads")
       .get();
     expect(Number(threadCount?.n)).toBe(0);
+  });
+
+  it("rejects a new thread up front when nothing selected exists", async () => {
+    seedFeed();
+    const response = await postChat({ videoIds: [UNKNOWN_VIDEO], message: "Anything?" });
+
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as {
+      error: { code: string };
+      unknownSources: Array<{ kind: string; id: string }>;
+    };
+    expect(body.error.code).toBe("no_ready_sources");
+    expect(body.unknownSources).toEqual([{ kind: "video", id: UNKNOWN_VIDEO }]);
+    expect(runCodexMock).not.toHaveBeenCalled();
   });
 
   it("validates the request body before any work starts", async () => {
@@ -1197,7 +1293,7 @@ describe("POST /api/ai/chat — chat intelligence modes", () => {
     // Drain the stream so the turn actually runs to completion.
     await response.text();
     const options = lastRunOptions();
-    expect(options.model).toBe("gpt-5.6-luna");
+    expect(options.model).toBe("gpt-6-luna");
     expect(options.reasoningEffort).toBe("low");
     expect(options.timeoutMs).toBe(5 * 60_000);
     // The seed carries the quick mode's directive, not the deep one.
@@ -1275,7 +1371,7 @@ describe("POST /api/ai/chat — chat intelligence modes", () => {
     expect(response.status).toBe(200);
     await response.text();
     const options = lastRunOptions();
-    expect(options.model).toBe("gpt-5.6-luna");
+    expect(options.model).toBe("gpt-6-luna");
     expect(options.reasoningEffort).toBe("low");
     // The resume prompt leads with the switch note, then the message.
     expect(options.prompt).toContain("Mode switched to Quick");
@@ -1328,7 +1424,7 @@ describe("POST /api/ai/chat — chat intelligence modes", () => {
     expect(response.status).toBe(200);
     await response.text();
     const options = lastRunOptions();
-    expect(options.model).toBe("gpt-5.6-terra");
+    expect(options.model).toBe("gpt-6.1-sol");
     expect(options.reasoningEffort).toBe("medium");
     expect(options.resumeSessionId).toBeUndefined();
     expect(options.prompt).toContain(buildSystemInstruction("balanced"));

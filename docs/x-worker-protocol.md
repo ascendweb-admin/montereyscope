@@ -32,15 +32,16 @@ know which.
 
 Operations and their params:
 
-| Operation         | Params                               | Data returned                                                     |
-| ----------------- | ------------------------------------ | ----------------------------------------------------------------- |
-| `status`          | —                                    | `{ connected, canConnect?, sessionOnly?, user? }`                 |
-| `connect`         | —                                    | same as `status`                                                  |
-| `disconnect`      | —                                    | `{ ok: true }`                                                    |
-| `cancel`, `focus` | —                                    | connection status                                                 |
-| `user`            | `{ handle }`                         | `{ user, pinnedTweetId? }`                                        |
-| `user_posts`      | `{ userId, handle, cursor?, limit }` | `{ items: [{ tweet, timelineKind?, timelineAt? }], nextCursor? }` |
-| `tweet`           | `{ tweetId }`                        | `{ found: true, tweet }` or `{ found: false }`                    |
+| Operation         | Params                               | Data returned                                                                  |
+| ----------------- | ------------------------------------ | ------------------------------------------------------------------------------ |
+| `status`          | —                                    | `{ connected, canConnect?, sessionOnly?, user? }`                              |
+| `connect`         | —                                    | same as `status`                                                               |
+| `disconnect`      | —                                    | `{ ok: true }`                                                                 |
+| `cancel`, `focus` | —                                    | connection status                                                              |
+| `user`            | `{ handle }`                         | `{ user, pinnedTweetId? }`                                                     |
+| `user_search`     | `{ query }`                          | `{ users: [{ userId, handle, displayName, avatarUrl, verified, protected }] }` |
+| `user_posts`      | `{ userId, handle, cursor?, limit }` | `{ items: [{ tweet, timelineKind?, timelineAt? }], nextCursor? }`              |
+| `tweet`           | `{ tweetId }`                        | `{ found: true, tweet }` or `{ found: false }`                                 |
 
 `user` and tweet payloads follow the normalized shape Scope's mapper
 (`lib/x/mapper.ts`) accepts. Ids are decimal strings; numbers are only used
@@ -48,9 +49,11 @@ for nullable metrics.
 
 `connect`, `disconnect`, `cancel`, `focus`, and `retry-storage` belong to the
 Electron broker, not the Python worker. The frozen worker only accepts
-`status`, `user`, `user_posts`, `tweet`, and a network-free `runtime` packaging
-check. Broker status also includes `phase`, `attemptId`, `restoring`, and a
-bounded `storage` record (`state`, `reason`, `backend`); lifecycle calls return
+`status`, `user`, `user_search`, `user_posts`, `tweet`, and a network-free
+`runtime` packaging check. `user_search` reads X's people typeahead (the x.com
+search box) with one GET and returns at most 10 accounts, best match first.
+Broker status also includes `phase`, `attemptId`, `restoring`, and a bounded
+`storage` record (`state`, `reason`, `backend`); lifecycle calls return
 that status. `retry-storage` retries decrypting or saving the desktop-stored
 session without starting another X sign-in. The broker rejects credentials
 supplied by its client: only Electron can add them.

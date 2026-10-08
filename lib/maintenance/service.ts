@@ -24,6 +24,47 @@ export function getCacheCounts(db: ScopeDatabase): CacheCounts {
   };
 }
 
+export interface CacheSizes {
+  cachedTranscriptBytes: number;
+  cachedVideoBytes: number;
+  cachedTweetBytes: number;
+}
+
+/**
+ * Measures stored SQLite records and indexes for each cache. Unused space,
+ * page overhead, and saved research snapshots are excluded, so these are
+ * data sizes rather than a promise of disk space reclaimed by clearing.
+ */
+export function getCacheSizes(db: ScopeDatabase): CacheSizes {
+  const rows = db
+    .prepare<[], { tableName: string; bytes: number }>(
+      `SELECT schema.tbl_name AS tableName, SUM(stat.payload) AS bytes
+       FROM dbstat AS stat
+       JOIN sqlite_schema AS schema ON schema.name = stat.name
+       WHERE schema.tbl_name IN (
+         'transcripts', 'videos', 'tweets', 'creator_tweets', 'x_feed_state',
+         'x_retrieval_checkpoints', 'x_retrieval_tasks', 'x_retrieval_jobs'
+       )
+       GROUP BY schema.tbl_name`,
+    )
+    .all();
+  const sizes: CacheSizes = {
+    cachedTranscriptBytes: 0,
+    cachedVideoBytes: 0,
+    cachedTweetBytes: 0,
+  };
+  for (const row of rows) {
+    if (row.tableName === "transcripts") {
+      sizes.cachedTranscriptBytes += row.bytes;
+    } else if (row.tableName === "videos") {
+      sizes.cachedVideoBytes += row.bytes;
+    } else {
+      sizes.cachedTweetBytes += row.bytes;
+    }
+  }
+  return sizes;
+}
+
 export type ClearOutcome = { ok: true; deletedCount: number } | { ok: false; message: string };
 
 /**

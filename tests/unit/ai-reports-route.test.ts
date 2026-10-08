@@ -27,6 +27,8 @@ import {
 } from "@/app/api/ai/reports/[id]/route";
 import { GET as GET_REPORT_FILE } from "@/app/api/ai/reports/[id]/file/route";
 import { closeDatabase, getDb } from "@/lib/db/connection";
+import { saveTranscript } from "@/lib/transcripts/repository";
+import { setTranscriptResolverForTests } from "@/lib/transcripts/prepare";
 
 const { runCodexMock } = vi.hoisted(() => ({ runCodexMock: vi.fn() }));
 
@@ -233,9 +235,15 @@ beforeEach(() => {
   runCodexMock.mockImplementation(() => {
     throw new Error("this test must script runCodex before making a request");
   });
+  // Background caption fetching never reaches yt-dlp in these tests.
+  setTranscriptResolverForTests(async () => ({
+    ok: false,
+    error: { code: "no_captions", message: "No original English captions are available." },
+  }));
 });
 
 afterEach(() => {
+  setTranscriptResolverForTests(null);
   // The process-wide queue must not carry a stale database into the next test.
   closeReportQueue();
   closeDatabase();
@@ -328,7 +336,7 @@ describe("POST /api/ai/reports", () => {
     expect(done.videoCount).toBe(1);
   });
 
-  it("rejects invalid bodies, unknown threads, and transcript-less scopes", async () => {
+  it("rejects invalid bodies, unknown threads, and unknown scopes", async () => {
     seedFeed();
 
     const badJson = await postReports("not json");
@@ -346,11 +354,64 @@ describe("POST /api/ai/reports", () => {
     const missingThread = await postReports({ threadId: 999 });
     expect(missingThread.status).toBe(404);
 
-    const noTranscripts = await postReports({ videoIds: [VIDEO_WITHOUT_TRANSCRIPT] });
-    expect(noTranscripts.status).toBe(422);
-
     const unknown = await postReports({ videoIds: [UNKNOWN_VIDEO] });
     expect(unknown.status).toBe(422);
+  });
+
+  it("fetches missing transcripts in the job before the report is written", async () => {
+    seedFeed();
+    const fetched: string[] = [];
+    setTranscriptResolverForTests(async (db, videoId) => {
+      fetched.push(videoId);
+      const fetchedAt = new Date().toISOString();
+      saveTranscript(
+        db,
+        { videoId, language: "en", source: "automatic", plainText: "Fresh captions." },
+        fetchedAt,
+      );
+      return {
+        ok: true,
+        transcript: {
+          text: "Fresh captions.",
+          language: "en",
+          captionSource: "automatic",
+          fetchedAt,
+          fromCache: false,
+        },
+      };
+    });
+    runCodexMock.mockImplementation((options: CodexRunOptions) => {
+      expect(
+        existsSync(path.join(options.workDir, "transcripts", `${VIDEO_WITHOUT_TRANSCRIPT}.txt`)),
+      ).toBe(true);
+      writeFileSync(path.join(options.workDir, "report.html"), DELIVERABLE_HTML, "utf8");
+      return scriptRun({ finalMessage: "Report written." });
+    });
+
+    const response = await postReports({
+      videoIds: [VIDEO_WITH_TRANSCRIPT, VIDEO_WITHOUT_TRANSCRIPT],
+    });
+    expect(response.status).toBe(202);
+    const { report } = (await response.json()) as { report: ReportBody };
+
+    const done = await pollUntil(report.id, ["done", "failed"]);
+    expect(done.status).toBe("done");
+    expect(fetched).toEqual([VIDEO_WITHOUT_TRANSCRIPT]);
+    expect(runCodexMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails a report whose videos' captions cannot be read, naming them", async () => {
+    seedFeed();
+    const response = await postReports({ videoIds: [VIDEO_WITHOUT_TRANSCRIPT] });
+    expect(response.status).toBe(202);
+    const { report } = (await response.json()) as { report: ReportBody };
+
+    const failed = await pollUntil(report.id, ["done", "failed"]);
+    expect(failed.status).toBe("failed");
+    expect(failed.error).toBe(
+      `Left out 1 video scope couldn't read captions for: “Video ${VIDEO_WITHOUT_TRANSCRIPT}” (no English captions).`,
+    );
+    expect(runCodexMock).not.toHaveBeenCalled();
   });
 
   it("refuses selections beyond the analysis cap with a readable 422 (stage 7)", async () => {
@@ -486,11 +547,9 @@ describe("report identity and management", () => {
       return scriptRun({});
     });
 
-    const queued = (
-      await (
-        await postReports({ videoIds: [VIDEO_WITH_TRANSCRIPT, SECOND_VIDEO_WITH_TRANSCRIPT] })
-      ).json()
-    ) as { report: ReportBody };
+    const queued = (await (
+      await postReports({ videoIds: [VIDEO_WITH_TRANSCRIPT, SECOND_VIDEO_WITH_TRANSCRIPT] })
+    ).json()) as { report: ReportBody };
     // Queued rows have no identity yet.
     expect(queued.report.title).toBeNull();
     expect(queued.report.dek).toBeNull();

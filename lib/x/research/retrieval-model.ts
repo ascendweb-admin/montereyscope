@@ -10,7 +10,17 @@ export interface RetrievalRequest {
   since: string;
   until: string;
   initialDays: number;
-  maxPages: number;
+  /** Pages per creator per attempt; null scales the budget to each creator's window. */
+  maxPages: number | null;
+}
+export const MAX_PAGE_BUDGET = 300;
+/**
+ * Busy accounts fill a ~20-post page per day, often more with reposts; the margin covers the
+ * two older pages that qualify a date boundary.
+ */
+export function autoPageBudget(days: number): number {
+  const pages = Number.isFinite(days) ? Math.ceil(Math.max(0, days) * 1.5) + 4 : 10;
+  return Math.min(MAX_PAGE_BUDGET, Math.max(10, pages));
 }
 export interface RetrievalCreatorProgress {
   creatorId: number;
@@ -24,6 +34,8 @@ export interface RetrievalCreatorProgress {
   newest: string | null;
   reason: string | null;
   error: string | null;
+  /** Provider failure code behind `error`, when known. */
+  errorCode?: string | null;
   retryAt: string | null;
 }
 export interface RetrievalJob {
@@ -57,4 +69,5 @@ export const RETRIEVAL_REASONS: Record<string, string> = {
   cancelled: "Cancelled; committed pages are preserved",
   interrupted: "Interrupted by application restart; resume manually",
   configuration: "Provider configuration changed; start a new retrieval",
+  waiting: "Waiting for X before continuing automatically",
 };

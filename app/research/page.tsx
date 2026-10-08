@@ -1,6 +1,5 @@
 import { ResearchView } from "./research-view";
 import { listCreators } from "@/lib/creators/repository";
-import { resolveScope } from "@/lib/ai";
 import { listAllVideosWithCreator } from "@/lib/videos/service";
 import { listFeedTweets } from "@/lib/x/repository";
 import { getDb } from "@/lib/db/connection";
@@ -31,13 +30,6 @@ export default function ResearchPage() {
   }));
 
   const videos = listAllVideosWithCreator(db);
-  const scope = resolveScope(
-    db,
-    videos.map((video) => video.id),
-  );
-  const hasTranscriptByVideoId = new Map(
-    scope.videos.map((video) => [video.id, video.hasTranscript]),
-  );
 
   const tweets = listFeedTweets(db).map((record) => ({
     id: record.tweet.id,
@@ -48,8 +40,7 @@ export default function ResearchPage() {
     text: record.tweet.text,
     publishedAt: record.tweet.publishedAt,
     url: record.tweet.url,
-    mediaPreviewUrl:
-      record.tweet.media[0]?.previewUrl ?? record.tweet.media[0]?.url ?? null,
+    mediaPreviewUrl: record.tweet.media[0]?.previewUrl ?? record.tweet.media[0]?.url ?? null,
     contentStatus: record.tweet.contentStatus,
     readyForAnalysis:
       record.tweet.contentStatus === "complete" && record.tweet.text.trim().length > 0,
@@ -68,7 +59,6 @@ export default function ResearchPage() {
         publishedAt: video.publishedAt,
         durationSeconds: video.durationSeconds,
         liveStatus: video.liveStatus,
-        hasTranscript: hasTranscriptByVideoId.get(video.id) ?? false,
       }))}
       tweets={tweets}
     />

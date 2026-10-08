@@ -22,8 +22,10 @@ import {
   MessageBubble,
   ThinkingDots,
   errorTitle,
+  preparingLabel,
   useChatSourceIndex,
 } from "@/components/ai/chat-engine";
+import { prefetchTranscripts } from "@/components/ai/prefetch-transcripts";
 import {
   CHAT_MODE_OPTIONS,
   DEFAULT_CHAT_MODE,
@@ -233,6 +235,19 @@ export function ChatPanel({
     return () => window.clearTimeout(timer);
   }, [open, refreshHistory]);
 
+  // Opening the panel on a selection starts reading its videos in the
+  // background, so the first answer does not wait on caption downloads.
+  const scopeVideoKey = (
+    scopeSources?.length
+      ? scopeSources.filter((source) => source.kind === "video").map((source) => source.id)
+      : scope
+  ).join(",");
+  useEffect(() => {
+    if (open && scopeVideoKey.length > 0) {
+      prefetchTranscripts(scopeVideoKey.split(","));
+    }
+  }, [open, scopeVideoKey]);
+
   useEffect(() => {
     if (open) {
       return;
@@ -305,7 +320,7 @@ export function ChatPanel({
               </div>
               <p className="text-base font-semibold tracking-tight">Ask about your sources</p>
               <p className="max-w-xs text-sm text-muted-foreground">
-                The configured AI reads the cached transcripts and posts in scope and answers
+                The configured AI reads what is said in the videos and posts in scope and answers
                 grounded in them — summaries, themes, or specific claims.
               </p>
             </div>
@@ -332,7 +347,9 @@ export function ChatPanel({
               {engine.turnPhase === "working" ? (
                 <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
                   <ThinkingDots />
-                  {chatModeOption(engine.turnMode).workingLabel}
+                  {engine.preparing
+                    ? preparingLabel(engine.preparing)
+                    : chatModeOption(engine.turnMode).workingLabel}
                 </p>
               ) : null}
             </div>

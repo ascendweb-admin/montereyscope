@@ -4,7 +4,14 @@ import { Button } from "@/components/ui/button";
 import { requestXConnection, xLoginPending } from "@/lib/x/connection-client";
 import { X_UNAVAILABLE_STATUS, type XConnectionStatus } from "@/lib/x/model";
 
-export function XInlineConnect({ onConnected }: { onConnected: () => void }) {
+export function XInlineConnect({
+  onConnected,
+  purpose = "link",
+}: {
+  onConnected: () => void;
+  /** What resumes after connecting; only changes the guidance copy. */
+  purpose?: "link" | "search";
+}) {
   const [status, setStatus] = useState<XConnectionStatus>(X_UNAVAILABLE_STATUS);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -59,10 +66,14 @@ export function XInlineConnect({ onConnected }: { onConnected: () => void }) {
           (status.restoring
             ? "Restoring your saved X login…"
             : xLoginPending(status)
-              ? "Finish signing in in the X window. Your link and categories stay here."
+              ? purpose === "search"
+                ? "Finish signing in in the X window. Your search runs as soon as X connects."
+                : "Finish signing in in the X window. Your link and categories stay here."
               : status.capability === "unavailable"
                 ? "Connect X in the desktop app. If its worker is missing, repair or update the app."
-                : "Connect X, then resolve this link again. Your link and categories stay here.")}
+                : purpose === "search"
+                  ? "Connect X to search accounts. Your search runs as soon as X connects."
+                  : "Connect X, then resolve this link again. Your link and categories stay here.")}
       </p>
       {xLoginPending(status) && !status.restoring ? (
         <div className="flex flex-wrap gap-2">

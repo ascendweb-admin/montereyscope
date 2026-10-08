@@ -11,16 +11,43 @@ import json
 import logging
 import re
 import sys
+import time
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from http.cookies import SimpleCookie
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlencode, urlparse, unquote
 
 PROTOCOL = 1
-MAX_REQUEST = 65536
+# Requests may carry the in-memory transaction seed (homepage + ondemand bundle).
+MAX_REQUEST = 4 * 1024 * 1024
+MAX_SEED_HTML = 3 * 1024 * 1024
+MAX_SEED_SCRIPT = 1024 * 1024
 ID = re.compile(r"^[0-9]{1,20}$")
 HANDLE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 DIAGNOSTIC = {"stage": "request", "httpStatus": None}
+# Transaction material fetched during this request, handed back to the host so the
+# next request can skip re-downloading x.com's homepage and ondemand bundle.
+FRESH_TRANSACTION = {}
+
+
+def retry_after(headers, now=None):
+    """Seconds until X accepts reads again: Retry-After, else the rate window's reset, else a minute."""
+    retry = str(headers.get("retry-after") or "")
+    if retry.isdigit():
+        return int(retry)
+    reset = str(headers.get("x-rate-limit-reset") or "")
+    if reset.isdigit():
+        wait = int(reset) - int(time.time() if now is None else now)
+        # A reset in the past or implausibly far out is clock skew, not a real window.
+        if 0 <= wait <= 3600:
+            return wait + 1
+    return 60
+
+
+def rate_limit(headers):
+    """X's per-endpoint quota headers, for diagnostics only."""
+    values = {key: str(headers.get(f"x-rate-limit-{key}") or "") for key in ("limit", "remaining", "reset")}
+    return {key: int(value) for key, value in values.items() if value.isdigit()} or None
 
 
 class Failure(Exception):
@@ -151,17 +178,44 @@ def page_items(instructions):
     return items, cursor
 
 
-def client_for(cookie_header):
+def transaction_seed(value):
+    """A host-held transaction seed, or None. Never trusted beyond its shape."""
+    if not isinstance(value, dict):
+        return None
+    home, script = value.get("homeHtml"), value.get("ondemandText")
+    if not isinstance(home, str) or not isinstance(script, str) or not home or not script:
+        return None
+    if len(home) > MAX_SEED_HTML or len(script) > MAX_SEED_SCRIPT:
+        return None
+    return dict(homeHtml=home, ondemandText=script)
+
+
+def client_for(cookie_header, seed=None):
+    from twitter_cli import client as upstream
     from twitter_cli.client import TwitterClient, _get_cffi_session
     from twitter_cli.graphql import FEATURES
     from twitter_cli.exceptions import TwitterAPIError
 
     class ReadClient(TwitterClient):
         def _load_ct_cache(self):
-            return False
+            # The host keeps the seed in memory only; nothing is read from disk.
+            if seed is None:
+                return False
+            try:
+                home = upstream.bs4.BeautifulSoup(seed["homeHtml"], "html.parser")
+                self._client_transaction = upstream.ClientTransaction(
+                    home_page_response=home, ondemand_file_response=seed["ondemandText"])
+                upstream._update_features_from_html(seed["homeHtml"])
+                return True
+            except Exception:
+                return False
 
-        def _save_ct_cache(self, *_args):
-            pass  # No HTML, credentials or browser data written to disk.
+        def _save_ct_cache(self, home_html, ondemand_text):
+            # No HTML, credentials or browser data written to disk: the seed goes
+            # back over the pipe and lives in the host's memory.
+            FRESH_TRANSACTION.clear()
+            if isinstance(home_html, str) and isinstance(ondemand_text, str):
+                FRESH_TRANSACTION.update(transaction_seed(dict(homeHtml=home_html, ondemandText=ondemand_text)) or {})
 
         def _graphql_get(self, operation_name, *args, **kwargs):
             if operation_name not in {"UserByScreenName", "UserByRestId", "UserTweets", "TweetResultByRestId"}:
@@ -177,19 +231,19 @@ def client_for(cookie_header):
             if method != "GET" or target.scheme != "https" or target.hostname not in {"x.com", "api.x.com"}:
                 raise Failure("invalid_response")
             DIAGNOSTIC.update(stage=("profile" if target.path.endswith(("/UserByScreenName", "/UserByRestId")) else
+                "user_search" if target.path.endswith("/search/typeahead.json") else
                 "verify_credentials" if target.path.endswith("/verify_credentials.json") else
                 "account_settings" if target.path.endswith("/settings.json") else "read"), httpStatus=None)
             response = _get_cffi_session().get(url, headers=self._build_headers(url=url, method="GET"),
                                               timeout=20, allow_redirects=False)
             code = response.status_code
-            DIAGNOSTIC["httpStatus"] = code
+            DIAGNOSTIC.update(httpStatus=code, rateLimit=rate_limit(response.headers))
             if code == 401:
                 raise Failure("session_expired")
             if code == 403 or 300 <= code < 400:
                 raise Failure("verification_required")
             if code == 429:
-                retry = response.headers.get("retry-after", "")
-                raise Failure("rate_limited", int(retry) if retry.isdigit() else 60)
+                raise Failure("rate_limited", retry_after(response.headers))
             if code in (404, 422) and target.path.startswith("/i/api/graphql/"):
                 # Preserve the pinned client's single live-query-ID refresh.
                 raise TwitterAPIError(code, "GraphQL endpoint needs refresh")
@@ -203,7 +257,7 @@ def client_for(cookie_header):
             errors = data.get("errors") or []
             if errors:
                 code = errors[0].get("code")
-                raise Failure({88: "rate_limited", 89: "session_expired", 32: "session_expired", 326: "verification_required", 144: "not_found"}.get(code, "invalid_response"), 60 if code == 88 else None)
+                raise Failure({88: "rate_limited", 89: "session_expired", 32: "session_expired", 326: "verification_required", 144: "not_found"}.get(code, "invalid_response"), retry_after(response.headers) if code == 88 else None)
             return data
 
     # Chromium may include unrelated cookies with values (for example JSON)
@@ -238,6 +292,37 @@ def lookup(client, features, handle, public=True):
     return user(raw, public), get(raw, "legacy", "pinned_tweet_ids_str") or []
 
 
+def search_users(client, query):
+    # X's own people typeahead (the x.com search box): one read-only GET that
+    # returns ranked accounts. Only fields Scope stores or displays are kept.
+    if not isinstance(query, str) or not query.strip() or len(query) > 100 or re.search(r"[\x00-\x1f\x7f]", query):
+        raise Failure("invalid_response")
+    params = urlencode({"include_ext_is_blue_verified": 1, "include_ext_verified_type": 1,
+                        "include_ext_profile_image_shape": 1, "q": query.strip(),
+                        "src": "search_box", "result_type": "users"})
+    data = client._api_request(f"https://x.com/i/api/1.1/search/typeahead.json?{params}")
+    raw_users = data.get("users")
+    if not isinstance(raw_users, list):
+        raise Failure("invalid_response")
+    users = []
+    for raw in raw_users[:20]:
+        if not isinstance(raw, dict):
+            continue
+        handle = raw.get("screen_name")
+        uid = raw.get("id_str") or (str(raw["id"]) if isinstance(raw.get("id"), int) else None)
+        if not isinstance(handle, str) or not HANDLE.fullmatch(handle) or not isinstance(uid, str) or not ID.match(uid):
+            continue
+        avatar = raw.get("profile_image_url_https")
+        users.append(dict(userId=uid, handle=handle,
+                          displayName=raw.get("name") if isinstance(raw.get("name"), str) and raw.get("name").strip() else handle,
+                          avatarUrl=avatar if isinstance(avatar, str) and avatar.startswith("https://") else None,
+                          verified=bool(raw.get("verified") or raw.get("ext_is_blue_verified") or raw.get("ext_verified_type")),
+                          protected=bool(raw.get("is_protected") or raw.get("protected"))))
+        if len(users) == 10:
+            break
+    return dict(users=users)
+
+
 def verify_session_profile(client, features, header):
     # twid is only an identity hint from the isolated browser session. A successful
     # authenticated GraphQL response with the same ID is mandatory.
@@ -264,7 +349,7 @@ def dispatch(request):
         # Import native dependencies without making a request, including in clean-package CI.
         from twitter_cli.client import TwitterClient  # noqa: F401
         return {"version": "0.8.6", "commit": "7c634e0d396b1e7af9f63315b414925fe4f29ae7"}
-    if operation not in {"status", "user", "user_posts", "tweet"}:
+    if operation not in {"status", "user", "user_search", "user_posts", "tweet"}:
         raise Failure("invalid_response")
     header = get(request, "credentials", "cookieHeader")
     if not isinstance(header, str) or len(header) > 32768 or "\n" in header or "\r" in header:
@@ -272,7 +357,7 @@ def dispatch(request):
     params = request.get("params") or {}
     if not isinstance(params, dict):
         raise Failure("invalid_response")
-    client, features = client_for(header)
+    client, features = client_for(header, transaction_seed(request.get("transaction")))
     if operation == "status":
         # Fail closed: a successful authenticated identity AND profile read are required.
         try:
@@ -288,6 +373,8 @@ def dispatch(request):
                 raise
         identity, _ = lookup(client, features, data.get("screen_name"), public=False)
         return dict(connected=True, user=identity)
+    if operation == "user_search":
+        return search_users(client, params.get("query"))
     if operation == "user":
         identity, pinned = lookup(client, features, params.get("handle"))
         return dict(user=identity, pinnedTweetId=pinned[0] if pinned else None)
@@ -298,10 +385,9 @@ def dispatch(request):
         if result and result["id"] != tid:
             raise Failure("invalid_response")
         return dict(found=result is not None, tweet=result)
+    # The timeline is addressed by the saved numeric id, so a recycled handle can never
+    # change whose posts are read; the host resolves the handle once per traversal.
     uid = identifier(params.get("userId"))
-    identity, _ = lookup(client, features, params.get("handle"))
-    if identity["userId"] != uid:
-        raise Failure("not_found")  # A recycled handle must never change the saved identity.
     limit = params.get("limit", 20)
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
         raise Failure("invalid_response")
@@ -354,6 +440,8 @@ def main():
         envelope = dict(ok=False, error=dict(code=exc.code, retryAfterSeconds=exc.retry), diagnostic=DIAGNOSTIC)
     except Exception:
         envelope = dict(ok=False, error=dict(code="invalid_response"), diagnostic=DIAGNOSTIC)
+    if FRESH_TRANSACTION:
+        envelope["transaction"] = dict(FRESH_TRANSACTION)
     sys.stdout.write(json.dumps(envelope, ensure_ascii=False) + "\n")
     sys.stdout.flush()
 

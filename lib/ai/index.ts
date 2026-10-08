@@ -124,7 +124,6 @@ export {
   MAX_SCOPE_VIDEOS,
   formatScopeCapMessage,
   formatSkippedSources,
-  formatSkippedTranscripts,
   planChatScope,
   planSourceScope,
 } from "./scope-selection";

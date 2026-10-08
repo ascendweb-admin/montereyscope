@@ -21,7 +21,7 @@ export function NavLink({ item, onNavigate }: { item: NavItem; onNavigate?: () =
         title="Planned for a later stage"
         className={cn(baseLinkClass, "cursor-not-allowed text-muted-foreground opacity-70")}
       >
-        <item.icon className="size-4 shrink-0" aria-hidden="true" />
+        <item.icon className={cn("size-4 shrink-0", item.iconClassName)} aria-hidden="true" />
         <span className="flex-1">{item.label}</span>
         <Badge variant="secondary">Soon</Badge>
       </span>
@@ -42,7 +42,7 @@ export function NavLink({ item, onNavigate }: { item: NavItem; onNavigate?: () =
           : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
       )}
     >
-      <item.icon className="size-4 shrink-0" aria-hidden="true" />
+      <item.icon className={cn("size-4 shrink-0", item.iconClassName)} aria-hidden="true" />
       {item.label}
     </Link>
   );

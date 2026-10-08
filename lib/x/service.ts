@@ -19,6 +19,7 @@ import {
   type XErrorCode,
   type XTimelinePage,
   type XUserIdentity,
+  type XUserSearchResult,
 } from "./model";
 import { parseXTarget, xProfileUrl } from "./urls";
 import { getXProvider } from "./providers";
@@ -60,27 +61,39 @@ export function toXServiceError(error: unknown): XServiceError {
 // Process-wide serialization
 // ---------------------------------------------------------------------------
 
-// Next builds route handlers and actions into separate bundles. Share the mutex
+// Next builds route handlers and actions into separate bundles. Share the queue
 // through globalThis so research jobs and existing channel reads serialize together.
 const xOperationState = globalThis as typeof globalThis & {
-  __scopeXOperationChain?: Promise<unknown>;
+  __scopeXOperationQueue?: {
+    busy: boolean;
+    waiting: Array<{ background: boolean; start: () => void }>;
+  };
 };
+
+export interface XExclusiveOptions {
+  /** Yields to every non-background caller waiting at the time the X connection frees up. */
+  background?: boolean;
+}
 
 /**
  * Serializes every X provider call in this process: one network operation at
  * a time, no nested retries. Callers waiting here do not hold database locks.
+ * Background work (backfilling older posts) waits behind everything else.
  */
-export async function runXExclusive<T>(operation: () => Promise<T>): Promise<T> {
-  const previous = xOperationState.__scopeXOperationChain ?? Promise.resolve();
-  let release!: () => void;
-  xOperationState.__scopeXOperationChain = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await previous.catch(() => undefined);
+export async function runXExclusive<T>(
+  operation: () => Promise<T>,
+  { background = false }: XExclusiveOptions = {},
+): Promise<T> {
+  const queue = (xOperationState.__scopeXOperationQueue ??= { busy: false, waiting: [] });
+  if (queue.busy) await new Promise<void>((start) => queue.waiting.push({ background, start }));
+  else queue.busy = true;
   try {
     return await operation();
   } finally {
-    release();
+    const urgent = queue.waiting.findIndex((waiter) => !waiter.background);
+    const [next] = queue.waiting.splice(urgent === -1 ? 0 : urgent, 1);
+    if (next) next.start();
+    else queue.busy = false;
   }
 }
 
@@ -334,6 +347,66 @@ export async function saveXCreator(
   }
 
   return { ok: true, status: outcome.status, creator: outcome.creator, importedTweet };
+}
+
+// ---------------------------------------------------------------------------
+// People search
+// ---------------------------------------------------------------------------
+
+export type XUserSearchOutcome =
+  { ok: true; users: XUserSearchResult[] } | { ok: false; error: XServiceError };
+
+const SEARCHABLE_HANDLE = /^@?([0-9A-Za-z_]{1,15})$/;
+
+/**
+ * Searches X accounts by name through the connected session. When the
+ * people search returns nothing (or its endpoint stops answering in a form
+ * Scope can read) and the query is shaped like a handle, the exact
+ * `@handle` is looked up instead, so typing "pewdiepie" still finds
+ * @pewdiepie. Connection and rate-limit failures are reported as is.
+ */
+export async function searchXUsers(
+  query: string,
+  signal?: AbortSignal,
+): Promise<XUserSearchOutcome> {
+  const handle = SEARCHABLE_HANDLE.exec(query.trim())?.[1] ?? null;
+  try {
+    return await runXExclusive(async () => {
+      const provider = getXProvider();
+      let users: XUserSearchResult[] = [];
+      try {
+        users = await provider.searchUsers(query, signal);
+      } catch (error) {
+        if (
+          !(error instanceof XProviderError) ||
+          error.code !== "invalid_response" ||
+          handle === null
+        ) {
+          throw error;
+        }
+      }
+      if (users.length > 0 || handle === null) {
+        return { ok: true, users } satisfies XUserSearchOutcome;
+      }
+      try {
+        const lookup = await provider.resolveUser(handle, signal);
+        return {
+          ok: true,
+          users: [{ ...lookup.user, verified: false, protected: false }],
+        } satisfies XUserSearchOutcome;
+      } catch (error) {
+        if (
+          error instanceof XProviderError &&
+          (error.code === "not_found" || error.code === "protected_account")
+        ) {
+          return { ok: true, users: [] } satisfies XUserSearchOutcome;
+        }
+        throw error;
+      }
+    });
+  } catch (error) {
+    return { ok: false, error: toXServiceError(error) };
+  }
 }
 
 // ---------------------------------------------------------------------------

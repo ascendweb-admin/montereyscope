@@ -11,9 +11,9 @@ describe("AI model catalog", () => {
   it("keeps the requested first-run matrix explicit", () => {
     expect(DEFAULT_AI_CHAT_MODE_SETTINGS).toEqual({
       codex: {
-        quick: { model: "gpt-5.6-luna", reasoningEffort: "low" },
-        balanced: { model: "gpt-5.6-terra", reasoningEffort: "medium" },
-        deep: { model: "gpt-5.6-sol", reasoningEffort: "xhigh" },
+        quick: { model: "gpt-6-luna", reasoningEffort: "low" },
+        balanced: { model: "gpt-6.1-sol", reasoningEffort: "medium" },
+        deep: { model: "gpt-6.1-sol", reasoningEffort: "xhigh" },
       },
       opencode: {
         quick: { model: "gpt-5.6-luna", reasoningEffort: "low" },
@@ -29,14 +29,21 @@ describe("AI model catalog", () => {
   });
 
   it("exposes only the variants supported by the selected model", () => {
-    expect(getProviderModel("codex", "gpt-5.6-luna")?.reasoningEfforts).toEqual([
+    expect(getProviderModel("codex", "gpt-6-luna")?.reasoningEfforts).toEqual([
       "low",
       "medium",
       "high",
       "xhigh",
       "max",
     ]);
-    expect(getProviderModel("codex", "gpt-5.6-sol")?.reasoningEfforts).toContain("ultra");
+    expect(getProviderModel("codex", "gpt-6.1-sol")?.reasoningEfforts).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ]);
     expect(getProviderModel("opencode", "deepseek-v4-flash")?.reasoningEfforts).toEqual([
       "low",
       "high",
@@ -66,7 +73,8 @@ describe("AI model catalog", () => {
   });
 
   it("maps public model ids to provider-qualified runtime ids", () => {
-    expect(getRuntimeModel("codex", "gpt-5.6-sol")).toBe("gpt-5.6-sol");
+    expect(getRuntimeModel("codex", "gpt-6-luna")).toBe("gpt-6-luna");
+    expect(getRuntimeModel("codex", "gpt-6.1-sol")).toBe("gpt-6.1-sol");
     expect(getRuntimeModel("opencode", "deepseek-v4-pro")).toBe("opencode-go/deepseek-v4-pro");
     // Claude Code resolves its family aliases to the current model version.
     expect(getRuntimeModel("claude", "claude-haiku")).toBe("haiku");

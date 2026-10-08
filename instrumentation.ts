@@ -23,4 +23,10 @@ export async function register(): Promise<void> {
   getReportQueue();
   const { getResearchAnalysisEngine } = await import("./lib/x/research/analysis");
   getResearchAnalysisEngine();
+  // X Dashboard: resume syncs a restart interrupted and run the background
+  // sync interval from Settings; mark interrupted AI insights as such.
+  const { ensureXAutoSync } = await import("./lib/x/dashboard/sync");
+  ensureXAutoSync();
+  const { getInsightEngine } = await import("./lib/x/dashboard/insights");
+  getInsightEngine();
 }

@@ -39,6 +39,7 @@ function provider(pages: XTimelinePage[]): XProvider {
       user: { userId: "123", handle: "author", displayName: "Author", avatarUrl: null },
       pinnedTweetId: "10",
     })),
+    searchUsers: vi.fn(async () => []),
     listUserTweets: vi.fn().mockImplementation(async () => pages.shift()),
     getTweet: vi.fn(async (id) => entries.find((entry) => entry.tweet.id === id)?.tweet ?? null),
   };

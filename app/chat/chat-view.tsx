@@ -23,8 +23,10 @@ import {
   MessageBubble,
   ThinkingDots,
   errorTitle,
+  preparingLabel,
   useChatSourceIndex,
 } from "@/components/ai/chat-engine";
+import { prefetchTranscripts } from "@/components/ai/prefetch-transcripts";
 import {
   CHAT_MODE_OPTIONS,
   DEFAULT_CHAT_MODE,
@@ -33,7 +35,7 @@ import {
 } from "@/components/ai/chat-modes";
 import type { ChatSource } from "@/components/ai/citation";
 import { sourceKey, type SourceRef } from "@/lib/content/model";
-import { ChatSourcePicker } from "@/components/ai/chat-source-picker";
+import { ChatSourcePicker, type PickerCreator } from "@/components/ai/chat-source-picker";
 import { ReportOptionsDialog } from "@/components/ai/report-options-dialog";
 import { AlertNote } from "@/components/ui/alert-note";
 import { Badge } from "@/components/ui/badge";
@@ -69,8 +71,10 @@ export interface ChatWorkspaceVideo {
   title: string;
   creatorName: string;
   thumbnailUrl: string | null;
+  publishedAt?: string | null;
+  durationSeconds?: number | null;
+  liveStatus?: "not_live" | "is_live" | "was_live" | "upcoming" | "unknown";
   categoryIds: number[];
-  hasTranscript: boolean;
 }
 
 export interface ChatWorkspaceTweet {
@@ -105,6 +109,8 @@ export interface ChatWorkspaceProps {
   videos: ChatWorkspaceVideo[];
   /** Every cached X post across the library (citation index + picker). */
   tweets?: ChatWorkspaceTweet[];
+  /** Creator avatars and platforms for the source picker. */
+  creators?: PickerCreator[];
   categories: CategorySummary[];
   /** Thread summaries rendered by the server so the sidebar starts full. */
   initialThreads: ChatWorkspaceThread[];
@@ -243,11 +249,10 @@ function ThreadList({
         </div>
       </div>
 
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pb-4 [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pb-4 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent">
         {threads.length === 0 ? (
           <p className="px-2 py-8 text-center text-sm text-muted-foreground">
-            No conversations yet. Ask something once a video has a cached transcript — every chat is
-            kept here.
+            No conversations yet. Pick some sources and ask something — every chat is kept here.
           </p>
         ) : null}
         {threads.length > 0 && filtered.length === 0 ? (
@@ -304,6 +309,7 @@ function ThreadList({
 export function ChatWorkspace({
   videos,
   tweets = [],
+  creators = [],
   categories,
   initialThreads,
   initialThreadId,
@@ -431,7 +437,7 @@ export function ChatWorkspace({
     async (id: number): Promise<void> => {
       const saved = threadsRef.current.find((entry) => entry.id === id);
       if (saved?.researchJobId) {
-        router.push(`/x-research?job=${saved.researchJobId}`);
+        router.push("/x-dashboard");
         return;
       }
       const opened = await engine.openThread(id);
@@ -524,9 +530,10 @@ export function ChatWorkspace({
           label: tweet.text.split(/\r?\n/)[0]?.slice(0, 120) || "X post",
         })),
       ],
-      transcriptCount:
-        knownVideos.filter((video) => video.hasTranscript).length +
-        knownTweets.filter((tweet) => tweet.readyForAnalysis).length,
+      // Every video can ground a chat (its captions are read on the first
+      // turn); posts need their complete text.
+      sourceCount:
+        knownVideos.length + knownTweets.filter((tweet) => tweet.readyForAnalysis).length,
       creatorCount: creators.size,
     };
   }, [effectiveSources, videosById, tweetsById]);
@@ -575,7 +582,7 @@ export function ChatWorkspace({
   }, [deleting, startNewChat, engine]);
 
   const { generating } = engine;
-  const hasCachedTranscriptVideos = videos.some((video) => video.hasTranscript);
+  const hasAnalyzableSources = videos.length > 0 || tweets.some((tweet) => tweet.readyForAnalysis);
   const pickerSelection = useMemo(
     () => new Set(effectiveSources.map(sourceKey)),
     [effectiveSources],
@@ -588,16 +595,19 @@ export function ChatWorkspace({
    */
   const applySources = useCallback((refs: SourceRef[]): void => {
     const hasTweet = refs.some((source) => source.kind === "tweet");
+    const videoIds = refs.filter((source) => source.kind === "video").map((source) => source.id);
     setScopeSources(hasTweet ? refs : []);
-    setScope(refs.filter((source) => source.kind === "video").map((source) => source.id));
+    setScope(videoIds);
+    // Start reading the picked videos while the user types their question.
+    prefetchTranscripts(videoIds);
   }, []);
 
   const heading = activeThread?.title ?? (engine.threadId !== null ? "Conversation" : "New chat");
   const subheading =
     engine.threadId !== null
-      ? `${scopeDetails.transcriptCount} ${scopeDetails.transcriptCount === 1 ? "source" : "sources"} · ${scopeDetails.creatorCount} ${scopeDetails.creatorCount === 1 ? "creator" : "creators"}`
-      : scopeDetails.transcriptCount > 0
-        ? `${scopeDetails.transcriptCount} ${scopeDetails.transcriptCount === 1 ? "source" : "sources"} selected · ready to chat`
+      ? `${scopeDetails.sourceCount} ${scopeDetails.sourceCount === 1 ? "source" : "sources"} · ${scopeDetails.creatorCount} ${scopeDetails.creatorCount === 1 ? "creator" : "creators"}`
+      : scopeDetails.sourceCount > 0
+        ? `${scopeDetails.sourceCount} ${scopeDetails.sourceCount === 1 ? "source" : "sources"} selected · ready to chat`
         : "Pick sources to ground the answers";
 
   const sidebarList = (
@@ -631,14 +641,14 @@ export function ChatWorkspace({
             <PendingIndicator label="Opening conversation…" className="mb-4" />
           ) : null}
           {engine.showEmptyConversation && engine.loadingThreadId === null ? (
-            scopeDetails.transcriptCount > 0 ? (
+            scopeDetails.sourceCount > 0 ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-4 py-10 text-center">
                 <div className="flex max-w-md flex-col items-center gap-2.5 rounded-xl border bg-card px-5 py-4 shadow-sm">
                   <p className="text-sm font-semibold">
                     Ready to chat about{" "}
-                    {scopeDetails.transcriptCount === 1
+                    {scopeDetails.sourceCount === 1
                       ? "1 source"
-                      : `${scopeDetails.transcriptCount} sources`}
+                      : `${scopeDetails.sourceCount} sources`}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     from {scopeDetails.creatorCount}{" "}
@@ -667,7 +677,7 @@ export function ChatWorkspace({
                   </Button>
                 </div>
               </div>
-            ) : hasCachedTranscriptVideos ? (
+            ) : hasAnalyzableSources ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-4 py-10 text-center">
                 <div className="flex size-14 items-center justify-center rounded-full border bg-muted/40">
                   <MessageSquareText aria-hidden="true" className="size-7 text-muted-foreground" />
@@ -676,7 +686,7 @@ export function ChatWorkspace({
                   What would you like to research?
                 </h3>
                 <p className="max-w-md text-balance text-sm text-muted-foreground">
-                  Every conversation is grounded in the cached transcripts you pick — one video or a
+                  Every conversation is grounded in the videos and posts you pick — one video or a
                   whole selection, across your whole library. Past chats stay in the history on the
                   left.
                 </p>
@@ -690,12 +700,10 @@ export function ChatWorkspace({
                 <div className="flex size-14 items-center justify-center rounded-full border bg-muted/40">
                   <MessageSquareText aria-hidden="true" className="size-7 text-muted-foreground" />
                 </div>
-                <h3 className="text-xl font-semibold tracking-tight">
-                  No transcripts to chat over yet
-                </h3>
+                <h3 className="text-xl font-semibold tracking-tight">Nothing to chat about yet</h3>
                 <p className="max-w-md text-balance text-sm text-muted-foreground">
-                  Chats read cached transcripts. Extract captions on a video page first — then come
-                  back and pick it as a source.
+                  Save a creator and refresh their feed first — then come back and pick their videos
+                  or posts as sources.
                 </p>
               </div>
             )
@@ -722,7 +730,9 @@ export function ChatWorkspace({
               {engine.turnPhase === "working" ? (
                 <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
                   <ThinkingDots />
-                  {chatModeOption(engine.turnMode).workingLabel}
+                  {engine.preparing
+                    ? preparingLabel(engine.preparing)
+                    : chatModeOption(engine.turnMode).workingLabel}
                 </p>
               ) : null}
             </div>
@@ -769,9 +779,8 @@ export function ChatWorkspace({
                 >
                   <BookOpenText aria-hidden="true" className="size-3.5 shrink-0" />
                   <span className="truncate">
-                    {scopeDetails.transcriptCount}{" "}
-                    {scopeDetails.transcriptCount === 1 ? "source" : "sources"} from this
-                    conversation
+                    {scopeDetails.sourceCount}{" "}
+                    {scopeDetails.sourceCount === 1 ? "source" : "sources"} from this conversation
                   </span>
                 </span>
               ) : (
@@ -779,11 +788,11 @@ export function ChatWorkspace({
                   variant="outline"
                   size="sm"
                   onClick={() => setSourcesOpen(true)}
-                  className={cn("max-w-full", scopeDetails.transcriptCount > 0 && "border-ring/40")}
+                  className={cn("max-w-full", scopeDetails.sourceCount > 0 && "border-ring/40")}
                 >
                   <BookOpenText aria-hidden="true" />
-                  {scopeDetails.transcriptCount > 0
-                    ? `${scopeDetails.transcriptCount} ${scopeDetails.transcriptCount === 1 ? "source" : "sources"}`
+                  {scopeDetails.sourceCount > 0
+                    ? `${scopeDetails.sourceCount} ${scopeDetails.sourceCount === 1 ? "source" : "sources"}`
                     : "Choose sources"}
                 </Button>
               )}
@@ -828,7 +837,7 @@ export function ChatWorkspace({
               placeholder={
                 engine.canSend
                   ? "Ask a question…"
-                  : "Pick sources first — chats answer from their cached transcripts"
+                  : "Pick sources first — chats answer from what is said in them"
               }
               onChange={(event) => engine.setDraft(event.target.value)}
               onKeyDown={engine.handleComposerKeyDown}
@@ -963,28 +972,10 @@ export function ChatWorkspace({
         open={sourcesOpen}
         onClose={() => setSourcesOpen(false)}
         videos={videos}
-        tweets={tweets.map((tweet) => ({
-          id: tweet.id,
-          creatorId: tweet.creatorId,
-          authorHandle: tweet.authorHandle,
-          authorName: tweet.authorName,
-          text: tweet.text,
-          categoryIds: tweet.categoryIds,
-          readyForAnalysis: tweet.readyForAnalysis,
-        }))}
+        tweets={tweets}
+        creators={creators}
         categories={categories}
         selected={pickerSelection}
-        onToggle={(key) => {
-          const [kind, id] = key.split(":");
-          if ((kind !== "video" && kind !== "tweet") || !id) {
-            return;
-          }
-          const ref: SourceRef = { kind, id };
-          const current = effectiveSources.filter((source) => sourceKey(source) !== key);
-          const toggledOn = !effectiveSources.some((source) => sourceKey(source) === key);
-          applySources(toggledOn ? [...current, ref] : current);
-        }}
-        onClear={() => applySources([])}
         onConfirm={(refs) => {
           applySources(refs);
           setSourcesOpen(false);
@@ -1024,8 +1015,7 @@ export function ChatWorkspace({
         onConfirm={() => void deleteConversation()}
       >
         <p className="text-sm text-muted-foreground">
-          The cached transcripts themselves are not touched — only this chat disappears from the
-          history.
+          Your saved videos and posts are not touched — only this chat disappears from the history.
         </p>
       </ConfirmDialog>
 

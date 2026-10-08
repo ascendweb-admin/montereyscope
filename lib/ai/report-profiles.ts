@@ -1,7 +1,7 @@
 /**
  * Report depth profiles — the one place that defines what each kind of
  * generated report is. A profile is not just a length knob: like the chat
- * intelligence modes, each pairs a different codex model and reasoning effort
+ * intelligence modes, each pairs a codex model and reasoning effort
  * with its own writing brief (voice, required sections, how hard to dig), so
  * a Brief report genuinely reads in a few minutes instead of being a trimmed
  * Deep report.
@@ -48,7 +48,7 @@ export const REPORT_PROFILES: readonly ReportProfileConfig[] = [
     id: "brief",
     label: "Brief",
     tagline: "A relaxed overview to stay up to date",
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     reasoningEffort: "low",
     // Claude has no effort control on Haiku; the other profiles mirror the
     // chat modes' Claude ladder (Sonnet/Opus).
@@ -73,7 +73,7 @@ export const REPORT_PROFILES: readonly ReportProfileConfig[] = [
     id: "balanced",
     label: "Balanced",
     tagline: "The everyday analyst report",
-    model: "gpt-5.6-terra",
+    model: "gpt-6.1-sol",
     reasoningEffort: "medium",
     claudeModel: "claude-sonnet",
     claudeReasoningEffort: "medium",
@@ -94,7 +94,7 @@ export const REPORT_PROFILES: readonly ReportProfileConfig[] = [
     id: "deep",
     label: "Deep",
     tagline: "Everything the material has to give",
-    model: "gpt-5.6-sol",
+    model: "gpt-6.1-sol",
     reasoningEffort: "xhigh",
     claudeModel: "claude-opus",
     claudeReasoningEffort: "xhigh",

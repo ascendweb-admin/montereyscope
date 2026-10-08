@@ -4,21 +4,23 @@
  * timelines, and the AI Research page can all validate a selection before
  * opening the chat panel.
  *
- * This is the pre-flight mirror of the server's resolveSourceScope: sources
- * without content are excluded from the scope and reported back so the UI can
- * say exactly what was skipped. The server re-validates on POST.
+ * This is the pre-flight mirror of the server's resolveSourceScope: posts
+ * without complete text are excluded from the scope and reported back so the
+ * UI can say exactly what was skipped. Videos are always analyzable — the
+ * server reads their captions in the background when the analysis starts.
+ * The server re-validates on POST.
  */
 import { sourceKey, type ContentKind, type SourceRef } from "@/lib/content/model";
 
 /** The parts of a video scope candidate that selection validation looks at. */
-export type ScopeCandidate = { id: string; title: string; hasTranscript: boolean };
+export type ScopeCandidate = { id: string; title: string };
 
 /** The parts of a mixed-source candidate that validation looks at. */
 export interface SourceCandidate {
   kind: ContentKind;
   id: string;
   title: string;
-  /** Video: cached transcript exists. Tweet: complete cached text. */
+  /** Video: always true (captions are fetched on demand). Tweet: complete cached text. */
   readyForAnalysis: boolean;
 }
 
@@ -39,35 +41,27 @@ export function formatScopeCapMessage(selected: number): string {
 }
 
 export interface ScopePlan {
-  /** Selected videos that can ground a chat, in selection order. */
+  /** Selected videos, in selection order. */
   included: ScopeCandidate[];
-  /** Selected videos without a cached transcript, in selection order. */
-  skippedNoTranscript: ScopeCandidate[];
   /** Convenience: the ids of {@link included}, ready for the chat panel. */
   videoIds: string[];
 }
 
 /**
- * Partitions a selection into videos that can ground a chat and videos
- * without a cached transcript. Repeated ids collapse to their first
- * occurrence, mirroring the server's resolveSourceScope.
+ * Collapses a video selection into a chat scope. Repeated ids collapse to
+ * their first occurrence, mirroring the server's resolveSourceScope.
  */
 export function planChatScope(selected: readonly ScopeCandidate[]): ScopePlan {
   const seen = new Set<string>();
   const included: ScopeCandidate[] = [];
-  const skippedNoTranscript: ScopeCandidate[] = [];
   for (const candidate of selected) {
     if (seen.has(candidate.id)) {
       continue;
     }
     seen.add(candidate.id);
-    if (candidate.hasTranscript) {
-      included.push(candidate);
-    } else {
-      skippedNoTranscript.push(candidate);
-    }
+    included.push(candidate);
   }
-  return { included, skippedNoTranscript, videoIds: included.map((video) => video.id) };
+  return { included, videoIds: included.map((video) => video.id) };
 }
 
 export interface SourcePlan {
@@ -108,19 +102,6 @@ export function planSourceScope(selected: readonly SourceCandidate[]): SourcePla
     sources: included.map((candidate) => ({ kind: candidate.kind, id: candidate.id })),
     videoIds: included.filter((candidate) => candidate.kind === "video").map((c) => c.id),
   };
-}
-
-/**
- * One-line note naming what was skipped, e.g. "Skipped 2 videos without a
- * cached transcript: “A”, “B”." Empty string for nothing skipped.
- */
-export function formatSkippedTranscripts(skipped: readonly ScopeCandidate[]): string {
-  const count = skipped.length;
-  if (count === 0) {
-    return "";
-  }
-  const titles = skipped.map((video) => `“${video.title}”`).join(", ");
-  return `Skipped ${count} ${count === 1 ? "video" : "videos"} without a cached transcript: ${titles}.`;
 }
 
 /** Mixed-source variant: names how many videos/posts have no cached content. */

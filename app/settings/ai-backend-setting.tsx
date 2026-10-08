@@ -736,9 +736,9 @@ export function AiBackendSetting({
       </h2>
       <p className="mt-1 max-w-prose text-sm text-muted-foreground">
         Scope installs no AI provider of its own. Install the provider you want separately, sign in
-        there once, then connect it here — only one is needed, and the library, feeds, and
-        transcripts keep working without any. Connecting an account and selecting a provider are
-        separate, and scope never sees your tokens or keys.
+        there once, then connect it here — only one is needed, and the library and feeds keep
+        working without any. Connecting an account and selecting a provider are separate, and scope
+        never sees your tokens or keys.
       </p>
       <p className="mt-2 max-w-prose text-sm text-muted-foreground">
         Your library and cached transcripts stay in the local database on this machine. AI requests

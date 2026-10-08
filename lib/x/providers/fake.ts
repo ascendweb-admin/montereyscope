@@ -17,6 +17,7 @@ import {
   type XTweetDraft,
   type XUserIdentity,
   type XUserLookup,
+  type XUserSearchResult,
 } from "../model";
 
 const FIXTURE_COUNT = 24;
@@ -263,6 +264,28 @@ class FakeXProvider implements XProvider {
     this.requireSession();
     const normalized = handle.replace(/^@/, "").toLowerCase() || "scope_dev";
     return { user: { ...this.identityFor(normalized), userId: fakeUserId(normalized) }, pinnedTweetId: null };
+  }
+
+  /**
+   * Deterministic people search: the query itself as a verified account,
+   * plus two look-alikes so result lists, verified badges, and protected
+   * accounts can be exercised offline.
+   */
+  async searchUsers(query: string): Promise<XUserSearchResult[]> {
+    this.requireSession();
+    const base = query
+      .replace(/^@/, "")
+      .toLowerCase()
+      .replace(/[^0-9a-z_]/g, "")
+      .slice(0, 9);
+    if (base.length === 0) {
+      return [];
+    }
+    return [
+      { ...this.identityFor(base), verified: true, protected: false },
+      { ...this.identityFor(`${base}_clips`), verified: false, protected: false },
+      { ...this.identityFor(`the_${base}`), verified: false, protected: true },
+    ];
   }
 
   async listUserTweets(input: {

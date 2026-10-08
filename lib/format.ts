@@ -4,6 +4,18 @@
  * channel pages are force-dynamic) without client/server hydration drift.
  */
 
+/** Formats cache sizes in KB, MB, or GB without rounding small caches to zero. */
+export function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 KB";
+  if (bytes < 1024) return "<1 KB";
+  const unit = bytes >= 1024 ** 3 ? "GB" : bytes >= 1024 ** 2 ? "MB" : "KB";
+  const divisor = unit === "GB" ? 1024 ** 3 : unit === "MB" ? 1024 ** 2 : 1024;
+  const value = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(
+    bytes / divisor,
+  );
+  return `${value} ${unit}`;
+}
+
 /** 65 → "1:05"; 3755 → "1:02:35". Null/unknown renders an em dash. */
 export function formatDuration(seconds: number | null | undefined): string {
   if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) {
