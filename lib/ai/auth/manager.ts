@@ -1106,7 +1106,13 @@ class ClaudeAuthController {
       deviceCodeAvailable: false,
       attempt: publicAttempt(this.attempt),
       signingOut: this.signingOut,
-      statusError: null,
+      statusError:
+        process.platform === "darwin" && base.statusError
+          ? providerError(
+              "status_unavailable",
+              "Claude's sign-in status could not be checked. You may still be signed in. Check again.",
+            )
+          : null,
       resolvedCommand: launch.resolvedCommand,
       commandSource: commandSourceFor("claude", "SCOPE_CLAUDE_PATH"),
     };

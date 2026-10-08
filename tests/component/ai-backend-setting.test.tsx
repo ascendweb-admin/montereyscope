@@ -106,6 +106,29 @@ afterEach(() => {
 });
 
 describe("AiBackendSetting", () => {
+  it("lets a Mac retry an unavailable Claude status without asking it to sign in again", async () => {
+    serverSnapshot = snapshotFixture({
+      claude: provider({
+        statusError: {
+          code: "status_unavailable",
+          message:
+            "Claude's sign-in status could not be checked. You may still be signed in. Check again.",
+        },
+      }),
+    });
+    renderSetting(serverSnapshot, "darwin");
+    expect(screen.getByText("Status unavailable")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Sign in with Claude" })).toBeNull();
+    serverSnapshot = snapshotFixture({
+      claude: provider({ authenticated: true, subscription: true, method: "subscription" }),
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Check again" }).at(-1)!);
+    await waitFor(() => expect(screen.getByText("Signed in with Claude")).toBeTruthy());
+    expect(
+      vi.mocked(fetch).mock.calls.every(([url]) => !String(url).includes("claude-login")),
+    ).toBe(true);
+  });
+
   it("accepts a restarted server and ignores responses from its retired instance", async () => {
     renderSetting(snapshotFixture({ revision: 50 }));
     serverSnapshot = snapshotFixture({

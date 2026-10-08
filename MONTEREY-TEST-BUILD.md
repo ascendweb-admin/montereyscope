@@ -76,6 +76,12 @@ downloader, and repeats the test with a deliberately slow downloader. These
 checks run on GitHub's macOS 15 Intel host, not on Monterey. They do not
 replace a full GUI test on the friend's Mac.
 
+The macOS Claude connection check allows 15 seconds for CLI startup and
+30 seconds for the sign-in status check. If the check fails or times out,
+Settings shows **Status unavailable** with **Check again**, rather than
+asking you to sign in again. A confirmed signed-out response still offers
+sign-in. These changes apply only on macOS and never reset Claude credentials.
+
 ## Opening an unsigned test app
 
 If macOS blocks first launch because the developer cannot be verified,

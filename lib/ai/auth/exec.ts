@@ -12,6 +12,8 @@ export interface ExecStatusResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+  /** macOS distinguishes an unreadable status from an explicit signed-out result. */
+  failure?: "missing_executable" | "timeout" | "spawn_failed";
 }
 
 /**
@@ -32,8 +34,26 @@ export function execFileStatus(
       { timeout: timeoutMs, windowsHide: true, ...(env ? { env } : {}) },
       (error, stdout, stderr) => {
         const code = error !== null ? (error as NodeJS.ErrnoException).code : null;
+        // execFile usually reports a deadline as killed/SIGTERM, not ETIMEDOUT.
+        // Keep other platforms' existing result shape and behavior unchanged.
+        const failure: ExecStatusResult["failure"] =
+          process.platform !== "darwin" || error === null
+            ? undefined
+            : code === "ENOENT"
+              ? "missing_executable"
+              : code === "ETIMEDOUT" || error.killed
+                ? "timeout"
+                : typeof code === "string"
+                  ? "spawn_failed"
+                  : undefined;
         if (error !== null && (code === "ENOENT" || code === "ETIMEDOUT")) {
-          resolve({ ran: false, exitCode: null, stdout: "", stderr: "" });
+          resolve({
+            ran: false,
+            exitCode: null,
+            stdout: "",
+            stderr: "",
+            ...(failure ? { failure } : {}),
+          });
           return;
         }
         resolve({
@@ -41,6 +61,7 @@ export function execFileStatus(
           exitCode: error !== null ? 1 : 0,
           stdout: stdout.toString(),
           stderr: stderr.toString(),
+          ...(failure ? { failure } : {}),
         });
       },
     );
