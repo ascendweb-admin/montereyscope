@@ -1,0 +1,23 @@
+{
+  "human_english": {
+    "id": "jNQXAC9IVRw",
+    "subtitles": "en, de",
+    "automatic_captions": "en, de"
+  },
+  "auto_english_only": {
+    "id": "jNQXAC9IVRw",
+    "subtitles": "",
+    "automatic_captions": "de, en-orig"
+  },
+  "translated_only": {
+    "id": "jNQXAC9IVRw",
+    "subtitles": "fr",
+    "automatic_captions": "fr, de"
+  },
+  "none": {
+    "id": "jNQXAC9IVRw",
+    "subtitles": "",
+    "automatic_captions": ""
+  },
+  "unusable": "WARNING: not json at all"
+}

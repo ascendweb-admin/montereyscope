@@ -31,7 +31,7 @@ export const X_ERROR_MESSAGES: Record<XErrorCode, string> = {
   session_expired: "Your X session has expired. Sign in again to continue.",
   verification_required:
     "X is asking for additional verification before this account can be read. Finish it in the X window, then try again.",
-  rate_limited: "X is rate limiting reads right now. Wait a bit and try again.",
+  rate_limited: "X is busy right now. Try again in a few minutes.",
   not_found: "That X account or post could not be found.",
   protected_account: "That X account is protected, so Scope cannot collect its posts.",
   network: "Scope could not reach X. Check your connection and try again.",
@@ -41,6 +41,10 @@ export const X_ERROR_MESSAGES: Record<XErrorCode, string> = {
     "X support is not available in this build yet. The desktop app is required to connect an account.",
   invalid_response: "Scope could not read the data X returned. Try again later.",
 };
+
+/** X being busy or slow passes on its own and is nobody's fault: shown calmly, never as an error. */
+export const isTemporaryXError = (code: unknown) => code === "rate_limited" || code === "timeout";
+export const X_BUSY_MESSAGE = "Couldn't get new posts just now. Try again in a few minutes.";
 
 /** A typed provider failure. `retryAfterSeconds` is surfaced when known. */
 export class XProviderError extends Error {
@@ -145,6 +149,15 @@ export interface XTimelinePage {
   exhausted: boolean;
   /** How many fetched entries were skipped as unusable. */
   skipped: number;
+  /** X's quota for this endpoint after the read, when the worker reports it. */
+  rateLimit?: XRateLimit | null;
+}
+
+/** X's per-endpoint quota headers: requests per window, left, and the reset (epoch seconds). */
+export interface XRateLimit {
+  limit?: number;
+  remaining: number;
+  reset: number;
 }
 
 /** One account from a people search (X's own typeahead ranking). */

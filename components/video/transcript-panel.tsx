@@ -6,7 +6,7 @@ import { Check, ClipboardCheck, ClipboardCopy, ExternalLink, FileText } from "lu
 import { AlertNote } from "@/components/ui/alert-note";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import type { CreatorPlatform } from "@/lib/creators/repository";
 import { formatAbsoluteTimestamp, formatRelativeTime } from "@/lib/format";
@@ -74,10 +74,10 @@ export function TranscriptPanel({
     <Card className="mt-6">
       <CardHeader className="gap-1">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <CardTitle className="flex items-center gap-2 text-lg">
+          <h2 className="flex items-center gap-2 text-lg font-semibold leading-none tracking-tight">
             <FileText aria-hidden="true" className="size-5 text-muted-foreground" />
             Transcript
-          </CardTitle>
+          </h2>
           {transcript ? (
             <>
               <Badge variant={transcript.captionSource === "manual" ? "default" : "secondary"}>

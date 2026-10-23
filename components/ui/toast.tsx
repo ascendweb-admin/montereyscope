@@ -1,14 +1,25 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { CheckCircle2, Info, TriangleAlert } from "lucide-react";
 
 export type ToastTone = "success" | "error" | "info";
 
+/** A link shown after the message, e.g. "View" for the thing that was just added. */
+export interface ToastAction {
+  label: string;
+  href: string;
+}
+
 interface ToastState {
   message: string;
   tone: ToastTone;
+  action?: ToastAction;
 }
+
+/** A toast with a link stays long enough to reach it. */
+const ACTION_MIN_DURATION_MS = 8000;
 
 const TONE_STYLES: Record<ToastTone, string> = {
   success:
@@ -34,12 +45,15 @@ export function useToast(durationMs = 5000) {
     if (!toast) {
       return;
     }
-    const timer = window.setTimeout(() => setToast(null), durationMs);
+    const timer = window.setTimeout(
+      () => setToast(null),
+      toast.action ? Math.max(durationMs, ACTION_MIN_DURATION_MS) : durationMs,
+    );
     return () => window.clearTimeout(timer);
   }, [toast, durationMs]);
 
-  const showToast = (message: string, tone: ToastTone): void => {
-    setToast({ message, tone });
+  const showToast = (message: string, tone: ToastTone, action?: ToastAction): void => {
+    setToast({ message, tone, action });
   };
 
   const toastElement = toast ? (
@@ -53,6 +67,15 @@ export function useToast(durationMs = 5000) {
         return <Icon aria-hidden="true" className="size-4 shrink-0" />;
       })()}
       <span>{toast.message}</span>
+      {toast.action ? (
+        <Link
+          href={toast.action.href}
+          onClick={() => setToast(null)}
+          className="pointer-events-auto shrink-0 rounded font-medium underline underline-offset-4 outline-none hover:no-underline focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {toast.action.label}
+        </Link>
+      ) : null}
     </div>
   ) : null;
 

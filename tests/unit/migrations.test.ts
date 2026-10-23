@@ -876,3 +876,48 @@ describe("selected sources migration (013)", () => {
     db.close();
   });
 });
+
+describe("stable A/B test thumbnails migration (027)", () => {
+  const BEFORE = ALL_MIGRATIONS.filter((migration) => migration.id < "027");
+
+  it("pins stored Test & Compare variants to the stable thumbnail", () => {
+    const { db } = createTempDb();
+    runMigrations(db, BEFORE);
+    db.prepare(
+      "INSERT INTO creators (display_name, channel_url) VALUES ('Theo', 'https://youtube.com/@t3dotgg')",
+    ).run();
+    const insertVideo = db.prepare(
+      "INSERT INTO videos (id, creator_id, title, url, thumbnail_url, live_status) VALUES (?, 1, ?, ?, ?, 'not_live')",
+    );
+    const rows = [
+      [
+        "hiI0Vk4NgeY",
+        "https://i.ytimg.com/vi/hiI0Vk4NgeY/hq720_custom_1.jpg?sqp=CKzhydYG-oaymwEc&rs=AOn4CLA",
+      ],
+      ["NE006pkiAnk", "https://i9.ytimg.com/vi/NE006pkiAnk/hqdefault_custom_12.jpg"],
+      ["DbWL6Zs2j_g", "https://i.ytimg.com/vi/DbWL6Zs2j_g/hq720.jpg?sqp=-oaymwEc&rs=AOn4CLC"],
+      ["noThumb0001", null],
+    ] as const;
+    for (const [id, thumbnail] of rows) {
+      insertVideo.run(id, id, `https://www.youtube.com/watch?v=${id}`, thumbnail);
+    }
+
+    runMigrations(db, ALL_MIGRATIONS);
+
+    const stored = Object.fromEntries(
+      db
+        .prepare<[], { id: string; thumbnail_url: string | null }>(
+          "SELECT id, thumbnail_url FROM videos",
+        )
+        .all()
+        .map((row) => [row.id, row.thumbnail_url]),
+    );
+    expect(stored).toEqual({
+      hiI0Vk4NgeY: "https://i.ytimg.com/vi/hiI0Vk4NgeY/hq720.jpg",
+      NE006pkiAnk: "https://i.ytimg.com/vi/NE006pkiAnk/hqdefault.jpg",
+      DbWL6Zs2j_g: "https://i.ytimg.com/vi/DbWL6Zs2j_g/hq720.jpg?sqp=-oaymwEc&rs=AOn4CLC",
+      noThumb0001: null,
+    });
+    db.close();
+  });
+});

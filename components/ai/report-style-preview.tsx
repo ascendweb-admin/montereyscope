@@ -138,6 +138,20 @@ const THEMES: Record<ReportStyleId, PreviewTheme> = {
   },
 };
 
+export interface ReportStyleSwatch {
+  page: string;
+  ink: string;
+  muted: string;
+  rule: string;
+  accent: string;
+}
+
+/** A style's core palette, for thumbnails smaller than the full preview. */
+export function reportStyleSwatch(style: ReportStyleId): ReportStyleSwatch {
+  const { page, ink, muted, rule, accent } = THEMES[style] ?? THEMES.editorial;
+  return { page, ink, muted, rule, accent };
+}
+
 /** Each profile's opening section, as its writing brief names it. */
 const OPENING_SECTION: Record<ReportProfileId, string> = {
   brief: "The short version",

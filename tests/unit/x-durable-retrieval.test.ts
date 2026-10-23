@@ -25,6 +25,7 @@ import { parseExactSearch } from "@/lib/x/research/search";
 let dir: string, file: string, db: Database.Database, provider: XProvider, engine: RetrievalEngine;
 let source: XTimelineItem[], calls: Array<{ handle: string; cursor: string | null }>;
 let creatorId: number;
+// Posted before the fixture's sync time (`request().until`); a negative `n` arrived after that sync.
 function item(n: number): XTimelineItem {
   const base = buildFakeTimeline("fixture", 1)[0];
   const id = String(9000000 + n);
@@ -34,7 +35,7 @@ function item(n: number): XTimelineItem {
       ...base.tweet,
       id,
       text: `Archived text ${n}`,
-      publishedAt: new Date(Date.UTC(2026, 9, 1) - n * 60000).toISOString(),
+      publishedAt: new Date(Date.UTC(2026, 9, 2) - (n + 1) * 60000).toISOString(),
     },
   };
 }
@@ -150,14 +151,15 @@ describe("durable manual X retrieval", () => {
     engine.coverage([creatorId]);
     expect(calls).toHaveLength(0);
     source = [...Array.from({ length: 15 }, (_, n) => item(-15 + n)), ...source];
-    const refresh = engine.start(request());
+    const later = "2026-10-03T00:00:00.000Z";
+    const refresh = engine.start(request({ until: later }));
     expect((await engine.wait(refresh.id)).status).toBe("complete");
     expect(countAllTweets(db)).toBe(2015);
     expect(
       readCachedFeed(db, {
         creatorIds: [creatorId],
         since: "2020-01-01T00:00:00.000Z",
-        until: request().until,
+        until: later,
         types: ["original", "reply", "quote"],
         search: parseExactSearch({ terms: "Archived text" }),
       }).total,
@@ -165,7 +167,8 @@ describe("durable manual X retrieval", () => {
     db.exec("INSERT INTO x_tweet_text(x_tweet_text, rank) VALUES ('integrity-check', 1)");
     for (const original of archived)
       expect(getTweetById(db, original.id)?.text).toBe(original.text);
-    expect(calls.map((c) => c.cursor)).toEqual([null, "100", "200"]);
+    // The first page reaches back past the last sync and holds remembered posts.
+    expect(calls.map((c) => c.cursor)).toEqual([null]);
     expect(refresh.request.creatorIds).toEqual([creatorId]);
     expect(getTweetById(db, item(0).tweet.id)?.text).toBe("Archived text 0");
     expect(getXFeedState(db, creatorId)?.olderCursor).toBe("keep-older");
@@ -223,7 +226,8 @@ describe("durable manual X retrieval", () => {
       await engine.wait(job.id);
     }
     expect(engine.job(job.id).status).toBe("complete");
-    expect(calls.map((c) => c.cursor)).toEqual([null, "100", "200", "300", "400"]);
+    // 250 new posts, then the page that meets the last sync.
+    expect(calls.map((c) => c.cursor)).toEqual([null, "100", "200"]);
     expect(checkpoint().pendingTask).toBeNull();
   });
   it("ignores familiar pins, individual imports and reposts as overlap evidence", async () => {
@@ -240,7 +244,30 @@ describe("durable manual X retrieval", () => {
     const job = engine.start(request());
     await engine.wait(job.id);
     expect(engine.job(job.id).status).toBe("complete");
-    expect(calls.length).toBeGreaterThanOrEqual(5);
+    // Not the first page: it stops only on the page holding the remembered posts.
+    expect(calls).toHaveLength(4);
+  });
+  it("finishes a catch-up whose remembered posts were deleted instead of reading the whole history", async () => {
+    // maxPages: null walks the automatic budget a real sync uses.
+    await engine.wait(engine.start(request({ maxPages: null })).id);
+    expect(checkpoint().anchors).toHaveLength(200);
+    source = [
+      ...Array.from({ length: 15 }, (_, n) => item(-15 + n)),
+      ...source.filter((_, n) => n !== 3),
+    ];
+    calls = [];
+    const one = engine.start(request({ maxPages: null }));
+    expect((await engine.wait(one.id)).status).toBe("complete");
+    expect(engine.job(one.id).creators[0]).toMatchObject({ reason: "overlap", newPosts: 15 });
+    expect(calls).toHaveLength(1);
+
+    // Every remembered post is gone: two pages from before the last sync settle it.
+    source = source.filter((i) => !checkpoint().anchors.includes(i.tweet.id));
+    calls = [];
+    const all = engine.start(request({ maxPages: null }));
+    expect((await engine.wait(all.id)).status).toBe("complete");
+    expect(engine.job(all.id).creators[0].reason).toBe("boundary");
+    expect(calls).toHaveLength(2);
   });
   it("preserves separate historical state and qualifies a boundary only after two ordinary older pages", async () => {
     const job = engine.start(request({ kind: "history", since: item(50).tweet.publishedAt! }));
@@ -793,7 +820,10 @@ describe("newer posts first", () => {
     await engine.wait(job.id);
     expect(countAllTweets(db)).toBe(2001); // Includes recurring pin.
     // One traversal, no page read twice.
-    expect(calls.map((c) => c.cursor)).toEqual([null, ...Array.from({ length: 19 }, (_, n) => String((n + 1) * 100))]);
+    expect(calls.map((c) => c.cursor)).toEqual([
+      null,
+      ...Array.from({ length: 19 }, (_, n) => String((n + 1) * 100)),
+    ]);
     expect(checkpoint()).toMatchObject({
       initialized: true,
       lastSuccessfulRefresh: request().until,
@@ -801,7 +831,11 @@ describe("newer posts first", () => {
       pendingTask: null,
     });
     expect(checkpoint().anchors).toHaveLength(200);
-    expect(checkpoint("history")).toMatchObject({ since: request().since, status: "provider_end", pendingTask: null });
+    expect(checkpoint("history")).toMatchObject({
+      since: request().since,
+      status: "provider_end",
+      pendingTask: null,
+    });
     expect(pending()).toMatchObject({ mode: "history", promoted: true, status: "complete" });
     // Resolve + three head pages ask first; the older pages yield to everything else.
     expect(backgrounds.slice(0, 4)).toEqual([false, false, false, false]);
@@ -812,10 +846,13 @@ describe("newer posts first", () => {
     calls = [];
     const refresh = engine.start(request({ until: "2026-10-03T00:00:00.000Z" }));
     expect((await engine.wait(refresh.id)).status).toBe("complete");
-    expect(engine.job(refresh.id).creators[0]).toMatchObject({ mode: "catchup", reason: "overlap" });
+    expect(engine.job(refresh.id).creators[0]).toMatchObject({
+      mode: "catchup",
+      reason: "overlap",
+    });
     expect(countAllTweets(db)).toBe(2016);
-    expect(calls.map((c) => c.cursor)).toEqual([null, "100", "200"]);
-  });
+    expect(calls.map((c) => c.cursor)).toEqual([null]);
+  }, 20_000); // The real 2,000-post SQLite import can exceed the default under load.
 
   it("hands a stalled long initial import to the background as soon as it runs again", async () => {
     engine = headFirst({ headPages: 50 });
@@ -828,7 +865,10 @@ describe("newer posts first", () => {
     engine.resume(job.id);
     await engine.wait(job.id);
     // Promoted before reading on, from the anchors it already had.
-    expect(checkpoint()).toMatchObject({ initialized: true, lastSuccessfulRefresh: request().until });
+    expect(checkpoint()).toMatchObject({
+      initialized: true,
+      lastSuccessfulRefresh: request().until,
+    });
     expect(calls[0].cursor).toBe("400");
     expect(backgrounds.every(Boolean)).toBe(true);
   });
@@ -869,9 +909,15 @@ describe("newer posts first", () => {
     // Reads hang until aborted, so both tasks stay in flight.
     provider.listUserTweets = (_input, signal) =>
       new Promise((_, reject) =>
-        signal!.addEventListener("abort", () => reject(new XProviderError("cancelled")), { once: true }),
+        signal!.addEventListener("abort", () => reject(new XProviderError("cancelled")), {
+          once: true,
+        }),
       );
-    engine = new RetrievalEngine(() => db, () => provider, async (operation) => operation());
+    engine = new RetrievalEngine(
+      () => db,
+      () => provider,
+      async (operation) => operation(),
+    );
     const both = engine.start(request({ creatorIds: [creatorId, other] }));
     const mine = engine.start(request({ label: "Mine" }));
     await new Promise((resolve) => setTimeout(resolve, 10));

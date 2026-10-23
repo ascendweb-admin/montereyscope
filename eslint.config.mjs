@@ -17,7 +17,9 @@ const eslintConfig = defineConfig([
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
+    ".next-desktop/**",
     ".next-x-*/**",
+    "tmp/**",
     "desktop/.runtime/**",
     "desktop/dist/**",
     "desktop/vendor/**",

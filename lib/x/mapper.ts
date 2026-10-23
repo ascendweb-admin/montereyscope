@@ -14,6 +14,7 @@ import {
   type XQuotedTweet,
   type XTimelineItem,
   type XTimelineKind,
+  type XRateLimit,
   type XTimelinePage,
   type XTweetAuthor,
   type XTweetDraft,
@@ -271,7 +272,19 @@ export function mapXTimelinePage(
     nextCursor: nextCursor ?? null,
     exhausted: value.exhausted === true || nextCursor === null,
     skipped,
+    rateLimit: mapXRateLimit(value.rateLimit),
   };
+}
+
+/** Quota headers from the worker; anything malformed is treated as unknown. */
+export function mapXRateLimit(value: unknown): XRateLimit | null {
+  if (!isRecord(value)) return null;
+  const whole = (n: unknown) => (typeof n === "number" && Number.isInteger(n) && n >= 0 ? n : null);
+  const remaining = whole(value.remaining);
+  const reset = whole(value.reset);
+  if (remaining === null || reset === null) return null;
+  const limit = whole(value.limit);
+  return { remaining, reset, ...(limit ? { limit } : {}) };
 }
 
 export function mapXUserLookup(value: unknown): XUserLookup {

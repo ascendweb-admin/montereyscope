@@ -26,6 +26,7 @@ import {
   PATCH as PATCH_REPORT,
 } from "@/app/api/ai/reports/[id]/route";
 import { GET as GET_REPORT_FILE } from "@/app/api/ai/reports/[id]/file/route";
+import { GET as SEARCH_REPORTS } from "@/app/api/ai/reports/search/route";
 import { closeDatabase, getDb } from "@/lib/db/connection";
 import { saveTranscript } from "@/lib/transcripts/repository";
 import { setTranscriptResolverForTests } from "@/lib/transcripts/prepare";
@@ -148,10 +149,11 @@ function reportRequest(reportId: number | string): Promise<Response> {
   });
 }
 
-function reportFileRequest(reportId: number | string): Promise<Response> {
-  return GET_REPORT_FILE(new Request(`http://127.0.0.1:3000/api/ai/reports/${reportId}/file`), {
-    params: Promise.resolve({ id: String(reportId) }),
-  });
+function reportFileRequest(reportId: number | string, query = ""): Promise<Response> {
+  return GET_REPORT_FILE(
+    new Request(`http://127.0.0.1:3000/api/ai/reports/${reportId}/file${query}`),
+    { params: Promise.resolve({ id: String(reportId) }) },
+  );
 }
 
 function patchReport(body: unknown, reportId: number | string): Promise<Response> {
@@ -414,7 +416,7 @@ describe("POST /api/ai/reports", () => {
     expect(runCodexMock).not.toHaveBeenCalled();
   });
 
-  it("refuses selections beyond the analysis cap with a readable 422 (stage 7)", async () => {
+  it("refuses selections beyond the analysis limits with a readable 422 (stage 7)", async () => {
     seedFeed();
     const tooMany = [
       VIDEO_WITH_TRANSCRIPT,
@@ -424,7 +426,7 @@ describe("POST /api/ai/reports", () => {
     expect(tooLarge.status).toBe(422);
     const body = (await tooLarge.json()) as { error: { code: string; message: string } };
     expect(body.error.code).toBe("scope_too_large");
-    expect(body.error.message).toContain("capped at 25");
+    expect(body.error.message).toContain("up to 25 videos");
 
     // A pre-cap thread with an oversized scope gets the same refusal.
     const oversizedThreadId = insertThread(
@@ -481,6 +483,80 @@ describe("GET /api/ai/reports", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Reading index: outline, reading time, people, and text search
+// ---------------------------------------------------------------------------
+
+const OUTLINED_DELIVERABLE_HTML = [
+  '<!doctype html><html lang="en"><head><title>Ignored</title></head><body>',
+  "<h1>Markets at a Fork</h1>",
+  '<p class="dek">A single-source analysis of a livestream.</p>',
+  '<section><h2 id="overview">Executive overview</h2>',
+  "<p>Warsh at Jackson Hole is the hinge for a fragile, selective market.</p></section>",
+  "<section><h2>Key themes</h2><h3>Distribution matters</h3><p>More prose.</p></section>",
+  "</body></html>",
+].join("");
+
+describe("reading index", () => {
+  async function finishedReport(): Promise<ReportBody> {
+    seedFeed();
+    runCodexMock.mockImplementation((options: CodexRunOptions) => {
+      writeFileSync(path.join(options.workDir, "report.html"), OUTLINED_DELIVERABLE_HTML, "utf8");
+      return scriptRun({});
+    });
+    const queued = (await (await postReports({ videoIds: [VIDEO_WITH_TRANSCRIPT] })).json()) as {
+      report: ReportBody;
+    };
+    return pollUntil(queued.report.id, ["done"]);
+  }
+
+  function search(query: string): Promise<Response> {
+    return SEARCH_REPORTS(
+      new Request(`http://localhost/api/ai/reports/search?q=${encodeURIComponent(query)}`),
+    );
+  }
+
+  it("lists a finished report with its outline, reading time, and people", async () => {
+    const done = await finishedReport();
+
+    const { reports } = (await (await listReportsRequest()).json()) as {
+      reports: Array<ReportBody & Record<string, unknown>>;
+    };
+    const listed = reports.find((report) => report.id === done.id)!;
+    expect(listed).toMatchObject({
+      origin: "report",
+      outline: [
+        { id: "overview", text: "Executive overview", level: 2 },
+        { id: "scope-section-1", text: "Key themes", level: 2 },
+        { id: "scope-section-2", text: "Distribution matters", level: 3 },
+      ],
+      readingMinutes: 1,
+      creators: [{ name: "Test Channel", sourceCount: 1 }],
+      categories: [],
+      platforms: ["youtube"],
+    });
+  });
+
+  it("searches inside finished reports, the moment they finish", async () => {
+    const done = await finishedReport();
+
+    const response = await search("jackson");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const { matches } = (await response.json()) as {
+      matches: Array<{ id: number; snippet: string | null }>;
+    };
+    expect(matches).toHaveLength(1);
+    expect(matches[0].id).toBe(done.id);
+    expect(matches[0].snippet).toContain("\u0002Jackson\u0003");
+
+    for (const query of ["", "unicorn", '"OR NEAR('] as const) {
+      const empty = (await (await search(query)).json()) as { matches: unknown[] };
+      expect(empty.matches).toEqual([]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/ai/reports/[id]/file
 // ---------------------------------------------------------------------------
 
@@ -503,6 +579,39 @@ describe("GET /api/ai/reports/[id]/file", () => {
     expect(response.headers.get("content-security-policy")).toContain("style-src 'unsafe-inline'");
     const html = await response.text();
     expect(html).toContain("<!doctype html>");
+  });
+
+  it("serves an embeddable copy for the inline reader with external links opening outside", async () => {
+    seedFeed();
+    const linked =
+      '<!doctype html><html><body><a href="https://www.youtube.com/watch?v=x">Source</a>' +
+      '<a href="#findings">Jump</a><a target="_self" href="https://example.com">Kept</a>' +
+      '<h2 id="findings">Findings</h2><h3>Unnamed</h3></body></html>';
+    runCodexMock.mockImplementation((options: CodexRunOptions) => {
+      writeFileSync(path.join(options.workDir, "report.html"), linked, "utf8");
+      return scriptRun({});
+    });
+    const queued = (await (await postReports({ videoIds: [VIDEO_WITH_TRANSCRIPT] })).json()) as {
+      report: ReportBody;
+    };
+    await pollUntil(queued.report.id, ["done"]);
+
+    const standalone = await reportFileRequest(queued.report.id);
+    expect(standalone.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(await standalone.text()).toBe(linked);
+
+    const embedded = await reportFileRequest(queued.report.id, "?embed=1");
+    expect(embedded.headers.get("content-security-policy")).toContain("frame-ancestors 'self'");
+    expect(embedded.headers.get("content-security-policy")).toContain("default-src 'none'");
+    const html = await embedded.text();
+    expect(html).toContain(
+      '<a target="_blank" rel="noopener noreferrer" href="https://www.youtube.com/watch?v=x">',
+    );
+    expect(html).toContain('<a href="#findings">');
+    expect(html).toContain('<a target="_self" href="https://example.com">');
+    // Every heading carries the id the page's outline jumps to.
+    expect(html).toContain('<h2 id="findings">Findings</h2><h3 id="scope-section-1">Unnamed</h3>');
+    expect(html).toContain("scroll-margin-top");
   });
 
   it("refuses to serve reports that are not done", async () => {

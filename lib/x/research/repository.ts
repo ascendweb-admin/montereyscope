@@ -8,7 +8,7 @@ import {
   type ResearchList,
   type ResearchPostType,
 } from "./model";
-import { exactSearchExpression, literalPhrase, parseExactSearch } from "./search";
+import { exactSearchFilter, parseExactSearch } from "./search";
 import { ResearchInputError } from "./input";
 export { ResearchInputError } from "./input";
 
@@ -130,16 +130,17 @@ function readCachedFeedSnapshot(db: ScopeDatabase, query: CachedFeedQuery): Cach
         exclusions: query.search.exclusions.join("\n"),
       })
     : undefined;
+  const filter = search ? exactSearchFilter(search) : null;
   const params = {
     ids: JSON.stringify(ids),
     types: JSON.stringify(query.types),
     since: query.since,
     until: query.until,
-    ...(search ? { match: exactSearchExpression(search) } : {}),
+    ...filter?.params,
   };
   // Scope memberships BEFORE deduplication. Repost state on the canonical tweet
   // may come from an unrelated timeline, so classify using the membership.
-  const scoped = researchScopeSql(Boolean(search));
+  const scoped = researchScopeSql(filter?.sql);
   const scopeStats = db
     .prepare(
       `${scoped} SELECT COUNT(DISTINCT tweet_id) AS n,
@@ -168,10 +169,16 @@ function readCachedFeedSnapshot(db: ScopeDatabase, query: CachedFeedQuery): Cach
   const provenance = db.prepare(
     `${scoped} SELECT creator_id, handle, display_name, timeline_kind, event_at, post_type FROM eligible WHERE tweet_id = @tweetId ORDER BY julianday(event_at) DESC, creator_id`,
   );
-  const aliasMatch = search?.aliases.length
-    ? db.prepare(`SELECT 1 FROM x_tweet_text WHERE x_tweet_text MATCH ?
-        AND rowid = (SELECT rowid FROM tweets WHERE id = ?)`)
-    : null;
+  const aliasMatches = (search?.aliases ?? []).map((alias) => {
+    const filter = exactSearchFilter({ terms: [alias], aliases: [], exclusions: [] });
+    return {
+      alias,
+      params: filter.params,
+      statement:
+        db.prepare(`SELECT 1 FROM (SELECT rowid AS text_rowid, text FROM tweets WHERE id = @tweetId)
+        WHERE ${filter.sql}`),
+    };
+  });
   const posts = rows.map((row) => {
     const links = provenance.all({ ...params, tweetId: row.tweet_id }) as Array<{
       creator_id: number;
@@ -205,9 +212,11 @@ function readCachedFeedSnapshot(db: ScopeDatabase, query: CachedFeedQuery): Cach
         ? {
             match: {
               terms: search.terms,
-              aliases: search.aliases.filter((alias) =>
-                aliasMatch?.get(`text : ${literalPhrase(alias)}`, row.tweet_id),
-              ),
+              aliases: aliasMatches
+                .filter(({ statement, params }) =>
+                  statement.get({ ...params, tweetId: row.tweet_id }),
+                )
+                .map(({ alias }) => alias),
             },
           }
         : {}),
@@ -269,7 +278,7 @@ function readCachedFeedSnapshot(db: ScopeDatabase, query: CachedFeedQuery): Cach
 }
 
 /** Shared membership-first scope for feed and immutable corpus resolution. */
-export function researchScopeSql(exact = false): string {
+export function researchScopeSql(exactFilter?: string): string {
   return `WITH scoped AS (
     SELECT ct.*, c.handle, c.display_name, t.rowid AS text_rowid,
       t.content_status, t.text,
@@ -284,7 +293,7 @@ export function researchScopeSql(exact = false): string {
       AND julianday(event_at) >= julianday(@since) AND julianday(event_at) < julianday(@until)
   ), grouped AS (
     SELECT tweet_id, MAX(event_at) AS event_at FROM eligible
-      ${exact ? "WHERE text_rowid IN (SELECT rowid FROM x_tweet_text WHERE x_tweet_text MATCH @match)" : ""}
+      ${exactFilter ? `WHERE ${exactFilter}` : ""}
       GROUP BY tweet_id
   )`;
 }

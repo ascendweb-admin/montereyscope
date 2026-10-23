@@ -13,12 +13,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { closeDatabase, getDb } from "@/lib/db/connection";
 import { ALL_MIGRATIONS } from "@/lib/db/migrations";
 import { runMigrations } from "@/lib/db/migrator";
-import {
-  createReport,
-  getReport,
-  getReportSources,
-  publicReportFor,
-} from "@/lib/ai/reports";
+import { createReport, getReport, getReportSources, publicReportFor } from "@/lib/ai/reports";
+import { countFeaturedProfiles } from "@/lib/ai/report-people";
 import { POST as POST_REPORTS } from "@/app/api/ai/reports/route";
 
 const TWEET_ID = "1234567890123456701";
@@ -146,5 +142,105 @@ describe("report sources", () => {
     };
     expect(body.error.code).toBe("no_ready_sources");
     expect(body.unknownSources).toHaveLength(2);
+  });
+});
+
+describe("report people for appearances on other channels", () => {
+  /** A hidden host with one guest video that features the X creator's person. */
+  function seedAppearance(db: Database.Database): { personProfileId: number; hostId: number } {
+    const hostId = Number(
+      db
+        .prepare(
+          "INSERT INTO creators (display_name, channel_url, followed, handle) VALUES ('PBD Podcast', 'https://www.youtube.com/@pbd', 0, 'pbd')",
+        )
+        .run().lastInsertRowid,
+    );
+    db.prepare("INSERT INTO videos (id, creator_id, title, url) VALUES (?, ?, ?, ?)").run(
+      "videoGuest001",
+      hostId,
+      "Fixture Dev on the podcast",
+      "https://www.youtube.com/watch?v=videoGuest001",
+    );
+    const person = db
+      .prepare<[], { profile_id: number }>(
+        "SELECT profile_id FROM creators WHERE display_name = 'Fixture Dev'",
+      )
+      .get()!;
+    db.prepare("INSERT INTO profile_videos (profile_id, video_id) VALUES (?, 'videoGuest001')").run(
+      person.profile_id,
+    );
+    db.prepare("INSERT INTO categories (id, name, color) VALUES (1, 'Founders', 'sky')").run();
+    db.prepare("INSERT INTO profile_categories (profile_id, category_id) VALUES (?, 1)").run(
+      person.profile_id,
+    );
+    return { personProfileId: person.profile_id, hostId };
+  }
+
+  it("lists the featured person, not the hidden host, with the host's platform", () => {
+    const db = getDb();
+    const { personProfileId, hostId } = seedAppearance(db);
+    const report = createReport(db, [{ kind: "video", id: "videoGuest001" }]);
+
+    const publicReport = publicReportFor(db, report);
+
+    expect(publicReport.sources[0]).toMatchObject({
+      creatorId: hostId,
+      creatorName: "PBD Podcast",
+      featuredNames: ["Fixture Dev"],
+      featuredProfileIds: [personProfileId],
+    });
+    expect(publicReport.creators).toEqual([
+      expect.objectContaining({ id: personProfileId, name: "Fixture Dev", sourceCount: 1 }),
+    ]);
+    expect(publicReport.categories).toEqual([expect.objectContaining({ id: 1, name: "Founders" })]);
+    expect(publicReport.platforms).toEqual(["youtube"]);
+  });
+
+  it("counts a person once per source when they also have posts in the report", () => {
+    const db = getDb();
+    const { personProfileId } = seedAppearance(db);
+    const report = createReport(db, [
+      { kind: "video", id: "videoGuest001" },
+      { kind: "tweet", id: TWEET_ID },
+    ]);
+
+    const publicReport = publicReportFor(db, report);
+
+    expect(publicReport.creators).toEqual([
+      expect.objectContaining({ id: personProfileId, name: "Fixture Dev", sourceCount: 2 }),
+    ]);
+    expect(publicReport.platforms).toEqual(["youtube", "x"]);
+  });
+
+  it("does not call a channel's owner featured on their own video", () => {
+    const db = getDb();
+    const own = db
+      .prepare<[], { profile_id: number }>(
+        "SELECT profile_id FROM creators WHERE display_name = 'Video Creator'",
+      )
+      .get()!;
+    db.prepare("INSERT INTO profile_videos (profile_id, video_id) VALUES (?, ?)").run(
+      own.profile_id,
+      VIDEO_ID,
+    );
+    const report = createReport(db, [{ kind: "video", id: VIDEO_ID }]);
+
+    const publicReport = publicReportFor(db, report);
+
+    expect(publicReport.sources[0].featuredNames).toBeUndefined();
+    expect(publicReport.creators).toEqual([
+      expect.objectContaining({ id: own.profile_id, sourceCount: 1 }),
+    ]);
+  });
+
+  it("counts featured profiles once per source", () => {
+    expect(
+      countFeaturedProfiles([{ featuredProfileIds: [3, 4] }, { featuredProfileIds: [3, 3] }, {}]),
+    ).toEqual(
+      new Map([
+        [3, 2],
+        [4, 1],
+      ]),
+    );
   });
 });

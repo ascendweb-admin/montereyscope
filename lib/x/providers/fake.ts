@@ -186,6 +186,82 @@ export function buildFakeTimeline(handle: string, count = FIXTURE_COUNT): XTimel
   return items;
 }
 
+/**
+ * Live mode (SCOPE_X_FAKE_LIVE=1, development only): every account posts on
+ * its own schedule relative to the real clock, so new posts keep arriving,
+ * and reads behave like X through the worker: they take about a second
+ * (SCOPE_X_FAKE_LATENCY_MS), return ~20 posts a page, and share a timeline
+ * quota of SCOPE_X_FAKE_QUOTA (50) reads per SCOPE_X_FAKE_WINDOW_SEC (900)
+ * seconds, reported with each page and enforced with 429s.
+ */
+interface LiveConfig {
+  latencyMs: number;
+  quota: number;
+  windowMs: number;
+}
+function liveConfig(): LiveConfig | null {
+  if (process.env.SCOPE_X_FAKE_LIVE !== "1") return null;
+  const number = (name: string, fallback: number) => {
+    const value = Number(process.env[name]);
+    return Number.isFinite(value) && value >= 0 ? value : fallback;
+  };
+  return {
+    latencyMs: number("SCOPE_X_FAKE_LATENCY_MS", 900),
+    quota: Math.max(1, number("SCOPE_X_FAKE_QUOTA", 50)),
+    windowMs: Math.max(1, number("SCOPE_X_FAKE_WINDOW_SEC", 900)) * 1000,
+  };
+}
+const LIVE_PAGE = 20;
+const LIVE_HISTORY_DAYS = 120;
+function handleHash(handle: string): number {
+  let hash = 17;
+  for (const char of handle) hash = (hash * 131 + char.charCodeAt(0)) % 1_000_003;
+  return hash;
+}
+/** Minutes between this account's posts: a few busy accounts, most a few times a day. */
+function livePeriodMinutes(handle: string): number {
+  const hash = handleHash(handle);
+  return hash % 3 === 0 ? 4 + (hash % 9) : 45 + (hash % 400);
+}
+/** The live timeline: newest first, post `k` published k periods before the latest slot. */
+function liveItem(handle: string, k: number, now: number): XTimelineItem | null {
+  const period = livePeriodMinutes(handle) * 60_000;
+  const phase = (handleHash(handle) % livePeriodMinutes(handle)) * 60_000;
+  const newest = Math.floor((now - phase) / period) * period + phase;
+  const at = newest - k * period;
+  if (at < now - LIVE_HISTORY_DAYS * 86_400_000) return null;
+  const minute = Math.floor(at / 60_000);
+  const id = `${String(handleHash(handle)).padStart(7, "0")}${minute}`;
+  const kind = minute % 7 === 0 ? "repost" : minute % 5 === 0 ? "reply" : "post";
+  const topics = ["ETH", "BTC", "SOL", "rates", "the election", "AI chips", "oil", "the dollar"];
+  const topic = topics[minute % topics.length];
+  const tweet = buildTweet(handle, 0, {
+    id,
+    publishedAt: new Date(at).toISOString(),
+    url: `https://x.com/${handle}/status/${id}`,
+    conversationId: id,
+    text:
+      kind === "reply"
+        ? `@analyst On ${topic}: I see it differently, the next few weeks decide it.`
+        : `${topic} update from @${handle} (${new Date(at).toISOString().slice(11, 16)} UTC): watching this closely.`,
+    replyCount: minute % 40,
+    repostCount: minute % 25,
+    likeCount: minute % 300,
+    quoteCount: minute % 6,
+    media: [],
+    ...(kind === "reply" ? { inReplyToTweetId: "1", inReplyToUserId: fakeUserId("analyst"), inReplyToHandle: "analyst" } : {}),
+    ...(kind === "repost"
+      ? {
+          isRepost: true,
+          repostedByUserId: fakeUserId(handle),
+          repostedByHandle: handle,
+          author: { userId: fakeUserId("marketwatch"), handle: "marketwatch", displayName: "Market Watch", avatarUrl: fakeAvatar("marketwatch") },
+        }
+      : {}),
+  });
+  return { tweet, timelineKind: kind, timelineAt: tweet.publishedAt };
+}
+
 export interface FakeXProviderOptions {
   /** Handle the fake session is connected as. */
   sessionHandle?: string;
@@ -262,6 +338,8 @@ class FakeXProvider implements XProvider {
 
   async resolveUser(handle: string): Promise<XUserLookup> {
     this.requireSession();
+    const live = liveConfig();
+    if (live) await this.liveRead(live, false);
     const normalized = handle.replace(/^@/, "").toLowerCase() || "scope_dev";
     return { user: { ...this.identityFor(normalized), userId: fakeUserId(normalized) }, pinnedTweetId: null };
   }
@@ -288,6 +366,25 @@ class FakeXProvider implements XProvider {
     ];
   }
 
+  private liveReads: number[] = [];
+  private liveWindowStart = 0;
+
+  /** Waits like a real read and spends the simulated quota; throws 429 when it is gone. */
+  private async liveRead(live: LiveConfig, timeline: boolean) {
+    await new Promise((resolve) => setTimeout(resolve, live.latencyMs));
+    if (!timeline) return null;
+    const now = Date.now();
+    if (now - this.liveWindowStart >= live.windowMs) {
+      this.liveWindowStart = now;
+      this.liveReads = [];
+    }
+    const reset = Math.ceil((this.liveWindowStart + live.windowMs) / 1000);
+    if (this.liveReads.length >= live.quota)
+      throw new XProviderError("rate_limited", undefined, Math.max(1, reset - Math.floor(now / 1000)));
+    this.liveReads.push(now);
+    return { limit: live.quota, remaining: live.quota - this.liveReads.length, reset };
+  }
+
   async listUserTweets(input: {
     userId: string;
     handle: string;
@@ -297,6 +394,21 @@ class FakeXProvider implements XProvider {
     this.requireSession();
     const handle = input.handle.replace(/^@/, "").toLowerCase();
     this.knownHandles.add(handle);
+    const live = liveConfig();
+    if (live) {
+      const rateLimit = await this.liveRead(live, true);
+      const now = Date.now();
+      const start = Number(input.cursor ?? 0) || 0;
+      const items: XTimelineItem[] = [];
+      for (let k = start; items.length < LIVE_PAGE; k++) {
+        const next = liveItem(handle, k, now);
+        if (!next) break;
+        items.push(next);
+      }
+      const end = start + items.length;
+      const more = liveItem(handle, end, now) !== null;
+      return { items, nextCursor: more ? String(end) : null, exhausted: !more, skipped: 0, rateLimit };
+    }
     const all = buildFakeTimeline(handle);
     const offset = input.cursor === null || input.cursor === undefined ? 0 : Number(input.cursor);
     const start = Number.isInteger(offset) && offset > 0 ? offset : 0;

@@ -32,17 +32,17 @@ describe("report profile configuration", () => {
     expect(REPORT_PROFILES.map((profile) => profile.id)).toEqual(["brief", "balanced", "deep"]);
 
     const brief = getReportProfile("brief");
-    expect(brief.model).toBe("gpt-5.6-luna");
+    expect(brief.model).toBe("gpt-6-luna");
     expect(brief.reasoningEffort).toBe("low");
     expect(brief.timeoutMs).toBe(8 * 60_000);
 
     const balanced = getReportProfile("balanced");
-    expect(balanced.model).toBe("gpt-5.6-terra");
+    expect(balanced.model).toBe("gpt-6.1-sol");
     expect(balanced.reasoningEffort).toBe("medium");
     expect(balanced.timeoutMs).toBe(15 * 60_000);
 
     const deep = getReportProfile("deep");
-    expect(deep.model).toBe("gpt-5.6-sol");
+    expect(deep.model).toBe("gpt-6.1-sol");
     expect(deep.reasoningEffort).toBe("xhigh");
     expect(deep.timeoutMs).toBe(25 * 60_000);
   });

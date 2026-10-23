@@ -1,3 +1,4 @@
+import { readJsonObject } from "@/lib/http/request-json";
 import {
   getRecentItemsPerTab,
   setRecentItemsPerTab,
@@ -27,7 +28,7 @@ interface PutRequestBody {
 export async function PUT(request: Request) {
   let body: PutRequestBody;
   try {
-    body = (await request.json()) as PutRequestBody;
+    body = (await readJsonObject(request)) as PutRequestBody;
   } catch {
     return Response.json(
       {

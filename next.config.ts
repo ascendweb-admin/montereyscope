@@ -5,7 +5,14 @@ const nextConfig: NextConfig = {
   // executable. Unlike a static export, standalone output retains Server
   // Components, Server Actions, route handlers, SQLite, and child processes.
   output: "standalone",
-  // Isolate browser/desktop verification from an already running dev server.
+  // The AI Research page was folded into AI Chat, whose source picker covers
+  // the same selection. Query strings pass through, so an old
+  // /research?creators=<id> link lands on /chat?creators=<id>.
+  async redirects() {
+    return [{ source: "/research", destination: "/chat", permanent: true }];
+  },
+  // The desktop development host sets its own output directory so it can
+  // run alongside `npm run dev`; verification can also supply an override.
   distDir: process.env.SCOPE_NEXT_DIST_DIR ?? ".next",
   // The standalone server never reads these: Electron copies the runtime into
   // its own resources directory, and the desktop host always overrides the

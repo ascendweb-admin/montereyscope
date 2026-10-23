@@ -1,3 +1,4 @@
+import { readJsonObject } from "@/lib/http/request-json";
 import {
   resolveTranscript,
   TRANSCRIPT_ERROR_CODE_TO_STATUS,
@@ -114,7 +115,7 @@ export async function POST(request: Request, ctx: RouteParams) {
 
   let body: SelectionRequestBody;
   try {
-    body = (await request.json()) as SelectionRequestBody;
+    body = (await readJsonObject(request)) as SelectionRequestBody;
   } catch {
     return Response.json(
       { error: { code: "invalid_body", message: "Request body must be JSON." } },

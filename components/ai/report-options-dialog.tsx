@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, FileText, Loader2 } from "lucide-react";
+import { ArrowLeft, Check, FileText, Loader2 } from "lucide-react";
 
 import {
   REPORT_PROFILE_OPTIONS,
@@ -77,6 +77,12 @@ interface ReportOptionsDialogProps {
   onGenerate: (profile: ReportProfileId, style: ReportStyleId) => void;
   /** While the queue request is in flight the dialog cannot be dismissed. */
   busy?: boolean;
+  /** Replaces the generic description, e.g. to name the picked selection. */
+  description?: string;
+  /** Returns to the step before (a new report's source picker), when there is one. */
+  onBack?: () => void;
+  /** Where the queued job can be followed; defaults to the Reports page. */
+  progressHint?: string;
 }
 
 /**
@@ -92,6 +98,9 @@ export function ReportOptionsDialog({
   onClose,
   onGenerate,
   busy = false,
+  description = "One self-contained HTML document from this selection's cached sources.",
+  onBack,
+  progressHint = "Track progress on the Reports page.",
 }: ReportOptionsDialogProps) {
   const [profile, style, setProfile, setStyle] = useReportOptions();
   const backend = useActiveBackend(open);
@@ -101,7 +110,7 @@ export function ReportOptionsDialog({
       open={open}
       onClose={onClose}
       title="Generate report"
-      description="One self-contained HTML document from this selection's cached sources."
+      description={description}
       busy={busy}
       className="max-w-2xl"
     >
@@ -192,11 +201,16 @@ export function ReportOptionsDialog({
 
         <p className="text-xs text-muted-foreground">
           Reports run one at a time in the background and use{" "}
-          {backend ? USAGE_SOURCE[backend] : "your AI provider’s usage"}. Track progress on the
-          Reports page.
+          {backend ? USAGE_SOURCE[backend] : "your AI provider’s usage"}. {progressHint}
         </p>
 
         <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+          {onBack ? (
+            <Button variant="ghost" disabled={busy} onClick={onBack} className="sm:mr-auto">
+              <ArrowLeft aria-hidden="true" />
+              Back to sources
+            </Button>
+          ) : null}
           <Button variant="ghost" disabled={busy} onClick={onClose}>
             Cancel
           </Button>

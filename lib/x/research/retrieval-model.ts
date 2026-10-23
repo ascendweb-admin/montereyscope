@@ -1,5 +1,10 @@
 /** Client-safe retrieval summaries. Opaque provider cursors never leave the server. */
-export type RetrievalKind = "refresh" | "history";
+/**
+ * "refresh" reads new posts (a first import, then catch-ups); "history" reads
+ * an explicit window; "backfill" extends each creator's covered history down
+ * to `since`, continuing from where its archive already reaches.
+ */
+export type RetrievalKind = "refresh" | "history" | "backfill";
 export type RetrievalStatus =
   "running" | "complete" | "partial" | "failed" | "cancelled" | "interrupted";
 export interface RetrievalRequest {
@@ -55,6 +60,19 @@ export interface RetrievalCoverage {
   historySince: string | null;
   historyUntil: string | null;
   historyStatus: string | null;
+  /** The archive holds every post from here to the last sync (null until a first import finishes). */
+  coveredSince: string | null;
+}
+/** Where one creator's syncing stands, for status views. */
+export interface RetrievalCreatorState {
+  creatorId: number;
+  initialized: boolean;
+  lastSuccessfulRefresh: string | null;
+  coveredSince: string | null;
+  /** The latest read of new posts: a first import or a catch-up. */
+  head: (RetrievalCreatorProgress & { updatedAt: string | null }) | null;
+  /** Older posts importing in the background right now. */
+  history: (RetrievalCreatorProgress & { since: string; reach: string | null; extend: boolean }) | null;
 }
 export const RETRIEVAL_REASONS: Record<string, string> = {
   overlap: "Caught up to the saved overlap; upstream completeness unverified",
@@ -70,4 +88,5 @@ export const RETRIEVAL_REASONS: Record<string, string> = {
   interrupted: "Interrupted by application restart; resume manually",
   configuration: "Provider configuration changed; start a new retrieval",
   waiting: "Waiting for X before continuing automatically",
+  superseded: "Replaced by a newer sync before reading anything",
 };

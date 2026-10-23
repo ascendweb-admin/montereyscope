@@ -5,5 +5,7 @@ export {
   getCategory,
   listCategories,
   listCategoriesForCreator,
+  listCategoriesForProfile,
   listCreatorCategoryAssignments,
+  listProfileCategoryAssignments,
 } from "./repository";

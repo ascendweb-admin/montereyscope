@@ -3,7 +3,7 @@
  * materializes both kinds into one job directory, persists the versioned
  * source document on the thread, and rejects ambiguous or empty scopes.
  */
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -161,7 +161,12 @@ describe("POST /api/ai/chat with mixed sources", () => {
     expect(text).toContain("event: done");
 
     const runOptions = runCodexMock.mock.calls[0]?.[0] as CodexRunOptions;
-    expect(existsSync(path.join(runOptions.workDir, "tweets", `${TWEET_ID}.txt`))).toBe(true);
+    // Posts are bundled per saved account, each headed by its citation id.
+    const bundles = readdirSync(path.join(runOptions.workDir, "tweets"));
+    expect(bundles).toHaveLength(1);
+    expect(readFileSync(path.join(runOptions.workDir, "tweets", bundles[0]), "utf8")).toContain(
+      `[tweets/${TWEET_ID}.txt]`,
+    );
     expect(existsSync(path.join(runOptions.workDir, "transcripts", `${VIDEO_ID}.txt`))).toBe(true);
 
     const db = getDb();

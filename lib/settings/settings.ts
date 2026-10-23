@@ -558,7 +558,7 @@ export interface XSyncSettings {
 }
 export const DEFAULT_X_SYNC_SETTINGS: XSyncSettings = {
   autoSyncMinutes: 30,
-  initialHistoryDays: 30,
+  initialHistoryDays: 7,
 };
 
 /** Validates untrusted input; unknown fields are ignored, bad values rejected. */

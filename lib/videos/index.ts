@@ -10,6 +10,7 @@ export {
   mergeFeedResults,
   parseChannelFeedPayload,
   pickThumbnailUrl,
+  stableThumbnailUrl,
   videoIdFromWatchUrl,
 } from "./mapper";
 export type { FeedParseError, FeedParseResult, VideoDraft } from "./mapper";

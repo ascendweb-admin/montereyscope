@@ -5,8 +5,8 @@ import { revalidatePath } from "next/cache";
 import {
   createCategoryFromInput,
   deleteCategoryById,
-  setCategoryCreatorIds,
-  setCreatorCategoryIds,
+  setCategoryProfileIds,
+  setProfileCategoryIds,
   updateCategoryFromInput,
 } from "@/lib/categories/service";
 import type { CategorySummary } from "@/lib/categories";
@@ -20,9 +20,10 @@ export interface CategoryActionOutcome {
 
 function revalidateCategoryViews(): void {
   revalidatePath("/");
-  revalidatePath("/research");
   revalidatePath("/chat");
-  revalidatePath("/channels/[id]", "page");
+  revalidatePath("/feed");
+  revalidatePath("/x-dashboard");
+  revalidatePath("/creators/[id]", "page");
 }
 
 export async function createCategoryAction(
@@ -71,12 +72,13 @@ export async function deleteCategoryAction(id: unknown): Promise<CategoryActionO
   }
 }
 
-export async function setCreatorCategoriesAction(
-  creatorId: unknown,
+/** Files a person (creator profile) under exactly these categories. */
+export async function setProfileCategoriesAction(
+  profileId: unknown,
   categoryIds: unknown,
 ): Promise<CategoryActionOutcome> {
   try {
-    const outcome = setCreatorCategoryIds(getDb(), creatorId, categoryIds);
+    const outcome = setProfileCategoryIds(getDb(), profileId, categoryIds);
     if (!outcome.ok) {
       return { ok: false, message: outcome.error.message };
     }
@@ -87,12 +89,13 @@ export async function setCreatorCategoriesAction(
   }
 }
 
-export async function setCategoryCreatorsAction(
+/** Makes a category hold exactly these people (creator profile ids). */
+export async function setCategoryProfilesAction(
   categoryId: unknown,
-  creatorIds: unknown,
+  profileIds: unknown,
 ): Promise<CategoryActionOutcome> {
   try {
-    const outcome = setCategoryCreatorIds(getDb(), categoryId, creatorIds);
+    const outcome = setCategoryProfileIds(getDb(), categoryId, profileIds);
     if (!outcome.ok) {
       return { ok: false, message: outcome.error.message };
     }

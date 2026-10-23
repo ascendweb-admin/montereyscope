@@ -53,7 +53,7 @@ export async function refreshCreatorContentAction(
         message: outcome.message,
       };
     }
-    revalidatePath(`/channels/${creatorId}`);
+    revalidatePath("/creators/[id]", "page");
     revalidatePath("/");
     revalidatePath("/feed");
     return {
@@ -93,7 +93,7 @@ export async function refreshCreatorFeedsAction(creatorId: number): Promise<Refr
         message: outcome.error.message,
       };
     }
-    revalidatePath(`/channels/${creatorId}`);
+    revalidatePath("/creators/[id]", "page");
     return {
       ok: true,
       status: outcome.status,

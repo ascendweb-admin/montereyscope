@@ -3,6 +3,7 @@
  * Rows map the `videos` table created by migration 001.
  */
 import type { ScopeDatabase } from "@/lib/db/connection";
+import { pruneSourceOnlyHosts } from "./attribution";
 import type { VideoDraft } from "./mapper";
 
 export type LiveStatus = "not_live" | "is_live" | "was_live" | "upcoming" | "unknown";
@@ -97,16 +98,40 @@ export function countAllVideos(db: ScopeDatabase): number {
   return row ? Number(row.n) : 0;
 }
 
+/** Cached videos that "clear cached feeds" removes: those nobody attributed to a person. */
+export function countClearableVideos(db: ScopeDatabase): number {
+  const row = db
+    .prepare<[], { n: number }>(
+      "SELECT COUNT(*) AS n FROM videos WHERE id NOT IN (SELECT video_id FROM profile_videos)",
+    )
+    .get();
+  return row ? Number(row.n) : 0;
+}
+
+/** Hand-picked videos attributed to a person; they survive "clear cached feeds". */
+export function countAttributedVideos(db: ScopeDatabase): number {
+  const row = db
+    .prepare<[], { n: number }>("SELECT COUNT(DISTINCT video_id) AS n FROM profile_videos")
+    .get();
+  return row ? Number(row.n) : 0;
+}
+
 /**
- * Deletes every cached video entry (transcripts cascade via foreign key)
- * and clears every creator's last-refreshed stamp, in one transaction.
- * Used only by the explicit, confirmed Settings action — never during
- * refresh failures. Returns the number of video rows removed.
+ * Deletes every cached video entry that is not attributed to a person
+ * (transcripts cascade via foreign key), clears every creator's
+ * last-refreshed stamp, and drops source-only hosts left with no attributed
+ * video, in one transaction. Hand-picked videos in "Other videos" are curated
+ * data and are kept along with their hosts and transcripts. Used only by the
+ * explicit, confirmed Settings action — never during refresh failures.
+ * Returns the number of video rows removed.
  */
 export function clearAllCachedFeeds(db: ScopeDatabase): number {
   const wipe = db.transaction((): number => {
-    const result = db.prepare("DELETE FROM videos").run();
+    const result = db
+      .prepare("DELETE FROM videos WHERE id NOT IN (SELECT video_id FROM profile_videos)")
+      .run();
     db.prepare("UPDATE creators SET last_refreshed_at = NULL").run();
+    pruneSourceOnlyHosts(db);
     return Number(result.changes);
   });
   return wipe();
@@ -140,7 +165,7 @@ function toWithCreatorRecord(row: VideoWithCreatorRow): VideoWithCreator {
 
 /**
  * Every cached video across all creators, newest first (undated items sort
- * ahead, matching the per-tab ordering). Feeds the AI Research page; pair
+ * ahead, matching the per-tab ordering). Feeds the chat source picker; pair
  * with resolveScope for per-video transcript availability.
  */
 export function listAllVideosWithCreator(db: ScopeDatabase): VideoWithCreator[] {
@@ -214,6 +239,39 @@ export interface MergeFeedOutcome {
   /** Number of fetched drafts in this merge, before upsert dedupe. */
   fetchedCount: number;
   livestreamCount: number;
+}
+
+/**
+ * Stores a single hand-picked video under its host, leaving anything already
+ * cached untouched. Unlike `mergeCreatorFeed` it never reassigns an existing
+ * video's `creator_id` and never stamps the host's `last_refreshed_at`, so
+ * importing one video cannot claim that a feed was refreshed. Returns true
+ * when the row was newly inserted.
+ */
+export function insertVideoIfMissing(
+  db: ScopeDatabase,
+  creatorId: number,
+  draft: VideoDraft,
+): boolean {
+  const result = db
+    .prepare(
+      `INSERT INTO videos
+         (id, creator_id, title, url, thumbnail_url, published_at, duration_seconds, live_status, description, fetched_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+       ON CONFLICT (id) DO NOTHING`,
+    )
+    .run(
+      draft.id,
+      creatorId,
+      draft.title,
+      draft.url,
+      draft.thumbnailUrl,
+      draft.publishedAt,
+      draft.durationSeconds,
+      draft.liveStatus,
+      draft.description,
+    );
+  return Number(result.changes) > 0;
 }
 
 /**

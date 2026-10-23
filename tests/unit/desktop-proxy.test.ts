@@ -38,4 +38,52 @@ describe("desktop request gate", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("x-middleware-next")).toBe("1");
   });
+
+  it.each(["POST", "PUT", "PATCH", "DELETE"])(
+    "rejects cross-origin %s before route side effects",
+    (method) => {
+      delete process.env.SCOPE_DESKTOP_TOKEN;
+      const response = proxy(
+        new NextRequest("http://localhost:3100/api/ai/reports", {
+          method,
+          headers: {
+            host: "127.0.0.1:3100",
+            origin: "http://127.0.0.1:3102",
+            "content-type": "text/plain",
+          },
+        }),
+      );
+      expect(response.status).toBe(403);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    },
+  );
+
+  it.each([undefined, "http://127.0.0.1:3100"])(
+    "allows same-origin or non-browser mutations (%s)",
+    (origin) => {
+      delete process.env.SCOPE_DESKTOP_TOKEN;
+      const response = proxy(
+        new NextRequest("http://localhost:3100/api/ai/reports", {
+          method: "POST",
+          headers: { host: "127.0.0.1:3100", ...(origin ? { origin } : {}) },
+        }),
+      );
+      expect(response.headers.get("x-middleware-next")).toBe("1");
+    },
+  );
+
+  it("rejects foreign origins even with a desktop token and accepts the app's own origin", () => {
+    process.env.SCOPE_DESKTOP_TOKEN = "secret-launch-token";
+    const request = (origin: string) =>
+      new NextRequest("http://localhost:41234/api/ai/reports", {
+        method: "POST",
+        headers: {
+          host: "127.0.0.1:41234",
+          origin,
+          "x-scope-desktop-token": "secret-launch-token",
+        },
+      });
+    expect(proxy(request("http://127.0.0.1:3102")).status).toBe(403);
+    expect(proxy(request("http://127.0.0.1:41234")).headers.get("x-middleware-next")).toBe("1");
+  });
 });

@@ -150,6 +150,8 @@ export interface CodexSpawnRequest {
   command: string;
   args: readonly string[];
   cwd: string;
+  /** Extra environment variables layered over the server's own. */
+  env?: Readonly<Record<string, string>>;
 }
 
 export interface CodexExitStatus {
@@ -254,7 +256,8 @@ export type CodexFailureKind =
   | "nonzero_exit"
   | "quota_exceeded"
   | "timeout"
-  | "aborted";
+  | "aborted"
+  | "output_truncated";
 
 export interface CodexErrorDetails {
   exitCode?: number | null;
@@ -318,6 +321,14 @@ export class CodexAbortedError extends CodexError {
   constructor(message: string, details?: CodexErrorDetails) {
     super("aborted", message, details);
     this.name = "CodexAbortedError";
+  }
+}
+
+/** The model hit its output-token ceiling before it finished the answer. */
+export class CodexOutputTruncatedError extends CodexError {
+  constructor(message: string, details?: CodexErrorDetails) {
+    super("output_truncated", message, details);
+    this.name = "CodexOutputTruncatedError";
   }
 }
 

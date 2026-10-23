@@ -14,8 +14,20 @@ import {
   SearchX,
   TriangleAlert,
   X,
+  type LucideIcon,
 } from "lucide-react";
 
+import {
+  PersonRefreshButton,
+  RailRefreshSlot,
+  RefreshAllButton,
+  RefreshAnnouncer,
+  RefreshRunBanner,
+  useAccountRefreshed,
+  usePickerRefresh,
+  type PersonRefresh,
+  type PickerRefresh,
+} from "@/components/ai/picker-refresh";
 import {
   CategoryFilterBar,
   UNCATEGORIZED_FILTER,
@@ -24,9 +36,20 @@ import { SearchAvatar } from "@/components/library/creator-search-results";
 import { PlatformFilter } from "@/components/library/platform-filter";
 import { Button } from "@/components/ui/button";
 import { AppDialog } from "@/components/ui/dialog";
+import { PendingIndicator } from "@/components/ui/pending";
 import { RumbleLogo, XLogo, YouTubeLogo } from "@/components/ui/platform-logos";
 import { SelectionCheckbox } from "@/components/ui/selection-checkbox";
-import { MAX_SCOPE_SOURCES, formatScopeCapMessage } from "@/lib/ai/scope-selection";
+import {
+  DEEP_READ_TOKENS,
+  describeScopeLoad,
+  estimateScopeLoad,
+  FULL_READ_TOKENS,
+  scopeAdditionProblem,
+  scopeReading,
+  SCOPE_READING_COPY,
+  takeWhileFits,
+  type ScopeLoad,
+} from "@/lib/ai/scope-selection";
 import { sourceKey, type SourceRef } from "@/lib/content/model";
 import { localAvatarSrc } from "@/lib/creators/avatar";
 import type { CreatorPlatform } from "@/lib/creators/repository";
@@ -36,27 +59,48 @@ import type { CategorySummary } from "@/lib/categories";
 
 /**
  * The source picker for fresh conversations in the full-screen chat
- * workspace. Where the collapsed panel inherits its scope from the page it
- * opens on (one video, a channel selection, a research selection), the
- * workspace can start anywhere — so it picks its own sources here: any
- * cached videos and X posts across the whole library, capped like every
- * other selection surface at MAX_SCOPE_SOURCES. Videos are always
- * selectable (their captions are read when the chat starts); posts spell out
- * whether their complete text is cached instead of being skipped silently.
+ * workspace, and for new reports on the Reports page. Where the collapsed
+ * panel inherits its scope from the page it opens on (one video, a channel
+ * selection, a research selection), these can start anywhere — so they pick
+ * their own sources here: any cached videos and X posts across the whole
+ * library, within the same analysis limits as every other selection surface
+ * (25 videos, 50 hours of video, 500 posts). The tray measures what the
+ * selection holds — hours and posts — and says how an answer will read it.
+ * Videos are always selectable (their captions are read when the chat or
+ * report starts); posts spell out whether their complete text is cached
+ * instead of being skipped silently. `purpose` sets the wording for each.
  *
  * Layout: a creator rail on the left (who the sources belong to, with
  * per-creator selection counts), a searchable thumbnail grid grouped by
- * creator on the right, and a selection tray along the bottom. Ticks land in
+ * creator on the right, and a selection tray along the bottom. A creator is
+ * a person: every platform account linked to them lands in one group. Ticks land in
  * a draft that only reaches the conversation on confirm, so Cancel really
  * cancels.
+ *
+ * Creators can be refreshed from here — one person from their rail row or
+ * group header, everyone from the rail's "Refresh all" (see
+ * picker-refresh.tsx). Sources that arrive while the picker is open are
+ * marked New and gather under their own tab, so a refresh ends in something
+ * to pick.
  */
 
 export interface PickerVideo {
   id: string;
+  /** The hosting account — for a guest appearance a (hidden) channel of someone else. */
   creatorId: number;
   title: string;
   creatorName: string;
   categoryIds: number[];
+  /**
+   * An appearance on another person's channel: the first person it features.
+   * The video groups under them (and `creatorName` / `categoryIds` are theirs),
+   * with "on {hostName}" under its title.
+   */
+  featuredProfileId?: number | null;
+  featuredName?: string | null;
+  hostName?: string | null;
+  /** The hosting channel's platform, for a host the picker has no creator row for. */
+  platform?: CreatorPlatform | null;
   thumbnailUrl?: string | null;
   publishedAt?: string | null;
   durationSeconds?: number | null;
@@ -75,17 +119,69 @@ export interface PickerTweet {
   mediaPreviewUrl?: string | null;
 }
 
-/** Creator identity for the rail and group headers (name, avatar, platform). */
+/** One platform account and the person it belongs to, for the rail and group headers. */
 export interface PickerCreator {
+  /** The account id (creators.id) sources are cached under. */
   id: number;
-  /** The saved creator's own name — a post's author can be someone they reposted. */
+  /** The person (creator profile); their accounts share one group. */
+  profileId: number;
+  /** The person's name — a post's author can be someone they reposted. */
   displayName?: string;
+  /** The person's avatar, streamed through `avatarCreatorId`'s proxy. */
   avatarUrl: string | null;
+  avatarCreatorId?: number | null;
   platform: CreatorPlatform;
+  /** When the account's content was last brought up to date; null if never. */
+  lastRefreshedAt?: string | null;
 }
 
+/** Where a confirmed selection goes: a fresh chat, or the next step of a new report. */
+export type PickerPurpose = "chat" | "report";
+
+const PURPOSE_COPY: Record<
+  PickerPurpose,
+  {
+    description: string;
+    emptyLibrary: string;
+    emptySelection: string;
+    confirmIcon: LucideIcon;
+    confirm: (count: number) => string;
+  }
+> = {
+  chat: {
+    description:
+      "Every answer is grounded in what the videos and X posts you pick actually say — across your whole library.",
+    emptyLibrary:
+      "Save a creator and fetch their content first — chats work over the sources you already store locally.",
+    emptySelection:
+      "Tick videos or posts and they gather here, so you can review the set before starting the chat.",
+    confirmIcon: Check,
+    confirm: (count) =>
+      count === 0 ? "Use sources" : count === 1 ? "Use 1 source" : `Use ${count} sources`,
+  },
+  report: {
+    description:
+      "The report is written from what the videos and X posts you pick actually say — across your whole library.",
+    emptyLibrary:
+      "Save a creator and fetch their content first — reports are written from the sources you already store locally.",
+    emptySelection:
+      "Tick videos or posts and they gather here, so you can review the set before choosing how the report looks.",
+    confirmIcon: ArrowRight,
+    confirm: (count) =>
+      count === 0
+        ? "Continue"
+        : count === 1
+          ? "Continue with 1 source"
+          : `Continue with ${count} sources`,
+  },
+};
+
 export interface ChatSourcePickerProps {
+  /** What the selection is for; sets the wording. Defaults to a chat. */
+  purpose?: PickerPurpose;
   open: boolean;
+  /** The library is still on its way (the Reports page reads it on demand). */
+  loading?: boolean;
   onClose: () => void;
   videos: readonly PickerVideo[];
   tweets?: readonly PickerTweet[];
@@ -95,6 +191,15 @@ export interface ChatSourcePickerProps {
   selected: ReadonlySet<string>;
   /** Receives the confirmed references in list order (stable conversation key). */
   onConfirm: (sources: SourceRef[]) => void;
+  /** Person (profile id) whose sources the picker opens focused on, e.g. from a creator page. */
+  initialFocusedCreator?: number | null;
+  /**
+   * An account finished refreshing while the picker is open. A host that
+   * fetched the library reads it again here; one rendered from server props
+   * needs nothing, since the app re-renders the page after every finished
+   * background task.
+   */
+  onSourcesUpdated?: () => void;
 }
 
 interface PickerItem {
@@ -104,7 +209,11 @@ interface PickerItem {
   label: string;
   searchText: string;
   creatorId: number;
+  /** The person the item groups under (profile id; an unknown account stands alone). */
+  groupId: number;
   creatorName: string;
+  /** The channel an appearance is on ("on {hostName}"); null for a channel's own sources. */
+  hostName: string | null;
   categoryIds: number[];
   ready: boolean;
   thumbnailUrl: string | null;
@@ -118,14 +227,33 @@ interface PickerItem {
   platform: CreatorPlatform | null;
 }
 
-/** One creator block in the picker: their sources, newest first. */
+/** One person's block in the picker: their sources across platforms, newest first. */
 interface PickerGroup {
-  creatorId: number;
+  groupId: number;
   creatorName: string;
   items: PickerItem[];
 }
 
-type KindView = "all" | "video" | "tweet" | "selected";
+/** How a group's person is drawn: name, avatar, and the platforms in view. */
+interface GroupIdentity {
+  name: string;
+  avatarUrl: string | null;
+  avatarCreatorId: number | null;
+}
+
+/** An account with no known person groups on its own; negative ids never clash. */
+function groupIdOf(creatorId: number, creatorsById: ReadonlyMap<number, PickerCreator>): number {
+  return creatorsById.get(creatorId)?.profileId ?? -creatorId;
+}
+
+function groupPlatforms(items: readonly PickerItem[]): CreatorPlatform[] {
+  const present = new Set(items.map((item) => item.platform));
+  return (["youtube", "rumble", "x"] as const).filter((platform) => present.has(platform));
+}
+
+type KindView = "all" | "video" | "tweet" | "selected" | "new";
+
+const NO_KEYS: ReadonlySet<string> = new Set();
 
 /** Cards per creator in the overview before "Show all" takes over. */
 const PREVIEW_LIMIT = 8;
@@ -141,9 +269,16 @@ function toItems(
       kind: "video" as const,
       id: video.id,
       label: video.title,
-      searchText: `${video.title} ${video.creatorName}`.toLowerCase(),
+      searchText:
+        `${video.title} ${video.creatorName} ${video.featuredName ?? ""} ${video.hostName ?? ""}`
+          .trim()
+          .toLowerCase(),
       creatorId: video.creatorId,
-      creatorName: video.creatorName,
+      // An appearance belongs to the person it features, not the channel it is on.
+      groupId: video.featuredProfileId ?? groupIdOf(video.creatorId, creatorsById),
+      creatorName:
+        video.featuredName ?? creatorsById.get(video.creatorId)?.displayName ?? video.creatorName,
+      hostName: video.featuredProfileId != null ? (video.hostName ?? null) : null,
       categoryIds: video.categoryIds,
       ready: true,
       thumbnailUrl: video.thumbnailUrl ?? null,
@@ -152,7 +287,7 @@ function toItems(
       liveStatus: video.liveStatus,
       text: null,
       handle: null,
-      platform: creatorsById.get(video.creatorId)?.platform ?? null,
+      platform: video.platform ?? creatorsById.get(video.creatorId)?.platform ?? null,
     })),
     ...tweets.map((tweet) => ({
       key: sourceKey({ kind: "tweet", id: tweet.id }),
@@ -162,9 +297,11 @@ function toItems(
       searchText:
         `${tweet.text} ${tweet.authorName} ${tweet.authorHandle} ${creatorsById.get(tweet.creatorId)?.displayName ?? ""}`.toLowerCase(),
       creatorId: tweet.creatorId,
+      groupId: groupIdOf(tweet.creatorId, creatorsById),
       // Group under the saved creator, not whoever wrote the post: a feed
       // carries reposts and quotes of other accounts.
       creatorName: creatorsById.get(tweet.creatorId)?.displayName ?? tweet.authorName,
+      hostName: null,
       categoryIds: tweet.categoryIds,
       ready: tweet.readyForAnalysis,
       thumbnailUrl: tweet.mediaPreviewUrl ?? null,
@@ -181,16 +318,16 @@ function toItems(
 function groupByCreator(items: readonly PickerItem[]): PickerGroup[] {
   const groups = new Map<number, PickerItem[]>();
   for (const item of items) {
-    const group = groups.get(item.creatorId);
+    const group = groups.get(item.groupId);
     if (group) {
       group.push(item);
     } else {
-      groups.set(item.creatorId, [item]);
+      groups.set(item.groupId, [item]);
     }
   }
   return [...groups.entries()]
-    .map(([creatorId, groupItems]) => ({
-      creatorId,
+    .map(([groupId, groupItems]) => ({
+      groupId,
       creatorName: groupItems[0]?.creatorName ?? "Creator",
       items: groupItems,
     }))
@@ -212,6 +349,21 @@ function PlatformMark({ platform, className }: { platform?: CreatorPlatform; cla
   if (platform === "rumble") return <RumbleLogo aria-hidden="true" className={className} />;
   if (platform === "x") return <XLogo aria-hidden="true" className={className} />;
   return null;
+}
+
+/** Every platform a group's sources come from, with a spoken summary. */
+function PlatformMarkRow({ platforms }: { platforms: readonly CreatorPlatform[] }) {
+  if (platforms.length === 0) return null;
+  return (
+    <>
+      {platforms.map((platform) => (
+        <PlatformMark key={platform} platform={platform} className="size-3 shrink-0" />
+      ))}
+      <span className="sr-only">
+        {platforms.map((platform) => PLATFORM_NAME[platform]).join(", ")} ·{" "}
+      </span>
+    </>
+  );
 }
 
 /** Post timestamps in the compact form X itself uses: "6h", "3d", "Mar 4". */
@@ -241,24 +393,33 @@ const PLATFORM_NAME: Record<CreatorPlatform, string> = {
 };
 
 export function ChatSourcePicker(props: ChatSourcePickerProps) {
-  const { open, onClose } = props;
+  const { open, onClose, purpose = "chat", loading = false } = props;
   return (
     <AppDialog
       open={open}
       onClose={onClose}
       title="Choose sources"
-      description="Every answer is grounded in what the videos and X posts you pick actually say — across your whole library."
+      description={PURPOSE_COPY[purpose].description}
       className="h-[min(56rem,calc(100dvh-2rem))] max-w-6xl flex-col overflow-hidden open:flex"
       bodyClassName="flex min-h-0 flex-1 flex-col p-0"
     >
       {/* Mounted only while open: the draft starts from the committed
           selection each time, and closed dialogs never pay for the grid. */}
-      {open ? <PickerBody {...props} /> : null}
+      {open ? (
+        loading ? (
+          <div className="flex flex-1 items-center justify-center p-6">
+            <PendingIndicator label="Loading your library…" />
+          </div>
+        ) : (
+          <PickerBody {...props} />
+        )
+      ) : null}
     </AppDialog>
   );
 }
 
 function PickerBody({
+  purpose = "chat",
   onClose,
   videos,
   tweets = [],
@@ -266,6 +427,8 @@ function PickerBody({
   categories,
   selected,
   onConfirm,
+  initialFocusedCreator = null,
+  onSourcesUpdated,
 }: ChatSourcePickerProps) {
   const creatorsById = useMemo(
     () => new Map(creators.map((creator) => [creator.id, creator])),
@@ -276,20 +439,51 @@ function PickerBody({
     [videos, tweets, creatorsById],
   );
   const itemsByKey = useMemo(() => new Map(items.map((item) => [item.key, item])), [items]);
+  // Group id → how that person is drawn (taken from any of their accounts).
+  const identities = useMemo(() => {
+    const byGroup = new Map<number, GroupIdentity>();
+    for (const creator of creators) {
+      if (!byGroup.has(creator.profileId)) {
+        byGroup.set(creator.profileId, {
+          name: creator.displayName ?? "Creator",
+          avatarUrl: creator.avatarUrl,
+          avatarCreatorId: creator.avatarCreatorId ?? creator.id,
+        });
+      }
+    }
+    return byGroup;
+  }, [creators]);
 
   const [draft, setDraft] = useState<ReadonlySet<string>>(
     () => new Set([...selected].filter((key) => itemsByKey.get(key)?.ready)),
   );
   const [query, setQuery] = useState("");
   const [view, setView] = useState<KindView>("all");
-  const [focusedCreator, setFocusedCreator] = useState<number | null>(null);
-  const [capNote, setCapNote] = useState(false);
+  const [focusedCreator, setFocusedCreator] = useState<number | null>(initialFocusedCreator);
+  const [capNote, setCapNote] = useState<string | null>(null);
   const [categoryFilters, setCategoryFilters] = useState<
     ReadonlySet<number | typeof UNCATEGORIZED_FILTER>
   >(() => new Set());
   const [readyOnly, setReadyOnly] = useState(true);
   const [platform, setPlatform] = useState<CreatorPlatform | "all">("all");
+  // What the library held when the picker opened: anything else arrived
+  // with a refresh since, and is marked New.
+  const [openedWith] = useState(() => new Set(items.map((item) => item.key)));
+  const [openedAt] = useState(() => Date.now());
+  const [dismissedRun, setDismissedRun] = useState<number | null>(null);
+  const refresh = usePickerRefresh(creators);
+  useAccountRefreshed(onSourcesUpdated);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // Start in the search box. autoFocus would fire as the field mounts, while
+  // AppDialog has yet to open the dialog, and lose to the browser's default
+  // target (the Close button); a tick later the dialog is open. The same
+  // race ConfirmDialog wins this way.
+  useEffect(() => {
+    const id = window.setTimeout(() => searchRef.current?.focus(), 0);
+    return () => window.clearTimeout(id);
+  }, []);
 
   const needle = query.trim().toLowerCase();
 
@@ -300,6 +494,7 @@ function PickerBody({
         if (readyOnly && !item.ready) return false;
         if (platform !== "all" && item.platform !== platform) return false;
         if (view === "selected" && !draft.has(item.key)) return false;
+        if (view === "new" && openedWith.has(item.key)) return false;
         if ((view === "video" || view === "tweet") && item.kind !== view) return false;
         const categoryMatch =
           categoryFilters.size === 0 ||
@@ -308,22 +503,23 @@ function PickerBody({
         if (!categoryMatch) return false;
         return needle.length === 0 || item.searchText.includes(needle);
       }),
-    [items, readyOnly, platform, view, draft, categoryFilters, needle],
+    [items, readyOnly, platform, view, draft, categoryFilters, needle, openedWith],
   );
 
   const railGroups = useMemo(() => groupByCreator(matching), [matching]);
   // A focus whose creator dropped out of the filters quietly falls back to everyone.
   const activeCreator =
-    focusedCreator !== null && railGroups.some((group) => group.creatorId === focusedCreator)
+    focusedCreator !== null && railGroups.some((group) => group.groupId === focusedCreator)
       ? focusedCreator
       : null;
   const groups =
     activeCreator === null
       ? railGroups
-      : railGroups.filter((group) => group.creatorId === activeCreator);
+      : railGroups.filter((group) => group.groupId === activeCreator);
   const shownCount = groups.reduce((count, group) => count + group.items.length, 0);
   // The overview previews each creator; focus, search, and review show everything.
-  const truncate = activeCreator === null && needle.length === 0 && view !== "selected";
+  const truncate =
+    activeCreator === null && needle.length === 0 && view !== "selected" && view !== "new";
 
   const kindCounts = useMemo(() => {
     const visible = items.filter(
@@ -342,18 +538,27 @@ function PickerBody({
 
   const uncategorizedCount = useMemo(
     () =>
-      new Set(items.filter((item) => item.categoryIds.length === 0).map((item) => item.creatorId))
+      new Set(items.filter((item) => item.categoryIds.length === 0).map((item) => item.groupId))
         .size,
     [items],
   );
 
-  const remaining = MAX_SCOPE_SOURCES - draft.size;
   const selectedItems = useMemo(() => items.filter((item) => draft.has(item.key)), [items, draft]);
+  const newKeys = useMemo(
+    () => new Set(items.filter((item) => !openedWith.has(item.key)).map((item) => item.key)),
+    [items, openedWith],
+  );
+  // What each refresh lane brought in: X posts, or YouTube and Rumble videos.
+  const newByLane = useMemo(() => {
+    const posts = items.filter((item) => newKeys.has(item.key) && item.platform === "x").length;
+    return { video: newKeys.size - posts, x: posts };
+  }, [items, newKeys]);
+  const load = useMemo(() => estimateScopeLoad(selectedItems), [selectedItems]);
 
   // The cap note explains one refused tick; it should not linger as a warning.
   useEffect(() => {
     if (!capNote) return;
-    const timer = window.setTimeout(() => setCapNote(false), 6000);
+    const timer = window.setTimeout(() => setCapNote(null), 6000);
     return () => window.clearTimeout(timer);
   }, [capNote]);
 
@@ -363,13 +568,15 @@ function PickerBody({
   }, [activeCreator, view, categoryFilters, platform]);
 
   const toggleItem = (key: string): void => {
-    // The analysis cap is enforced at selection time: the next tick is
-    // refused with a note instead of silently breaking a later chat.
-    if (!draft.has(key) && draft.size >= MAX_SCOPE_SOURCES) {
-      setCapNote(true);
+    // The analysis limits are enforced at selection time: a tick past them
+    // is refused with a note instead of silently breaking a later chat.
+    const item = itemsByKey.get(key);
+    const problem = draft.has(key) || !item ? null : scopeAdditionProblem(load, item);
+    if (problem !== null) {
+      setCapNote(problem);
       return;
     }
-    setCapNote(false);
+    setCapNote(null);
     setDraft((current) => {
       const next = new Set(current);
       if (next.has(key)) {
@@ -382,19 +589,22 @@ function PickerBody({
   };
 
   const selectMany = (keys: readonly string[]): void => {
-    setCapNote(false);
+    setCapNote(null);
     setDraft((current) => {
       const next = new Set(current);
-      for (const key of keys) {
-        if (next.size >= MAX_SCOPE_SOURCES) break;
-        next.add(key);
+      const adding = keys
+        .filter((key) => !next.has(key))
+        .flatMap((key) => itemsByKey.get(key) ?? []);
+      const currentLoad = estimateScopeLoad(items.filter((item) => next.has(item.key)));
+      for (const item of takeWhileFits(currentLoad, adding)) {
+        next.add(item.key);
       }
       return next;
     });
   };
 
   const deselectMany = (keys: readonly string[]): void => {
-    setCapNote(false);
+    setCapNote(null);
     setDraft((current) => {
       const next = new Set(current);
       for (const key of keys) next.delete(key);
@@ -403,7 +613,7 @@ function PickerBody({
   };
 
   const clearAll = (): void => {
-    setCapNote(false);
+    setCapNote(null);
     setDraft(new Set());
     if (view === "selected") setView("all");
   };
@@ -440,8 +650,12 @@ function PickerBody({
           total={matching.length}
           active={activeCreator}
           onSelect={setFocusedCreator}
-          creatorsById={creatorsById}
+          identities={identities}
           draft={draft}
+          // In the New view every source is new; counting them again says nothing.
+          newKeys={view === "new" ? NO_KEYS : newKeys}
+          refresh={refresh}
+          platform={platform}
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -453,11 +667,11 @@ function PickerBody({
                   className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
                 />
                 <input
+                  ref={searchRef}
                   type="search"
                   aria-label="Search sources"
                   placeholder="Search titles, posts, or creators…"
                   value={query}
-                  autoFocus
                   onChange={(event) => setQuery(event.target.value)}
                   className="h-10 w-full rounded-lg border border-input bg-background pr-9 pl-9 text-sm shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none [&::-webkit-search-cancel-button]:hidden"
                 />
@@ -477,6 +691,7 @@ function PickerBody({
                 onChange={setView}
                 counts={kindCounts}
                 selectedCount={draft.size}
+                newCount={newKeys.size}
               />
             </div>
             <div className="flex items-center gap-3">
@@ -513,29 +728,66 @@ function PickerBody({
             </div>
           </div>
 
+          <RefreshAnnouncer refresh={refresh} />
+          <RefreshRunBanner
+            refresh={refresh}
+            openedAt={openedAt}
+            newByLane={newByLane}
+            showingNew={view === "new"}
+            onShowNew={() => {
+              setView("new");
+              setFocusedCreator(null);
+            }}
+            dismissedAt={dismissedRun}
+            onDismiss={(run) => setDismissedRun(run.startedAt)}
+          />
+
           <MobileCreatorStrip
             groups={railGroups}
             active={activeCreator}
             onSelect={setFocusedCreator}
-            creatorsById={creatorsById}
+            identities={identities}
+            refresh={refresh}
+            platform={platform}
           />
 
-          <div
-            ref={scrollRef}
-            className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
-          >
+          <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             {items.length === 0 ? (
               <EmptyState
                 icon={<Clapperboard aria-hidden="true" className="size-6" />}
                 title="Nothing cached yet"
-                body="Save a creator and fetch their content first — chats work over the sources you already store locally."
+                body={
+                  refresh.everyone.length > 0
+                    ? "Your creators have nothing cached yet. Fetch their newest videos and posts and they appear here as they arrive."
+                    : PURPOSE_COPY[purpose].emptyLibrary
+                }
+                action={
+                  refresh.everyone.length > 0 ? (
+                    <RefreshAllButton
+                      refresh={refresh}
+                      variant="outline"
+                      label={`Fetch from ${refresh.peopleCount === 1 ? "your creator" : `all ${refresh.peopleCount} creators`}`}
+                    />
+                  ) : null
+                }
               />
             ) : groups.length === 0 ? (
               view === "selected" && !filtersActiveBeyondView(needle, categoryFilters, platform) ? (
                 <EmptyState
                   icon={<Layers3 aria-hidden="true" className="size-6" />}
                   title="Nothing selected yet"
-                  body="Tick videos or posts and they gather here, so you can review the set before starting the chat."
+                  body={PURPOSE_COPY[purpose].emptySelection}
+                  action={
+                    <Button variant="outline" size="sm" onClick={() => setView("all")}>
+                      Browse all sources
+                    </Button>
+                  }
+                />
+              ) : view === "new" && !filtersActiveBeyondView(needle, categoryFilters, platform) ? (
+                <EmptyState
+                  icon={<Layers3 aria-hidden="true" className="size-6" />}
+                  title="Nothing new yet"
+                  body="Sources that arrive while the picker is open land here. Refresh a creator, or everyone, to look for more."
                   action={
                     <Button variant="outline" size="sm" onClick={() => setView("all")}>
                       Browse all sources
@@ -565,17 +817,22 @@ function PickerBody({
                 </p>
                 {groups.map((group) => (
                   <CreatorGroup
-                    key={group.creatorId}
+                    key={group.groupId}
                     group={group}
-                    creator={creatorsById.get(group.creatorId)}
+                    identity={identities.get(group.groupId)}
                     draft={draft}
-                    remaining={remaining}
+                    newKeys={newKeys}
+                    countNew={view !== "new"}
+                    refreshState={refresh.stateOf(group.groupId)}
+                    onRefresh={() => refresh.refreshPerson(group.groupId)}
+                    onRefreshAccount={refresh.refreshAccount}
+                    load={load}
                     truncate={truncate}
                     focused={activeCreator !== null}
                     onToggle={toggleItem}
                     onSelectMany={selectMany}
                     onDeselectMany={deselectMany}
-                    onFocus={() => setFocusedCreator(group.creatorId)}
+                    onFocus={() => setFocusedCreator(group.groupId)}
                     onBack={() => setFocusedCreator(null)}
                   />
                 ))}
@@ -586,7 +843,9 @@ function PickerBody({
       </div>
 
       <SelectionTray
+        purpose={purpose}
         selectedItems={selectedItems}
+        load={load}
         capNote={capNote}
         reviewing={view === "selected"}
         onReview={() => setView(view === "selected" ? "all" : "selected")}
@@ -611,11 +870,14 @@ function KindTabs({
   onChange,
   counts,
   selectedCount,
+  newCount,
 }: {
   view: KindView;
   onChange: (view: KindView) => void;
   counts: { all: number; video: number; tweet: number; mixed: boolean };
   selectedCount: number;
+  /** Sources that arrived since the picker opened; the tab appears with the first. */
+  newCount: number;
 }) {
   const tabs: { id: KindView; label: string; count: number; srLabel: string }[] = [
     { id: "all", label: "Everything", count: counts.all, srLabel: "sources" },
@@ -626,6 +888,9 @@ function KindTabs({
       { id: "video", label: "Videos", count: counts.video, srLabel: "videos" },
       { id: "tweet", label: "Posts", count: counts.tweet, srLabel: "posts" },
     );
+  }
+  if (newCount > 0 || view === "new") {
+    tabs.push({ id: "new", label: "New", count: newCount, srLabel: "new" });
   }
   tabs.push({ id: "selected", label: "Selected", count: selectedCount, srLabel: "selected" });
 
@@ -656,9 +921,11 @@ function KindTabs({
                 "min-w-5 rounded-full px-1.5 py-px text-center text-[10px] tabular-nums",
                 tab.id === "selected" && tab.count > 0
                   ? "bg-primary text-primary-foreground"
-                  : active
-                    ? "bg-muted text-foreground"
-                    : "bg-muted/60 text-muted-foreground",
+                  : tab.id === "new" && tab.count > 0
+                    ? "bg-emerald-600 text-white dark:bg-emerald-500 dark:text-emerald-950"
+                    : active
+                      ? "bg-muted text-foreground"
+                      : "bg-muted/60 text-muted-foreground",
               )}
             >
               {tab.count}
@@ -675,21 +942,31 @@ function CreatorRail({
   total,
   active,
   onSelect,
-  creatorsById,
+  identities,
   draft,
+  newKeys,
+  refresh,
+  platform,
 }: {
   groups: readonly PickerGroup[];
   total: number;
   active: number | null;
-  onSelect: (creatorId: number | null) => void;
-  creatorsById: ReadonlyMap<number, PickerCreator>;
+  onSelect: (groupId: number | null) => void;
+  identities: ReadonlyMap<number, GroupIdentity>;
   draft: ReadonlySet<string>;
+  newKeys: ReadonlySet<string>;
+  refresh: PickerRefresh;
+  /** The platform filter: "Refresh" follows it. */
+  platform: CreatorPlatform | "all";
 }) {
   return (
     <aside className="hidden w-64 shrink-0 flex-col border-r bg-muted/20 md:flex">
-      <p className="px-5 pt-4 pb-2 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
-        Creators
-      </p>
+      <div className="flex items-center justify-between gap-2 pt-3 pr-3 pb-1.5 pl-5">
+        <p className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
+          Creators
+        </p>
+        <RefreshAllButton refresh={refresh} scope={platform} withMenu className="-mr-0.5" />
+      </div>
       <nav
         aria-label="Creators"
         className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain px-2.5 pb-3"
@@ -706,28 +983,32 @@ function CreatorRail({
           meta={`${total} ${total === 1 ? "source" : "sources"}`}
           selectedCount={draft.size}
         />
-        {groups.map((group) => {
-          const creator = creatorsById.get(group.creatorId);
-          return (
-            <RailButton
-              key={group.creatorId}
-              active={active === group.creatorId}
-              onClick={() => onSelect(group.creatorId)}
-              avatar={
-                <CreatorAvatar
-                  name={group.creatorName}
-                  creator={creator}
-                  creatorId={group.creatorId}
-                  className="size-8"
-                />
-              }
-              name={group.creatorName}
-              meta={describeCounts(group.items)}
-              platform={creator?.platform}
-              selectedCount={group.items.filter((item) => draft.has(item.key)).length}
-            />
-          );
-        })}
+        {groups.map((group) => (
+          <RailButton
+            key={group.groupId}
+            active={active === group.groupId}
+            onClick={() => onSelect(group.groupId)}
+            avatar={
+              <CreatorAvatar
+                name={group.creatorName}
+                identity={identities.get(group.groupId)}
+                className="size-8"
+              />
+            }
+            name={group.creatorName}
+            meta={describeCounts(group.items)}
+            newCount={group.items.filter((item) => newKeys.has(item.key)).length}
+            platforms={groupPlatforms(group.items)}
+            selectedCount={group.items.filter((item) => draft.has(item.key)).length}
+            trailing={
+              <RailRefreshSlot
+                name={group.creatorName}
+                state={refresh.stateOf(group.groupId)}
+                onRefresh={() => refresh.refreshPerson(group.groupId)}
+              />
+            }
+          />
+        ))}
       </nav>
     </aside>
   );
@@ -739,45 +1020,63 @@ function RailButton({
   avatar,
   name,
   meta,
-  platform,
+  newCount = 0,
+  platforms = [],
   selectedCount,
+  trailing,
 }: {
   active: boolean;
   onClick: () => void;
   avatar: React.ReactNode;
   name: string;
   meta: string;
-  platform?: CreatorPlatform;
+  /** Sources that arrived since the picker opened. */
+  newCount?: number;
+  platforms?: readonly CreatorPlatform[];
   selectedCount: number;
+  /** A control beside the row (the person's refresh), outside the focus button. */
+  trailing?: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
+    <div
       className={cn(
-        "flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
+        "group/row relative flex items-center rounded-lg transition-colors motion-reduce:transition-none",
         active ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
       )}
     >
-      {avatar}
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium">{name}</span>
-        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <PlatformMark platform={platform} className="size-3 shrink-0" />
-          <span className="truncate">{meta}</span>
+      <button
+        type="button"
+        aria-pressed={active}
+        onClick={onClick}
+        className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {avatar}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium">{name}</span>
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <PlatformMarkRow platforms={platforms} />
+            <span className="truncate">
+              {newCount > 0 ? (
+                <span className="font-medium text-emerald-700 dark:text-emerald-400">
+                  {newCount} new ·{" "}
+                </span>
+              ) : null}
+              {meta}
+            </span>
+          </span>
         </span>
-      </span>
-      {selectedCount > 0 ? (
-        <span
-          className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground tabular-nums"
-          title={`${selectedCount} selected`}
-        >
-          {selectedCount}
-          <span className="sr-only"> selected</span>
-        </span>
-      ) : null}
-    </button>
+        {selectedCount > 0 ? (
+          <span
+            className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground tabular-nums"
+            title={`${selectedCount} selected`}
+          >
+            {selectedCount}
+            <span className="sr-only"> selected</span>
+          </span>
+        ) : null}
+      </button>
+      {trailing}
+    </div>
   );
 }
 
@@ -786,18 +1085,30 @@ function MobileCreatorStrip({
   groups,
   active,
   onSelect,
-  creatorsById,
+  identities,
+  refresh,
+  platform,
 }: {
   groups: readonly PickerGroup[];
   active: number | null;
-  onSelect: (creatorId: number | null) => void;
-  creatorsById: ReadonlyMap<number, PickerCreator>;
+  onSelect: (groupId: number | null) => void;
+  identities: ReadonlyMap<number, GroupIdentity>;
+  refresh: PickerRefresh;
+  platform: CreatorPlatform | "all";
 }) {
   if (groups.length < 2) return null;
   const chip =
     "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring";
   return (
     <div className="flex gap-2 overflow-x-auto border-b px-5 py-2.5 [scrollbar-width:none] md:hidden">
+      {/* The rail's "Refresh all", where small screens have no rail. */}
+      <RefreshAllButton
+        refresh={refresh}
+        scope={platform}
+        variant="outline"
+        className="h-8 shrink-0 rounded-full bg-card px-2.5 shadow-none"
+      />
+      <span aria-hidden="true" className="w-px shrink-0 self-stretch bg-border" />
       <button
         type="button"
         onClick={() => onSelect(null)}
@@ -807,18 +1118,17 @@ function MobileCreatorStrip({
       </button>
       {groups.map((group) => (
         <button
-          key={group.creatorId}
+          key={group.groupId}
           type="button"
-          onClick={() => onSelect(group.creatorId)}
+          onClick={() => onSelect(group.groupId)}
           className={cn(
             chip,
-            active === group.creatorId ? "bg-accent" : "bg-card text-muted-foreground",
+            active === group.groupId ? "bg-accent" : "bg-card text-muted-foreground",
           )}
         >
           <CreatorAvatar
             name={group.creatorName}
-            creator={creatorsById.get(group.creatorId)}
-            creatorId={group.creatorId}
+            identity={identities.get(group.groupId)}
             className="size-5 text-[8px]"
           />
           {group.creatorName}
@@ -830,24 +1140,27 @@ function MobileCreatorStrip({
 
 function CreatorAvatar({
   name,
-  creator,
-  creatorId,
+  identity,
   className,
 }: {
   name: string;
-  creator: PickerCreator | undefined;
-  creatorId: number;
+  identity: GroupIdentity | undefined;
   className?: string;
 }) {
-  const src = localAvatarSrc(creator?.avatarUrl ?? null, creatorId);
+  const src = localAvatarSrc(identity?.avatarUrl ?? null, identity?.avatarCreatorId ?? null);
   return <SearchAvatar key={src} name={name} src={src} className={cn("text-[11px]", className)} />;
 }
 
 function CreatorGroup({
   group,
-  creator,
+  identity,
   draft,
-  remaining,
+  newKeys,
+  countNew,
+  refreshState,
+  onRefresh,
+  onRefreshAccount,
+  load,
   truncate,
   focused,
   onToggle,
@@ -857,9 +1170,16 @@ function CreatorGroup({
   onBack,
 }: {
   group: PickerGroup;
-  creator: PickerCreator | undefined;
+  identity: GroupIdentity | undefined;
   draft: ReadonlySet<string>;
-  remaining: number;
+  newKeys: ReadonlySet<string>;
+  /** Off in the New view, where every source is new. */
+  countNew: boolean;
+  refreshState: PersonRefresh;
+  onRefresh: () => void;
+  onRefreshAccount: (account: PickerCreator) => void;
+  /** What the draft already holds, so "Select all" takes only what fits. */
+  load: ScopeLoad;
   truncate: boolean;
   focused: boolean;
   onToggle: (key: string) => void;
@@ -872,18 +1192,21 @@ function CreatorGroup({
   const hidden = group.items.length - visible.length;
   const selectedKeys = group.items.filter((item) => draft.has(item.key)).map((item) => item.key);
   const selectable = group.items.filter((item) => item.ready && !draft.has(item.key));
+  const newCount = countNew ? group.items.filter((item) => newKeys.has(item.key)).length : 0;
 
+  // Newest first, as many as fit within the limits next to the draft.
+  const fitting = takeWhileFits(load, selectable);
   let selectAction: { label: string; keys: string[] } | null = null;
-  if (selectable.length > 0 && remaining > 0) {
+  if (fitting.length > 0) {
     selectAction =
-      selectable.length <= remaining
+      fitting.length === selectable.length
         ? {
             label: selectedKeys.length > 0 ? "Select the rest" : "Select all",
             keys: selectable.map((item) => item.key),
           }
         : {
-            label: `Select newest ${remaining}`,
-            keys: selectable.slice(0, remaining).map((item) => item.key),
+            label: `Select newest ${fitting.length}`,
+            keys: fitting.map((item) => item.key),
           };
   }
 
@@ -902,19 +1225,19 @@ function CreatorGroup({
             <ChevronRight aria-hidden="true" className="rotate-180" />
           </Button>
         ) : null}
-        <CreatorAvatar
-          name={group.creatorName}
-          creator={creator}
-          creatorId={group.creatorId}
-          className="size-9"
-        />
+        <CreatorAvatar name={group.creatorName} identity={identity} className="size-9" />
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-sm font-semibold">{group.creatorName}</h3>
           <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <PlatformMark platform={creator?.platform} className="size-3 shrink-0" />
-            {creator ? <span className="sr-only">{PLATFORM_NAME[creator.platform]} · </span> : null}
+            <PlatformMarkRow platforms={groupPlatforms(group.items)} />
             <span className="truncate">
               {describeCounts(group.items)}
+              {newCount > 0 ? (
+                <span className="font-medium text-emerald-700 dark:text-emerald-400">
+                  {" "}
+                  · {newCount} new
+                </span>
+              ) : null}
               {selectedKeys.length > 0 ? (
                 <span className="text-foreground"> · {selectedKeys.length} selected</span>
               ) : null}
@@ -922,6 +1245,15 @@ function CreatorGroup({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {/* Only a saved person has accounts to refresh. */}
+          {group.groupId > 0 ? (
+            <PersonRefreshButton
+              name={group.creatorName}
+              state={refreshState}
+              onRefresh={onRefresh}
+              onRefreshAccount={onRefreshAccount}
+            />
+          ) : null}
           {selectedKeys.length > 0 ? (
             <Button
               variant="ghost"
@@ -951,6 +1283,7 @@ function CreatorGroup({
             <SourceCard
               item={item}
               checked={draft.has(item.key)}
+              isNew={newKeys.has(item.key)}
               onToggle={() => onToggle(item.key)}
             />
           </li>
@@ -979,10 +1312,13 @@ function CreatorGroup({
 function SourceCard({
   item,
   checked,
+  isNew = false,
   onToggle,
 }: {
   item: PickerItem;
   checked: boolean;
+  /** Arrived with a refresh since the picker opened. */
+  isNew?: boolean;
   onToggle: () => void;
 }) {
   const checkboxId = useId();
@@ -1022,6 +1358,7 @@ function SourceCard({
             <XLogo aria-hidden="true" className="size-3 shrink-0" />
             <span className="sr-only">Post</span>
             <span className="min-w-0 truncate text-xs text-muted-foreground">@{item.handle}</span>
+            {isNew ? <NewBadge className="shrink-0" /> : null}
             {item.publishedAt ? (
               <time
                 dateTime={item.publishedAt}
@@ -1060,10 +1397,15 @@ function SourceCard({
                 checked ? "opacity-100" : "opacity-0 group-hover:opacity-100",
               )}
             />
-            {item.kind === "tweet" ? (
-              <span className="absolute top-2 right-2 flex size-6 items-center justify-center rounded-md bg-black/75 text-white shadow-sm">
-                <XLogo aria-hidden="true" className="size-3" />
-                <span className="sr-only">Post</span>
+            {isNew || item.kind === "tweet" ? (
+              <span className="absolute top-2 right-2 flex items-center gap-1">
+                {isNew ? <NewBadge onImage /> : null}
+                {item.kind === "tweet" ? (
+                  <span className="flex size-6 items-center justify-center rounded-md bg-black/75 text-white shadow-sm">
+                    <XLogo aria-hidden="true" className="size-3" />
+                    <span className="sr-only">Post</span>
+                  </span>
+                ) : null}
               </span>
             ) : null}
             {duration ? (
@@ -1091,6 +1433,9 @@ function SourceCard({
             <p className="line-clamp-2 text-[13px] leading-snug font-medium [overflow-wrap:anywhere]">
               {item.kind === "video" ? item.label : item.text}
             </p>
+            {item.hostName ? (
+              <p className="truncate text-xs text-muted-foreground">on {item.hostName}</p>
+            ) : null}
             {meta}
           </div>
         </>
@@ -1123,6 +1468,23 @@ function SourceCard({
         )}
       />
     </div>
+  );
+}
+
+/** Marks a source that arrived with a refresh since the picker opened. */
+function NewBadge({ onImage = false, className }: { onImage?: boolean; className?: string }) {
+  return (
+    <span
+      className={cn(
+        "rounded-md px-1.5 py-0.5 text-[10px] leading-4 font-semibold tracking-wide uppercase",
+        onImage
+          ? "bg-emerald-600 text-white shadow-sm"
+          : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
+        className,
+      )}
+    >
+      New
+    </span>
   );
 }
 
@@ -1164,7 +1526,9 @@ function Thumbnail({ src, kind }: { src: string | null; kind: PickerItem["kind"]
 }
 
 function SelectionTray({
+  purpose,
   selectedItems,
+  load,
   capNote,
   reviewing,
   onReview,
@@ -1172,8 +1536,11 @@ function SelectionTray({
   onCancel,
   onConfirm,
 }: {
+  purpose: PickerPurpose;
   selectedItems: readonly PickerItem[];
-  capNote: boolean;
+  load: ScopeLoad;
+  /** Why the last tick was refused, while it is still worth showing. */
+  capNote: string | null;
   reviewing: boolean;
   onReview: () => void;
   onClear: () => void;
@@ -1182,8 +1549,13 @@ function SelectionTray({
 }) {
   const count = selectedItems.length;
   const stack = selectedItems.slice(0, 4);
-  const percent = Math.min(100, (count / MAX_SCOPE_SOURCES) * 100);
-  const full = count >= MAX_SCOPE_SOURCES;
+  // The meter runs up to what Deep reads in full; the tick marks where
+  // every mode stops reading in full.
+  const percent = Math.min(100, (load.tokens / DEEP_READ_TOKENS) * 100);
+  const fullReadPercent = (FULL_READ_TOKENS / DEEP_READ_TOKENS) * 100;
+  const reading = scopeReading(load);
+  const readingCopy = SCOPE_READING_COPY[reading];
+  const { confirm, confirmIcon: ConfirmIcon } = PURPOSE_COPY[purpose];
 
   return (
     <div className="flex flex-col gap-3 border-t bg-muted/20 px-6 py-4 sm:flex-row sm:items-center">
@@ -1250,32 +1622,45 @@ function SelectionTray({
               </>
             ) : null}
           </p>
-          <div className="mt-1.5 flex items-center gap-2">
-            <div
-              role="progressbar"
-              aria-label="Sources selected"
-              aria-valuemin={0}
-              aria-valuemax={MAX_SCOPE_SOURCES}
-              aria-valuenow={count}
-              className="h-1 w-32 overflow-hidden rounded-full bg-muted"
-            >
+          {count > 0 ? (
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
               <div
-                className={cn(
-                  "h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none",
-                  full ? "bg-amber-500" : "bg-primary",
-                )}
-                style={{ width: `${percent}%` }}
-              />
+                role="meter"
+                aria-label="Selection size"
+                aria-valuemin={0}
+                aria-valuemax={DEEP_READ_TOKENS}
+                aria-valuenow={Math.min(load.tokens, DEEP_READ_TOKENS)}
+                aria-valuetext={`${describeScopeLoad(load)} — ${readingCopy.label}`}
+                className="relative h-1 w-32 overflow-hidden rounded-full bg-muted"
+              >
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none",
+                    reading === "full" ? "bg-primary" : "bg-amber-500",
+                  )}
+                  style={{ width: `${percent}%` }}
+                />
+                <span
+                  aria-hidden="true"
+                  className="absolute inset-y-0 w-px bg-foreground/30"
+                  style={{ left: `${fullReadPercent}%` }}
+                />
+              </div>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {describeScopeLoad(load)} ·{" "}
+                <span className={cn(reading !== "full" && "text-amber-700 dark:text-amber-400")}>
+                  {readingCopy.label}
+                </span>
+              </span>
             </div>
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {count} / {MAX_SCOPE_SOURCES}
-              {full ? " · limit reached" : ""}
-            </span>
-          </div>
+          ) : null}
+          {count > 0 && reading !== "full" && !capNote ? (
+            <p className="mt-1 text-xs text-muted-foreground">{readingCopy.hint}</p>
+          ) : null}
           {capNote ? (
             <p role="status" className="mt-1.5 flex items-start gap-1.5 text-xs text-destructive">
               <TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
-              <span>{formatScopeCapMessage(MAX_SCOPE_SOURCES + 1)}</span>
+              <span>{capNote}</span>
             </p>
           ) : null}
         </div>
@@ -1286,8 +1671,8 @@ function SelectionTray({
           Cancel
         </Button>
         <Button onClick={onConfirm} disabled={count === 0} className="flex-1 sm:min-w-36">
-          <Check aria-hidden="true" />
-          {count === 0 ? "Use sources" : count === 1 ? "Use 1 source" : `Use ${count} sources`}
+          <ConfirmIcon aria-hidden="true" />
+          {confirm(count)}
         </Button>
       </div>
     </div>

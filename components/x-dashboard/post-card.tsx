@@ -70,7 +70,7 @@ export function RichText({ text, terms = [] }: { text: string; terms?: string[] 
             target="_blank"
             rel="noreferrer"
             onClick={(event) => event.stopPropagation()}
-            className="text-sky-600 hover:underline dark:text-sky-400"
+            className="text-sky-700 underline underline-offset-2 dark:text-sky-400"
           >
             {part.startsWith("http") ? displayUrl(part) : part}
           </a>
@@ -207,7 +207,7 @@ export const PostCard = memo(function PostCard({
           {post.postType === "reply" ? (
             <p className="text-sm text-muted-foreground">
               Replying to{" "}
-              <span className="text-sky-600 dark:text-sky-400">@{tweet.inReplyToHandle ?? "…"}</span>
+              <span className="text-sky-700 dark:text-sky-400">@{tweet.inReplyToHandle ?? "…"}</span>
             </p>
           ) : null}
           {tweet.text ? (
@@ -224,7 +224,7 @@ export const PostCard = memo(function PostCard({
                 <button
                   type="button"
                   onClick={() => setExpanded((value) => !value)}
-                  className="mt-0.5 text-sm font-medium text-sky-600 outline-none hover:underline focus-visible:underline dark:text-sky-400"
+                  className="mt-0.5 text-sm font-medium text-sky-700 outline-none hover:underline focus-visible:underline dark:text-sky-400"
                 >
                   {expanded ? "Show less" : "Show more"}
                 </button>

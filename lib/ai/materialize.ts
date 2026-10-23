@@ -9,14 +9,22 @@
  * manifest.json is written last, so its presence signals a complete job.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import type { TranscriptSource } from "@/lib/transcripts/repository";
 import type { ScopeDatabase } from "@/lib/db/connection";
 import { sourceKey, type ContentKind, type SourceRef } from "@/lib/content/model";
 
-import { resolveScope, resolveSourceScope, type ScopeResolution, type ScopedSource, type ScopedVideo } from "./scope";
+import { estimateScopeLoad, type ScopeLoad } from "./scope-selection";
+
+import {
+  resolveScope,
+  resolveSourceScope,
+  type ScopeResolution,
+  type ScopedSource,
+  type ScopedVideo,
+} from "./scope";
 
 /** One materialized transcript file, as recorded in the manifest. */
 export interface MaterializedTranscriptFile {
@@ -153,6 +161,8 @@ function renderTranscriptFile(video: ScopedVideo, transcript: TranscriptTextRow)
   const header = [
     `Title: ${video.title}`,
     `Creator: ${video.creator}`,
+    ...(video.channel ? [`Channel: ${video.channel}`] : []),
+    ...(video.featuring.length > 0 ? [`Featuring: ${video.featuring.join(", ")}`] : []),
     `URL: ${transcript.url}`,
     `Published: ${video.publishedAt ?? "unknown"}`,
     `Language: ${transcript.language}`,
@@ -311,17 +321,17 @@ export function createTranscriptMaterializer(
 // ---------------------------------------------------------------------------
 
 /**
- * Writes one file per ready source — `transcripts/<videoId>.txt` for videos
- * (unchanged layout, so older instructions keep resolving) and
- * `tweets/<tweetId>.txt` for X posts — plus a versioned manifest that
- * records every requested source, its file, readiness, and exclusions.
- * Only locally cached data is used; nothing here contacts X.
+ * Writes one file per ready video — `transcripts/<videoId>.txt`, unchanged so
+ * older instructions keep resolving — and bundles X posts per saved account
+ * into `tweets/<handle>.txt` (more files for long timelines), newest first,
+ * each post headed by the `[tweets/<tweetId>.txt]` id answers cite it by. A
+ * file per post made the model open hundreds of files: Claude, which has no
+ * shell, read a third fewer posts that way. The versioned manifest records
+ * every requested source, its file, readiness, and exclusions. Only locally
+ * cached data is used; nothing here contacts X.
  */
 export type SourceExclusionReason =
-  | "unknown_source"
-  | "missing_transcript"
-  | "missing_text"
-  | "byte_budget_exhausted";
+  "unknown_source" | "missing_transcript" | "missing_text" | "byte_budget_exhausted";
 
 export interface MaterializedSourceFile {
   kind: ContentKind;
@@ -331,12 +341,29 @@ export interface MaterializedSourceFile {
   url: string;
   publishedAt: string | null;
   platform: string;
-  /** Path relative to the job directory, or null when excluded. */
+  /** Path relative to the job directory, or null when excluded. Posts share their bundle's path. */
   file: string | null;
   sha256?: string;
   readyForAnalysis: boolean;
   truncated: boolean;
   exclusionReason: SourceExclusionReason | null;
+  /** Video only: length in seconds, when known. */
+  durationSeconds?: number | null;
+  /**
+   * Video only, left out when empty: the people the video features without
+   * owning its channel, as the transcript's `Featuring:` line lists them. With
+   * `creator` (the hosting channel) it lets a saved thread cite the video as
+   * "{person} on {channel}" after the live library changes.
+   */
+  featuring?: string[];
+}
+
+/** A long video's summary, added to the job before the run (lib/ai/digests.ts). */
+export interface MaterializedDigest {
+  videoId: string;
+  /** `digests/<videoId>.txt`, relative to the job directory. */
+  file: string;
+  sha256: string;
 }
 
 export interface SourceTruncation {
@@ -355,6 +382,10 @@ export interface SourceMaterializationManifest {
   sources: MaterializedSourceFile[];
   excluded: Array<{ kind: ContentKind; id: string; reason: SourceExclusionReason }>;
   truncation: SourceTruncation | null;
+  /** Estimated size of what was written, as the selection meter measures it. */
+  load?: ScopeLoad;
+  /** Summaries of long videos added for selections too big to read in one pass. */
+  digests?: MaterializedDigest[];
 }
 
 export interface SourceMaterializeOutcome {
@@ -377,6 +408,7 @@ interface TweetTextRow {
   quoted_handle: string | null;
   quoted_name: string | null;
   quoted_text: string | null;
+  media_json: string | null;
 }
 
 function loadTweetTexts(db: ScopeDatabase, tweetIds: readonly string[]): Map<string, TweetTextRow> {
@@ -388,7 +420,7 @@ function loadTweetTexts(db: ScopeDatabase, tweetIds: readonly string[]): Map<str
       .prepare<[...string[]], TweetTextRow>(
         `SELECT id, author_name, author_handle, url, text, published_at, fetched_at,
                 content_status, is_repost, reposted_by_handle, in_reply_to_handle,
-                quoted_handle, quoted_name, quoted_text
+                quoted_handle, quoted_name, quoted_text, media_json
          FROM tweets WHERE id IN (${placeholders})`,
       )
       .all(...chunk);
@@ -399,39 +431,104 @@ function loadTweetTexts(db: ScopeDatabase, tweetIds: readonly string[]): Map<str
   return texts;
 }
 
-/** Renders one cached X post as a self-describing source file. */
-export function renderTweetFile(row: TweetTextRow): string {
-  const header = [
-    `Type: X post`,
-    `Author: ${row.author_name} (@${row.author_handle})`,
-    `URL: ${row.url}`,
-    `Published: ${row.published_at ?? "unknown"}`,
-    `Fetched: ${row.fetched_at}`,
-    `Content status: ${row.content_status}`,
+/**
+ * Largest post bundle file. Codex shows a tool output of ~10k tokens before
+ * truncating it and Claude reads up to 25k tokens per file, so ~6k-token
+ * bundles always arrive whole in one read.
+ */
+export const POST_BUNDLE_MAX_BYTES = 24_000;
+
+/** Room kept for a bundle's header lines when checking the byte budget. */
+const BUNDLE_HEADER_RESERVE_BYTES = 200;
+
+function postStamp(iso: string | null): string {
+  return iso ? `${iso.slice(0, 16).replace("T", " ")} UTC` : "date unknown";
+}
+
+function mediaCount(mediaJson: string | null): number {
+  if (!mediaJson) return 0;
+  try {
+    const media: unknown = JSON.parse(mediaJson);
+    return Array.isArray(media) ? media.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Renders one cached X post as a block of a bundle: a one-line header with
+ * the citation id, author, date, kind, and URL, then the text. Quoted
+ * material is context, labelled apart from the author's own words so the
+ * model never attributes it to them.
+ */
+export function renderPostBlock(row: TweetTextRow): string {
+  const kind =
+    Number(row.is_repost) === 1 && row.reposted_by_handle
+      ? `repost by @${row.reposted_by_handle}`
+      : row.in_reply_to_handle
+        ? `reply to @${row.in_reply_to_handle}`
+        : row.quoted_text
+          ? "quote"
+          : "post";
+  const lines = [
+    `[tweets/${row.id}.txt] ${row.author_name} (@${row.author_handle}) · ${postStamp(row.published_at)} · ${kind} · ${row.url}`,
+    row.text.trim(),
   ];
-  if (Number(row.is_repost) === 1 && row.reposted_by_handle) {
-    header.push(`Reposted by: @${row.reposted_by_handle}`);
-  }
-  if (row.in_reply_to_handle) {
-    header.push(`In reply to: @${row.in_reply_to_handle}`);
-  }
-  const parts = [header.join("\n"), "", row.text];
   if (row.quoted_text) {
-    // Quoted material is context, labelled apart from the selected author's
-    // own words so the model never attributes it to them.
     const attribution = row.quoted_handle
       ? `Quoted post by @${row.quoted_handle}${row.quoted_name ? ` (${row.quoted_name})` : ""}:`
       : "Quoted post:";
-    parts.push("", attribution, ...row.quoted_text.split(/\r?\n/).map((line) => `> ${line}`));
+    lines.push(
+      attribution,
+      ...row.quoted_text
+        .trim()
+        .split(/\r?\n/)
+        .map((line) => `> ${line}`),
+    );
   }
-  return `${parts.join("\n")}\n`;
+  const media = mediaCount(row.media_json);
+  if (media > 0) {
+    lines.push(`(${media} media attachment${media === 1 ? "" : "s"}: only the text was analyzed)`);
+  }
+  return lines.join("\n");
+}
+
+function renderPostBundle(
+  account: { person: string; channel: string },
+  blocks: readonly string[],
+  part: number,
+  parts: number,
+): string {
+  const header = [
+    "Type: X posts, newest first",
+    `Creator: ${account.person}`,
+    `Channel: ${account.channel}`,
+    `Posts: ${blocks.length}${parts > 1 ? ` (file ${part} of ${parts})` : ""}`,
+  ];
+  return `${header.join("\n")}\n\n${blocks.join("\n\n")}\n`;
+}
+
+/** A bundle's base file name: the saved account's handle, filesystem-safe. */
+function bundleBaseName(source: ScopedSource, used: ReadonlySet<string>): string {
+  const handle = (source.accountHandle ?? "").replace(/^@/, "").replace(/[^A-Za-z0-9_]/g, "_");
+  const base = handle.length > 0 ? handle : `account-${source.creatorId}`;
+  return used.has(base) ? `${base}-${source.creatorId}` : base;
+}
+
+/** Newest first; undated posts last, in request order. */
+function newestFirst(a: TweetTextRow, b: TweetTextRow): number {
+  if (a.published_at === b.published_at) return 0;
+  if (a.published_at === null) return 1;
+  if (b.published_at === null) return -1;
+  return a.published_at < b.published_at ? 1 : -1;
 }
 
 /**
  * Materializes the cached content for requested source references into a
- * fresh job directory. Videos and tweets are written into separate folders,
+ * fresh job directory. Videos and posts are written into separate folders,
  * readiness is measured per kind, and the total bytes written across all
- * files is capped by the same budget the video-only path uses.
+ * files is capped by the same budget the video-only path uses — videos
+ * first, then posts, whole posts only.
  */
 export function materializeSources(
   db: ScopeDatabase,
@@ -455,55 +552,42 @@ export function materializeSources(
   mkdirSync(transcriptsDir, { recursive: true });
   mkdirSync(tweetsDir, { recursive: true });
 
-  const files: MaterializedSourceFile[] = [];
-  const excluded: Array<{ kind: ContentKind; id: string; reason: SourceExclusionReason }> = [];
+  const entries = new Map<string, MaterializedSourceFile>();
   const truncatedSourceKeys: string[] = [];
   const skippedSourceKeys: string[] = [];
   let writtenBytes = 0;
 
-  for (const source of scope.sources) {
-    const key = sourceKey(source);
-    let rendered: string | null = null;
-    let fileName: string | null = null;
-    let dirName: string | null = null;
-
-    if (source.kind === "video") {
-      const transcript = transcripts.get(source.id);
-      if (!source.readyForAnalysis || !transcript) {
-        excluded.push({ kind: source.kind, id: source.id, reason: "missing_transcript" });
-        files.push({ ...toFileEntry(source, null), exclusionReason: "missing_transcript" });
-        continue;
-      }
-      rendered = renderTranscriptFile(
-        {
-          id: source.id,
-          title: source.title,
-          creator: source.creator,
-          publishedAt: source.publishedAt,
-          hasTranscript: true,
-          durationSeconds: source.durationSeconds ?? null,
-        },
-        transcript,
-      );
-      fileName = `${source.id}.txt`;
-      dirName = TRANSCRIPTS_DIR_NAME;
-    } else {
-      const tweet = tweets.get(source.id);
-      if (!source.readyForAnalysis || !tweet || tweet.text.trim().length === 0) {
-        excluded.push({ kind: source.kind, id: source.id, reason: "missing_text" });
-        files.push({ ...toFileEntry(source, null), exclusionReason: "missing_text" });
-        continue;
-      }
-      rendered = renderTweetFile(tweet);
-      fileName = `${source.id}.txt`;
-      dirName = TWEETS_DIR_NAME;
+  const exclude = (source: ScopedSource, reason: SourceExclusionReason): void => {
+    entries.set(sourceKey(source), { ...toFileEntry(source, null), exclusionReason: reason });
+    if (reason === "byte_budget_exhausted") {
+      skippedSourceKeys.push(sourceKey(source));
     }
+  };
 
+  // Videos: one transcript file each, cut byte-accurately at the budget.
+  for (const source of scope.sources) {
+    if (source.kind !== "video") continue;
+    const transcript = transcripts.get(source.id);
+    if (!source.readyForAnalysis || !transcript) {
+      exclude(source, "missing_transcript");
+      continue;
+    }
+    const rendered = renderTranscriptFile(
+      {
+        id: source.id,
+        title: source.title,
+        creator: source.person,
+        channel: source.channel,
+        featuring: source.featuring,
+        publishedAt: source.publishedAt,
+        hasTranscript: true,
+        durationSeconds: source.durationSeconds ?? null,
+      },
+      transcript,
+    );
     const remaining = maxTotalBytes - writtenBytes;
     if (remaining <= 0) {
-      skippedSourceKeys.push(key);
-      excluded.push({ kind: source.kind, id: source.id, reason: "byte_budget_exhausted" });
-      files.push({ ...toFileEntry(source, null), exclusionReason: "byte_budget_exhausted" });
+      exclude(source, "byte_budget_exhausted");
       continue;
     }
     const full = Buffer.from(rendered, "utf8");
@@ -514,29 +598,100 @@ export function materializeSources(
       const markerBytes = Math.min(marker.byteLength, remaining);
       file = full.subarray(0, Math.max(0, remaining - markerBytes));
       if (file.byteLength === 0) {
-        skippedSourceKeys.push(key);
-        excluded.push({ kind: source.kind, id: source.id, reason: "byte_budget_exhausted" });
-        files.push({ ...toFileEntry(source, null), exclusionReason: "byte_budget_exhausted" });
+        exclude(source, "byte_budget_exhausted");
         continue;
       }
       file = Buffer.concat([file, marker.subarray(0, markerBytes)]);
       truncated = true;
     }
-    writeFileSync(path.join(jobDir, dirName, fileName), file);
+    const relative = `${TRANSCRIPTS_DIR_NAME}/${source.id}.txt`;
+    writeFileSync(path.join(jobDir, relative), file);
     writtenBytes += file.byteLength;
     if (truncated) {
-      truncatedSourceKeys.push(key);
+      truncatedSourceKeys.push(sourceKey(source));
     }
-    files.push({
-      ...toFileEntry(source, `${dirName}/${fileName}`),
+    entries.set(sourceKey(source), {
+      ...toFileEntry(source, relative),
       sha256: createHash("sha256").update(file).digest("hex"),
       truncated,
       exclusionReason: null,
     });
   }
 
+  // Posts: grouped by the saved account whose timeline holds them, in the
+  // order the accounts first appear, newest first within each account.
+  const accounts = new Map<number, Array<{ source: ScopedSource; row: TweetTextRow }>>();
+  for (const source of scope.sources) {
+    if (source.kind !== "tweet") continue;
+    const row = tweets.get(source.id);
+    if (!source.readyForAnalysis || !row || row.text.trim().length === 0) {
+      exclude(source, "missing_text");
+      continue;
+    }
+    const posts = accounts.get(source.creatorId) ?? [];
+    posts.push({ source, row });
+    accounts.set(source.creatorId, posts);
+  }
+  const usedNames = new Set<string>();
+  for (const posts of accounts.values()) {
+    posts.sort((a, b) => newestFirst(a.row, b.row));
+    const first = posts[0].source;
+    const base = bundleBaseName(first, usedNames);
+    usedNames.add(base);
+
+    // Split into files that each fit one read, skipping whole posts once
+    // the job's byte budget runs out.
+    const chunks: Array<Array<{ source: ScopedSource; block: string }>> = [];
+    let chunk: Array<{ source: ScopedSource; block: string }> = [];
+    let chunkBytes = BUNDLE_HEADER_RESERVE_BYTES;
+    let pendingBytes = 0;
+    for (const { source, row } of posts) {
+      const block = renderPostBlock(row);
+      const blockBytes = Buffer.byteLength(block, "utf8") + 2;
+      if (writtenBytes + pendingBytes + chunkBytes + blockBytes > maxTotalBytes) {
+        exclude(source, "byte_budget_exhausted");
+        continue;
+      }
+      if (chunk.length > 0 && chunkBytes + blockBytes > POST_BUNDLE_MAX_BYTES) {
+        chunks.push(chunk);
+        pendingBytes += chunkBytes;
+        chunk = [];
+        chunkBytes = BUNDLE_HEADER_RESERVE_BYTES;
+      }
+      chunk.push({ source, block });
+      chunkBytes += blockBytes;
+    }
+    if (chunk.length > 0) chunks.push(chunk);
+
+    chunks.forEach((blocks, index) => {
+      const relative = `${TWEETS_DIR_NAME}/${index === 0 ? base : `${base}-${index + 1}`}.txt`;
+      const file = Buffer.from(
+        renderPostBundle(
+          { person: first.person, channel: first.channel },
+          blocks.map((entry) => entry.block),
+          index + 1,
+          chunks.length,
+        ),
+        "utf8",
+      );
+      writeFileSync(path.join(jobDir, relative), file);
+      writtenBytes += file.byteLength;
+      const sha256 = createHash("sha256").update(file).digest("hex");
+      for (const { source } of blocks) {
+        entries.set(sourceKey(source), {
+          ...toFileEntry(source, relative),
+          sha256,
+          truncated: false,
+          exclusionReason: null,
+        });
+      }
+    });
+  }
+
+  const files: MaterializedSourceFile[] = scope.sources.map((source) =>
+    entries.get(sourceKey(source))!,
+  );
   for (const ref of scope.unknown) {
-    excluded.push({ kind: ref.kind, id: ref.id, reason: "unknown_source" });
     files.push({
       kind: ref.kind,
       id: ref.id,
@@ -551,6 +706,11 @@ export function materializeSources(
       exclusionReason: "unknown_source",
     });
   }
+  const excluded = files.flatMap((entry) =>
+    entry.exclusionReason === null
+      ? []
+      : [{ kind: entry.kind, id: entry.id, reason: entry.exclusionReason }],
+  );
 
   const truncation: SourceTruncation | null =
     truncatedSourceKeys.length === 0 && skippedSourceKeys.length === 0
@@ -569,20 +729,35 @@ export function materializeSources(
     sources: files,
     excluded,
     truncation,
+    load: estimateScopeLoad(files.filter((entry) => entry.file !== null)),
   };
+  writeManifest(jobDir, manifest);
+
+  return { jobDir, manifest };
+}
+
+/** Writes (or rewrites) a job's manifest.json; its presence marks a complete job. */
+export function writeManifest(jobDir: string, manifest: SourceMaterializationManifest): void {
   writeFileSync(
     path.join(jobDir, "manifest.json"),
     `${JSON.stringify(manifest, null, 2)}\n`,
     "utf8",
   );
-
-  return { jobDir, manifest };
 }
 
-function toFileEntry(
-  source: ScopedSource,
-  file: string | null,
-): MaterializedSourceFile {
+/** Reads a job's manifest, or null when the directory holds none. */
+export function readManifest(jobDir: string): SourceMaterializationManifest | null {
+  try {
+    const manifest = JSON.parse(
+      readFileSync(path.join(jobDir, "manifest.json"), "utf8"),
+    ) as SourceMaterializationManifest;
+    return manifest.version === 2 && Array.isArray(manifest.sources) ? manifest : null;
+  } catch {
+    return null;
+  }
+}
+
+function toFileEntry(source: ScopedSource, file: string | null): MaterializedSourceFile {
   return {
     kind: source.kind,
     id: source.id,
@@ -595,6 +770,10 @@ function toFileEntry(
     readyForAnalysis: source.readyForAnalysis,
     truncated: false,
     exclusionReason: null,
+    ...(source.kind === "video" ? { durationSeconds: source.durationSeconds ?? null } : {}),
+    ...(source.kind === "video" && source.featuring.length > 0
+      ? { featuring: [...source.featuring] }
+      : {}),
   };
 }
 

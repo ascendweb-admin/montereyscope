@@ -1,3 +1,4 @@
+import { readJsonObject } from "@/lib/http/request-json";
 import { readXMutation } from "@/lib/x/http";
 import { researchThread, startResearchConversation } from "@/lib/x/research/experience";
 import { getResearchAnalysisEngine } from "@/lib/x/research/analysis";
@@ -25,14 +26,21 @@ import {
   acquireChatTurnLock,
   materializeSources,
   maxMaterializedBytes,
+  readingBudgetTokens,
   resolveSourceScope,
   streamChatTurn,
-  MAX_SCOPE_VIDEOS,
   type ChatStreamEvent,
   type ChatTurnCommand,
   type SourceMaterializationManifest,
   type SourceScopeResolution,
 } from "@/lib/ai";
+import {
+  addDigestsToJob,
+  describeDigestNotice,
+  manifestLoad,
+  planJobDigests,
+} from "@/lib/ai/digests";
+import { scopeLoadOf, scopeLimitResponse } from "@/lib/ai/scope-limits";
 import { DEFAULT_CHAT_MODE, isChatModeId, type ChatModeId } from "@/lib/ai/chat-modes";
 import type { ScopeDatabase } from "@/lib/db/connection";
 import {
@@ -67,6 +75,8 @@ interface ChatRequestBody {
   videoIds?: unknown;
   message?: unknown;
   threadId?: unknown;
+  /** Retry one persisted, unanswered user message without appending it again. */
+  retryMessageId?: unknown;
   /** Chat intelligence mode; omitted reads as the default (deep). */
   mode?: unknown;
 }
@@ -133,24 +143,6 @@ function normalizeRequestedSources(body: ChatRequestBody): SourceRef[] | Respons
     );
   }
   return videoIdsToSourceRefs(videoIds);
-}
-
-/**
- * The scope guard shared with the reports route: one analysis covers at most
- * MAX_SCOPE_VIDEOS sources across all kinds (duplicates collapse first). The
- * selection UI enforces this while picking; the server re-checks so a stale
- * client or a hand-written request gets the same readable refusal.
- */
-function scopeTooLarge(sources: readonly SourceRef[]): Response | null {
-  const unique = new Set(sources.map((source) => `${source.kind}:${source.id}`));
-  if (unique.size <= MAX_SCOPE_VIDEOS) {
-    return null;
-  }
-  return jsonError(
-    422,
-    "scope_too_large",
-    `Analyses are capped at ${MAX_SCOPE_VIDEOS} sources at once — this selection covers ${unique.size}. Deselect a few and try again.`,
-  );
 }
 
 function validateThreadId(value: unknown): number | null {
@@ -277,13 +269,57 @@ interface NewThreadInput {
   scope: SourceScopeResolution;
 }
 
+/** A background step's result, or why it failed. */
+type StepResult<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+/**
+ * Runs one background preparation step, relaying its progress as status
+ * events while it works (so the client can show it as part of the answer),
+ * and returns how it ended.
+ */
+async function* relayProgress<T>(
+  toEvent: (progress: { done: number; total: number }) => ChatStreamEvent,
+  start: (onProgress: (progress: { done: number; total: number }) => void) => Promise<T>,
+): AsyncGenerator<ChatStreamEvent, StepResult<T>> {
+  const pending: ChatStreamEvent[] = [];
+  let wake: (() => void) | null = null;
+  const state: { result: StepResult<T> | null } = { result: null };
+  void start((progress) => {
+    pending.push(toEvent(progress));
+    wake?.();
+  })
+    .then(
+      (value) => {
+        state.result = { ok: true, value };
+      },
+      (error: unknown) => {
+        state.result = { ok: false, error: error ?? new Error("Preparation failed.") };
+      },
+    )
+    .finally(() => wake?.());
+  for (;;) {
+    while (pending.length > 0) {
+      yield pending.shift()!;
+    }
+    if (state.result !== null) {
+      return state.result;
+    }
+    await new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    wake = null;
+  }
+}
+
 /**
  * Starts a new thread: fetches any missing transcripts first (streaming
  * `preparing` progress so the client can show it as part of the answer),
- * then materializes the sources and hands over to the chat turn. Videos
- * whose captions could not be read are left out and disclosed in a notice;
- * when nothing at all can ground the conversation the turn ends with an
- * error before a thread is created.
+ * then materializes the sources, summarizes the longest videos when the
+ * selection is too big for the mode to read in one pass (`preparing` with
+ * step "summaries"), and hands over to the chat turn. Videos whose captions
+ * could not be read are left out and disclosed in a notice; when nothing at
+ * all can ground the conversation the turn ends with an error before a
+ * thread is created.
  */
 async function* prepareAndStartThread(
   db: ScopeDatabase,
@@ -296,47 +332,16 @@ async function* prepareAndStartThread(
 
   let prepared: PrepareOutcome = { fetched: [], failed: [] };
   if (missingVideoIds.length > 0) {
-    const pending: ChatStreamEvent[] = [];
-    let wake: (() => void) | null = null;
-    let finished = false;
-    let failure: unknown = null;
-    void ensureTranscripts(db, missingVideoIds, {
-      signal,
-      onProgress: (progress) => {
-        pending.push({ type: "status", phase: "preparing", ...progress });
-        wake?.();
-      },
-    })
-      .then(
-        (outcome) => {
-          prepared = outcome;
-        },
-        (error: unknown) => {
-          failure = error ?? new Error("Transcript preparation failed.");
-        },
-      )
-      .finally(() => {
-        finished = true;
-        wake?.();
-      });
-    for (;;) {
-      while (pending.length > 0) {
-        yield pending.shift()!;
-      }
-      if (finished) {
-        break;
-      }
-      await new Promise<void>((resolve) => {
-        wake = resolve;
-      });
-      wake = null;
-    }
-    if (failure !== null) {
+    const step = yield* relayProgress(
+      (progress) => ({ type: "status", phase: "preparing", ...progress }),
+      (onProgress) => ensureTranscripts(db, missingVideoIds, { signal, onProgress }),
+    );
+    if (!step.ok) {
       if (signal.aborted) {
         yield { type: "error", code: "aborted", message: "The turn was cancelled." };
         return;
       }
-      console.error("[ai/chat] transcript preparation failed:", failure);
+      console.error("[ai/chat] transcript preparation failed:", step.error);
       yield {
         type: "error",
         code: "chat_failed",
@@ -344,6 +349,7 @@ async function* prepareAndStartThread(
       };
       return;
     }
+    prepared = step.value;
   }
 
   const titleById = new Map(input.scope.sources.map((source) => [source.id, source.title]));
@@ -385,7 +391,33 @@ async function* prepareAndStartThread(
     return;
   }
 
-  const notice = [failureNotice, scopeTruncationNotice(outcome.manifest)]
+  // Too big for the mode to read in one pass: summarize the longest videos
+  // first. A failed summary only means that video is read as it is.
+  const jobDir = outcome.jobDir;
+  const manifest = outcome.manifest;
+  const budgetTokens = readingBudgetTokens(input.mode);
+  let digestNotice = "";
+  if (planJobDigests(manifest, budgetTokens).length > 0) {
+    const digestStep = yield* relayProgress(
+      (progress) => ({ type: "status", phase: "preparing", step: "summaries", ...progress }),
+      (onProgress) => addDigestsToJob(db, jobDir, manifest, { budgetTokens, signal, onProgress }),
+    );
+    if (!digestStep.ok && signal.aborted) {
+      yield { type: "error", code: "aborted", message: "The turn was cancelled." };
+      return;
+    }
+    if (digestStep.ok) {
+      digestNotice = describeDigestNotice(
+        digestStep.value,
+        manifestLoad(manifest),
+        (videoId) => titleById.get(videoId) ?? videoId,
+      );
+    } else {
+      console.error("[ai/chat] digest preparation failed:", digestStep.error);
+    }
+  }
+
+  const notice = [failureNotice, scopeTruncationNotice(manifest), digestNotice]
     .filter((part): part is string => Boolean(part))
     .join(" ");
   const command: ChatTurnCommand = {
@@ -395,7 +427,7 @@ async function* prepareAndStartThread(
     sources: input.sources,
     // The job directory doubles as the CLI work dir and stays the same for
     // every later turn of the thread.
-    workDir: outcome.jobDir,
+    workDir: jobDir,
     mode: input.mode,
     notice: notice.length > 0 ? notice : undefined,
   };
@@ -406,7 +438,7 @@ export async function POST(request: Request) {
   const guardedRequest = request.clone();
   let body: ChatRequestBody;
   try {
-    body = (await request.json()) as ChatRequestBody;
+    body = (await readJsonObject(request)) as ChatRequestBody;
   } catch {
     return jsonError(400, "invalid_body", "Request body must be JSON.");
   }
@@ -425,6 +457,15 @@ export async function POST(request: Request) {
   const mode = body.mode === undefined ? DEFAULT_CHAT_MODE : body.mode;
   if (!isChatModeId(mode)) {
     return jsonError(400, "invalid_mode", "mode must be one of: quick, balanced, deep.");
+  }
+  const retryMessageId =
+    body.retryMessageId === undefined ? undefined : validateThreadId(body.retryMessageId);
+  if (retryMessageId === null || (retryMessageId !== undefined && body.threadId === undefined)) {
+    return jsonError(
+      400,
+      "invalid_retry",
+      "A retry needs a threadId and a positive retryMessageId.",
+    );
   }
 
   const db = getDb();
@@ -466,18 +507,24 @@ export async function POST(request: Request) {
       if (thread === null) {
         return jsonError(404, "thread_not_found", "That chat thread does not exist.");
       }
-      return { kind: "resume" as const, thread, message, mode };
+      return { kind: "resume" as const, thread, message, mode, retryMessageId };
     }
 
     const requested = normalizeRequestedSources(body);
     if (requested instanceof Response) {
       return requested;
     }
-    const tooLarge = scopeTooLarge(requested);
-    if (tooLarge !== null) {
-      return tooLarge;
+    // Counts first, before any database work; hours once the videos'
+    // lengths are known.
+    const tooMany = scopeLimitResponse(scopeLoadOf(requested));
+    if (tooMany !== null) {
+      return tooMany;
     }
     const scope = resolveSourceScope(db, requested);
+    const tooLong = scopeLimitResponse(scopeLoadOf(requested, scope));
+    if (tooLong !== null) {
+      return tooLong;
+    }
     // Videos without a transcript still count: their captions are fetched
     // as part of the turn. Only posts without complete text cannot ground.
     if (!scope.sources.some((source) => source.readyForAnalysis || source.kind === "video")) {

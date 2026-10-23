@@ -12,6 +12,17 @@
  * provider-specific variant (reasoning effort). Other AI features can omit
  * these fields and continue using OpenCode's configured default.
  *
+ * Runs never use opencode's default `build` agent (every tool allowed). Each
+ * run injects scope's own agents through OPENCODE_CONFIG_CONTENT and picks
+ * one by sandbox intent: read-only runs may only read, list, and search;
+ * workspace-write runs may also edit files, except the materialized
+ * transcripts and manifest. `--dir` (plus PWD) pins the run to its job
+ * directory — opencode otherwise resolves its directory from the inherited
+ * PWD, not the process cwd — and external directories are denied. A resumed
+ * session must run in the directory it was created in (elsewhere, `opencode
+ * run` never sees the turn finish and hangs), so resumes first look that
+ * directory up with `opencode export`.
+ *
  * The binary is resolved per machine: an explicit SCOPE_OPENCODE_BIN
  * override, then `mise which opencode` (mise's PATH shim is a TUI-oriented
  * wrapper that can hang in headless contexts), then a bare "opencode" from
@@ -34,11 +45,14 @@ import {
   CodexError,
   CodexNonZeroExitError,
   CodexNotAuthenticatedError,
+  CodexOutputTruncatedError,
   CodexQuotaExceededError,
   CodexTimeoutError,
+  type CodexChildProcess,
   type CodexExitStatus,
   type CodexRun,
   type CodexRunResult,
+  type CodexSandboxMode,
   type CodexSpawner,
   type CodexStreamEvent,
   type CodexUsage,
@@ -53,6 +67,63 @@ const KILL_GRACE_MS = 5_000;
 /** Bounded tail of stderr kept for failure classification and error messages. */
 const STDERR_TAIL_CHARS = 8_000;
 
+/**
+ * Per-reply output ceiling. opencode defaults to 32,000 tokens, and reasoning
+ * counts against it, so a "max" variant over a large prompt can think until
+ * the ceiling and never write the answer. opencode still clamps this to each
+ * model's own output limit.
+ */
+export const OPENCODE_OUTPUT_TOKEN_MAX = 131_072;
+
+/** scope's agent for read-only runs (chat, insights, research). */
+export const OPENCODE_READ_AGENT = "scope-read";
+
+/** scope's agent for workspace-write runs (reports). */
+export const OPENCODE_WRITE_AGENT = "scope-report";
+
+/**
+ * Agent permissions; opencode applies the last matching rule, so the leading
+ * "*" deny closes every tool (shell, web, MCP, subagents) not re-allowed.
+ * Edit patterns are paths relative to opencode's worktree, which is either
+ * the job directory or a parent of it, so both shapes are denied.
+ */
+const READ_PERMISSIONS = {
+  "*": "deny",
+  read: "allow",
+  grep: "allow",
+  glob: "allow",
+  list: "allow",
+  external_directory: "deny",
+} as const;
+
+export const OPENCODE_AGENT_CONFIG = {
+  agent: {
+    [OPENCODE_READ_AGENT]: {
+      mode: "primary",
+      description: "scope: read-only analysis of the job directory.",
+      permission: READ_PERMISSIONS,
+    },
+    [OPENCODE_WRITE_AGENT]: {
+      mode: "primary",
+      description: "scope: writes report files into the job directory.",
+      permission: {
+        ...READ_PERMISSIONS,
+        edit: {
+          "*": "allow",
+          "transcripts/*": "deny",
+          "*/transcripts/*": "deny",
+          "tweets/*": "deny",
+          "*/tweets/*": "deny",
+          "digests/*": "deny",
+          "*/digests/*": "deny",
+          "manifest.json": "deny",
+          "*/manifest.json": "deny",
+        },
+      },
+    },
+  },
+} as const;
+
 // ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
@@ -62,6 +133,8 @@ export interface OpenCodeRunOptions {
   prompt: string;
   /** Working directory for the run. */
   workDir: string;
+  /** Shared sandbox intent: read-only chat, workspace-write reports. */
+  sandbox?: CodexSandboxMode;
   /** Continue an earlier session (spawns `opencode run --session <id>`). */
   resumeSessionId?: string;
   /** Abort to kill the child and fail the run with CodexAbortedError. */
@@ -78,6 +151,11 @@ export interface OpenCodeRunOptions {
   model?: string;
   /** Provider-specific reasoning variant exposed by the selected model. */
   reasoningEffort?: string;
+  /**
+   * Finds the directory a resumed session belongs to (null when unknown);
+   * defaults to reading it from `opencode export`.
+   */
+  sessionDirectory?: (sessionId: string) => Promise<string | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +245,7 @@ export function createNodeOpenCodeSpawner(): CodexSpawner {
       // opencode must authenticate from the machine's opencode credentials
       // (~/.local/share/opencode/auth.json); an ambient API key must never
       // silently choose a provider for the user.
-      env: withoutApiKeys(process.env),
+      env: { ...withoutApiKeys(process.env), ...request.env },
     });
     // EPIPE when opencode exits before/while the prompt is written surfaces
     // through wait(); swallow it here so it cannot crash the process.
@@ -203,6 +281,110 @@ export function createNodeOpenCodeSpawner(): CodexSpawner {
         child.kill((signal ?? "SIGTERM") as NodeJS.Signals);
       },
     };
+  };
+}
+
+/** Longest the session-directory lookup may take before the run falls back. */
+const SESSION_LOOKUP_TIMEOUT_MS = 15_000;
+
+/** The session header comes first; give up rather than buffer a whole export. */
+const SESSION_LOOKUP_MAX_CHARS = 1_000_000;
+
+const SESSION_DIRECTORY_PATTERN = /"directory"\s*:\s*("(?:[^"\\]|\\.)*")/;
+
+/**
+ * Reads a session's directory from the head of `opencode export <id>`, whose
+ * JSON starts with the session info, then stops the export.
+ */
+export function readOpencodeSessionDirectory(
+  command: string,
+  commandArgs: readonly string[],
+  sessionId: string,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    let output = "";
+    let settled = false;
+    const child = spawn(command, [...commandArgs, "export", sessionId], {
+      shell: false,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+      env: withoutApiKeys(process.env),
+    });
+    const finish = (directory: string | null): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      resolve(directory);
+    };
+    const timer = setTimeout(() => finish(null), SESSION_LOOKUP_TIMEOUT_MS);
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      output += chunk;
+      const match = SESSION_DIRECTORY_PATTERN.exec(output);
+      if (match) {
+        finish(JSON.parse(match[1]) as string);
+      } else if (output.length > SESSION_LOOKUP_MAX_CHARS) {
+        finish(null);
+      }
+    });
+    child.once("error", () => finish(null));
+    child.once("close", () => finish(null));
+  });
+}
+
+/**
+ * A child whose spawn waits for `pending`; stdin writes and a kill issued in
+ * the meantime are replayed once it exists.
+ */
+function deferredChild(pending: Promise<CodexChildProcess>): CodexChildProcess {
+  let current: CodexChildProcess | null = null;
+  const writes: string[] = [];
+  let ended = false;
+  let killSignal: string | undefined | null = null;
+  void pending.then(
+    (child) => {
+      current = child;
+      for (const chunk of writes) {
+        child.stdin.write(chunk);
+      }
+      if (ended) {
+        child.stdin.end();
+      }
+      if (killSignal !== null) {
+        child.kill(killSignal);
+      }
+    },
+    () => {},
+  );
+  return {
+    stdin: {
+      write: (chunk) => {
+        if (current) current.stdin.write(chunk);
+        else writes.push(chunk);
+      },
+      end: () => {
+        if (current) current.stdin.end();
+        else ended = true;
+      },
+    },
+    stdout: {
+      async *[Symbol.asyncIterator]() {
+        yield* (await pending).stdout;
+      },
+    },
+    stderr: {
+      async *[Symbol.asyncIterator]() {
+        yield* (await pending).stderr;
+      },
+    },
+    wait: async () => (await pending).wait(),
+    kill: (signal) => {
+      if (current) current.kill(signal);
+      else killSignal = signal;
+    },
   };
 }
 
@@ -300,6 +482,8 @@ function toSpawnFailure(error: unknown, stderrTail: string): CodexError {
 // ---------------------------------------------------------------------------
 
 interface OpenCodeArgsInput {
+  workDir: string;
+  sandbox: CodexSandboxMode;
   resumeSessionId?: string;
   model?: string;
   reasoningEffort?: string;
@@ -312,7 +496,8 @@ interface OpenCodeArgsInput {
  * from the argv size limit.
  */
 function buildOpenCodeArgs(input: OpenCodeArgsInput): string[] {
-  const args = ["run", "--format", "json"];
+  const agent = input.sandbox === "workspace-write" ? OPENCODE_WRITE_AGENT : OPENCODE_READ_AGENT;
+  const args = ["run", "--format", "json", "--dir", input.workDir, "--agent", agent];
   if (input.resumeSessionId) {
     args.push("--session", input.resumeSessionId);
   }
@@ -457,18 +642,45 @@ export function runOpencode(options: OpenCodeRunOptions): CodexRun {
   const command = options.command ?? "opencode";
   const commandArgs = [...(options.commandArgs ?? [])];
 
-  const child = spawner({
-    command,
-    args: [
-      ...commandArgs,
-      ...buildOpenCodeArgs({
-        resumeSessionId: options.resumeSessionId,
-        model: options.model,
-        reasoningEffort: options.reasoningEffort,
-      }),
-    ],
-    cwd: options.workDir,
-  });
+  const spawnIn = (directory: string): CodexChildProcess =>
+    spawner({
+      command,
+      args: [
+        ...commandArgs,
+        ...buildOpenCodeArgs({
+          workDir: directory,
+          sandbox: options.sandbox ?? "read-only",
+          resumeSessionId: options.resumeSessionId,
+          model: options.model,
+          reasoningEffort: options.reasoningEffort,
+        }),
+      ],
+      cwd: options.workDir,
+      env: {
+        PWD: directory,
+        OPENCODE_CONFIG_CONTENT: JSON.stringify(OPENCODE_AGENT_CONFIG),
+        OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: String(OPENCODE_OUTPUT_TOKEN_MAX),
+      },
+    });
+
+  // Sessions created before runs were pinned to their job directory live
+  // wherever the server was launched; resume each where it was created.
+  const resumeSessionId = options.resumeSessionId;
+  const lookup =
+    options.sessionDirectory ??
+    ((id: string) => readOpencodeSessionDirectory(command, commandArgs, id));
+  const child = resumeSessionId
+    ? deferredChild(
+        lookup(resumeSessionId)
+          .catch(() => null)
+          .then((directory) => {
+            if (!directory) {
+              console.warn(`[ai/opencode] could not find the directory of session ${resumeSessionId}`);
+            }
+            return spawnIn(directory ?? options.workDir);
+          }),
+      )
+    : spawnIn(options.workDir);
 
   // The prompt travels on stdin; a write against an already-dead child must
   // not crash the run — wait() reports the real failure.
@@ -489,6 +701,7 @@ export function runOpencode(options: OpenCodeRunOptions): CodexRun {
   let failureMessage: string | null = null;
   let failureName: string | null = null;
   let lastUsage: CodexUsage | null = null;
+  let lastFinishReason: string | null = null;
   let aborted = options.signal?.aborted === true;
   let timedOut = false;
   let killEscalation: ReturnType<typeof setTimeout> | null = null;
@@ -591,6 +804,7 @@ export function runOpencode(options: OpenCodeRunOptions): CodexRun {
   /** A finished step closes its newest text part as one completed message. */
   function handleStepFinish(part: unknown): void {
     if (isRecord(part)) {
+      lastFinishReason = asString(part.reason);
       const tokens = isRecord(part.tokens) ? part.tokens : null;
       if (tokens) {
         lastUsage = toUsage(tokens);
@@ -663,6 +877,18 @@ export function runOpencode(options: OpenCodeRunOptions): CodexRun {
         errorName: failureName,
         failureMessage,
       });
+    }
+    // "length" means the reply hit the output ceiling mid-answer — often all
+    // of it spent on reasoning — so whatever text exists is incomplete.
+    if (lastFinishReason === "length") {
+      // Assigned inside the stream handlers, which narrowing cannot see.
+      const spent = (lastUsage as CodexUsage | null)?.reasoningOutputTokens;
+      throw new CodexOutputTruncatedError(
+        `OpenCode reply hit the model's output limit before the answer was finished${
+          spent ? ` (${spent} reasoning tokens)` : ""
+        }.`,
+        details,
+      );
     }
     return { sessionId, finalMessage, usage: lastUsage };
   })();

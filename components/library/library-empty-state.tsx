@@ -7,7 +7,7 @@ import { AddCreatorDialog } from "@/components/library/add-creator-dialog";
 import { CreatorCard } from "@/components/library/creator-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { PREVIEW_CREATORS } from "@/lib/fixtures/preview-creators";
 import type { CategorySummary } from "@/lib/categories";
 
@@ -29,10 +29,13 @@ export function LibraryEmptyState({ categories }: { categories: readonly Categor
           >
             <Users className="size-7 text-muted-foreground" />
           </span>
-          <CardTitle className="text-xl">No creators yet</CardTitle>
+          <h2 className="text-xl font-semibold leading-none tracking-tight">No creators yet</h2>
           <CardDescription className="max-w-md text-balance">
-            Paste a YouTube channel or handle URL and scope will keep its recent videos and
-            livestreams one click away. Everything is stored locally on this machine.
+            Search for a creator or paste a YouTube, Rumble, or X channel link, and scope keeps
+            their recent videos, livestreams, and posts one click away. Add their other platforms
+            later and they stay on one card. A single YouTube or Rumble video link works too: follow
+            its channel, or add just that video to someone. Everything is stored locally on this
+            machine.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col items-center gap-4">
@@ -68,9 +71,9 @@ export function LibraryEmptyState({ categories }: { categories: readonly Categor
                 <CreatorCard
                   creator={{
                     displayName: creator.displayName,
-                    handle: creator.handle,
                     avatarUrl: null,
                     href: null,
+                    accounts: [{ platform: "youtube", handle: creator.handle }],
                   }}
                 />
               </li>

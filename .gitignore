@@ -16,6 +16,7 @@
 
 # next.js
 /.next/
+/.next-desktop/
 /.next-x-review/
 /.next-x-desktop/
 /out/

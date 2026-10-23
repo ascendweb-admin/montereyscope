@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { ExternalLink, Image as ImageIcon, MessageCircle, Repeat2, Heart } from "lucide-react";
 
 import { XLogo } from "@/components/ui/platform-logos";
@@ -8,23 +9,19 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { AppDialog } from "@/components/ui/dialog";
 import { SelectionCheckbox } from "@/components/ui/selection-checkbox";
+import { AlertNote } from "@/components/ui/alert-note";
+import { SearchAvatar } from "@/components/library/creator-search-results";
+import { fetchTweetsAction } from "@/components/background/operations";
+import { getTweetDetailAction } from "@/app/actions/x";
 import { localAvatarSrc } from "@/lib/creators/avatar";
 import { formatAbsoluteTimestamp, formatRelativeTime } from "@/lib/format";
-import type { TweetViewModel } from "@/lib/x/view-model";
+import { toTweetViewModel, type TweetViewModel } from "@/lib/x/view-model";
 import { cn } from "@/lib/utils";
 
 const TEXT_CLAMP_LENGTH = 280;
 
 function isLong(tweet: TweetViewModel): boolean {
   return tweet.text.length > TEXT_CLAMP_LENGTH || tweet.text.includes("\n\n");
-}
-
-function initialsOf(name: string): string {
-  return name
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((word) => word[0]?.toUpperCase() ?? "")
-    .join("");
 }
 
 /** Compact status line: is this post ready to use as analysis material? */
@@ -134,25 +131,13 @@ export function TweetAuthor({ tweet, size = "md" }: { tweet: TweetViewModel; siz
   const avatarClass = size === "sm" ? "size-8" : "size-10";
   return (
     <span className="flex min-w-0 items-center gap-2.5">
-      {avatarSrc ? (
-        // Streams through the local avatar proxy: same-origin, nothing stored.
-        <img
-          src={avatarSrc}
-          alt=""
-          loading="lazy"
-          className={cn(avatarClass, "shrink-0 rounded-full border border-border object-cover")}
-        />
-      ) : (
-        <span
-          aria-hidden="true"
-          className={cn(
-            avatarClass,
-            "flex shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold",
-          )}
-        >
-          {initialsOf(tweet.authorName)}
-        </span>
-      )}
+      {/* Streams through the local avatar proxy; a stale picture falls back to initials. */}
+      <SearchAvatar
+        key={avatarSrc}
+        name={tweet.authorName}
+        src={avatarSrc}
+        className={avatarClass}
+      />
       <span className="min-w-0">
         <span className="block truncate text-sm font-semibold">{tweet.authorName}</span>
         <span className="block truncate text-xs text-muted-foreground">@{tweet.authorHandle}</span>
@@ -336,11 +321,13 @@ export function TweetDetailDialog({
   open,
   onClose,
   context,
+  onUpdated,
 }: {
   tweet: TweetViewModel | null;
   open: boolean;
   onClose: () => void;
   context?: React.ReactNode;
+  onUpdated?: (tweet: TweetViewModel) => void;
 }) {
   if (!tweet) {
     return null;
@@ -353,75 +340,131 @@ export function TweetDetailDialog({
       description="Everything cached for this post, exactly as it was fetched."
       className="max-w-2xl"
     >
-      <div className="flex flex-col gap-4">
-        <TweetAuthor tweet={tweet} />
-        {context}
-        <div className="rounded-lg border bg-muted/10 p-4">
-          <TweetBody tweet={tweet} clamp={false} />
-          <QuotedBlock tweet={tweet} clamp={false} />
-          <MediaPreview tweet={tweet} />
-        </div>
-        <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-xs text-muted-foreground sm:grid-cols-2">
-          <div className="sm:col-span-2">
-            <dt className="font-medium text-foreground">Canonical link</dt>
-            <dd className="truncate">
-              <a
-                href={tweet.url}
-                target="_blank"
-                rel="noreferrer"
-                className="underline-offset-4 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {tweet.url}
-              </a>
-            </dd>
-          </div>
-          <div>
-            <dt className="font-medium text-foreground">Published</dt>
-            <dd>{formatAbsoluteTimestamp(tweet.publishedAt) ?? "Unknown"}</dd>
-          </div>
-          <div>
-            <dt className="font-medium text-foreground">Fetched</dt>
-            <dd>{formatAbsoluteTimestamp(tweet.fetchedAt) ?? "Unknown"}</dd>
-          </div>
-          <div>
-            <dt className="font-medium text-foreground">Timeline event</dt>
-            <dd>
-              {tweet.isRepost
-                ? `Repost${tweet.repostedByHandle ? ` by @${tweet.repostedByHandle}` : ""}`
-                : tweet.timelineKind === "reply"
-                  ? `Reply${tweet.inReplyToHandle ? ` to @${tweet.inReplyToHandle}` : ""}`
-                  : "Original post"}
-            </dd>
-          </div>
-          <div>
-            <dt className="font-medium text-foreground">Cached content</dt>
-            <dd>
-              {tweet.contentStatus === "complete"
-                ? "Complete text"
-                : tweet.contentStatus === "summary"
-                  ? "Preview only"
-                  : "Unavailable"}
-            </dd>
-          </div>
-        </dl>
-        {tweet.media.length > 0 ? (
-          <p className="text-xs text-muted-foreground">
-            {tweet.media.length} media item{tweet.media.length === 1 ? "" : "s"} attached. Media is
-            fetched as a URL only; its content is not analyzed.
-          </p>
-        ) : null}
-        <div className="flex justify-end">
-          <a
-            href={tweet.url}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-secondary px-4 text-sm font-medium text-secondary-foreground shadow-sm outline-none transition-colors hover:bg-secondary/80 focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
-          >
-            Open on X
-            <ExternalLink aria-hidden="true" className="size-4" />
-          </a>
-        </div>
-      </div>
+      <TweetDetailContent
+        key={`${tweet.creatorId}:${tweet.id}`}
+        initialTweet={tweet}
+        context={context}
+        onUpdated={onUpdated}
+      />
     </AppDialog>
+  );
+}
+
+function TweetDetailContent({
+  initialTweet,
+  context,
+  onUpdated,
+}: {
+  initialTweet: TweetViewModel;
+  context?: React.ReactNode;
+  onUpdated?: (tweet: TweetViewModel) => void;
+}) {
+  const router = useRouter();
+  const [updated, setUpdated] = useState<TweetViewModel | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const tweet = updated ?? initialTweet;
+  const fetchText = async (): Promise<void> => {
+    if (pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      const outcome = await fetchTweetsAction(tweet.creatorId, [tweet.id]);
+      if (!outcome.ok)
+        throw new Error(outcome.message ?? "The post could not be fetched. Try again.");
+      const detail = await getTweetDetailAction(tweet.creatorId, tweet.id);
+      if (!detail.ok || !detail.tweet)
+        throw new Error(detail.message ?? "The cached post could not be read. Try again.");
+      const next = toTweetViewModel(detail.tweet, tweet.creatorId);
+      setUpdated(next);
+      onUpdated?.(next);
+      router.refresh();
+      if (!next.readyForAnalysis) {
+        setError("X did not return the full text. You can try again or open the post on X.");
+      }
+    } catch (error) {
+      setError(
+        error instanceof Error ? error.message : "The post could not be fetched. Try again.",
+      );
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-4">
+      <TweetAuthor tweet={tweet} />
+      {context}
+      <div className="rounded-lg border bg-muted/10 p-4">
+        <TweetBody tweet={tweet} clamp={false} />
+        <QuotedBlock tweet={tweet} clamp={false} />
+        <MediaPreview tweet={tweet} />
+      </div>
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-xs text-muted-foreground sm:grid-cols-2">
+        <div className="sm:col-span-2">
+          <dt className="font-medium text-foreground">Canonical link</dt>
+          <dd className="truncate">
+            <a
+              href={tweet.url}
+              target="_blank"
+              rel="noreferrer"
+              className="underline-offset-4 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {tweet.url}
+            </a>
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium text-foreground">Published</dt>
+          <dd>{formatAbsoluteTimestamp(tweet.publishedAt) ?? "Unknown"}</dd>
+        </div>
+        <div>
+          <dt className="font-medium text-foreground">Fetched</dt>
+          <dd>{formatAbsoluteTimestamp(tweet.fetchedAt) ?? "Unknown"}</dd>
+        </div>
+        <div>
+          <dt className="font-medium text-foreground">Timeline event</dt>
+          <dd>
+            {tweet.isRepost
+              ? `Repost${tweet.repostedByHandle ? ` by @${tweet.repostedByHandle}` : ""}`
+              : tweet.timelineKind === "reply"
+                ? `Reply${tweet.inReplyToHandle ? ` to @${tweet.inReplyToHandle}` : ""}`
+                : "Original post"}
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium text-foreground">Cached content</dt>
+          <dd>
+            {tweet.contentStatus === "complete"
+              ? "Complete text"
+              : tweet.contentStatus === "summary"
+                ? "Preview only"
+                : "Unavailable"}
+          </dd>
+        </div>
+      </dl>
+      {tweet.media.length > 0 ? (
+        <p className="text-xs text-muted-foreground">
+          {tweet.media.length} media item{tweet.media.length === 1 ? "" : "s"} attached. Media is
+          fetched as a URL only; its content is not analyzed.
+        </p>
+      ) : null}
+      {error ? <AlertNote tone="warning">{error}</AlertNote> : null}
+      <div className="flex flex-wrap justify-end gap-2">
+        {!tweet.readyForAnalysis ? (
+          <Button onClick={() => void fetchText()} disabled={pending} aria-busy={pending}>
+            {pending ? "Fetching full text…" : "Fetch full text"}
+          </Button>
+        ) : null}
+        <a
+          href={tweet.url}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-secondary px-4 text-sm font-medium text-secondary-foreground shadow-sm outline-none transition-colors hover:bg-secondary/80 focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
+        >
+          Open on X
+          <ExternalLink aria-hidden="true" className="size-4" />
+        </a>
+      </div>
+    </div>
   );
 }

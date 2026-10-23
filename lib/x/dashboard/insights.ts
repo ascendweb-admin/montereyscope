@@ -15,11 +15,12 @@ import { CodexError } from "@/lib/ai/codex";
 import { isAiBackendId, type AiBackendId } from "@/lib/ai/backend-id";
 import { getModelCatalog } from "@/lib/ai/models/catalog";
 import { resolveCatalogExecution } from "@/lib/ai/models/resolve";
+import { isChatModeId, type ChatModeId } from "@/lib/ai/chat-modes";
 import { getAiBackend, getAiChatModeSelection } from "@/lib/settings/settings";
 import { getTweetForCreator } from "@/lib/x/repository";
 import { toTweetViewModel, type TweetViewModel } from "@/lib/x/view-model";
 import { researchScopeSql } from "@/lib/x/research/repository";
-import { exactSearchExpression } from "@/lib/x/research/search";
+import { exactSearchFilter } from "@/lib/x/research/search";
 import { ResearchInputError } from "@/lib/x/research/input";
 import type { ResearchPostType } from "@/lib/x/research/model";
 import { parseSearchBox } from "./feed";
@@ -43,11 +44,28 @@ export const MAX_INSIGHT_POSTS = 2000;
 /** Larger corpora go to a file the agent reads instead of the prompt itself. */
 const INLINE_CORPUS_CHARS = 240_000;
 const RUN_TIMEOUT_MS = 15 * 60_000;
-/** Insights use the "balanced" chat mode's model from Settings → AI. */
-const INSIGHT_MODE = "balanced" as const;
+/**
+ * Insights run on a chat mode's model and effort from Settings → AI; only the
+ * model choice carries over — the chat modes' transcript directives do not.
+ */
+const DEFAULT_INSIGHT_MODE: ChatModeId = "balanced";
 
 interface CorpusPost {
-  tweet: TweetViewModel;
+  tweet: Pick<
+    TweetViewModel,
+    | "id"
+    | "authorName"
+    | "authorHandle"
+    | "authorAvatarUrl"
+    | "creatorId"
+    | "text"
+    | "url"
+    | "publishedAt"
+    | "inReplyToHandle"
+    | "repostedByHandle"
+    | "quoted"
+    | "media"
+  >;
   eventAt: string;
   postType: ResearchPostType;
 }
@@ -57,14 +75,15 @@ function postRows(
   scope: Pick<InsightScope, "creatorIds" | "since" | "until" | "show" | "query" | "tweetIds">,
 ): { posts: CorpusPost[]; total: number } {
   const search = scope.query ? parseSearchBox(scope.query) : null;
+  const filter = search ? exactSearchFilter(search) : null;
   const params = {
     ids: JSON.stringify(scope.creatorIds),
     types: JSON.stringify(showTypes(scope.show)),
     since: scope.since,
     until: scope.until,
-    ...(search ? { match: exactSearchExpression(search) } : {}),
+    ...filter?.params,
   };
-  const scoped = researchScopeSql(Boolean(search));
+  const scoped = researchScopeSql(filter?.sql);
   const selected = scope.tweetIds?.length ? JSON.stringify(scope.tweetIds) : null;
   const rows = (
     selected
@@ -76,7 +95,9 @@ function postRows(
           )
           .all({ ...params, selected })
       : db
-          .prepare(`${scoped} SELECT * FROM grouped ORDER BY julianday(event_at) DESC, tweet_id DESC`)
+          .prepare(
+            `${scoped} SELECT * FROM grouped ORDER BY julianday(event_at) DESC, tweet_id DESC`,
+          )
           .all(params)
   ) as Array<{ tweet_id: string; event_at: string }>;
   const primary = db.prepare(
@@ -86,8 +107,7 @@ function postRows(
   const posts: CorpusPost[] = [];
   for (const row of rows.slice(0, MAX_INSIGHT_POSTS)) {
     const link = primary.get({ ...params, tweetId: row.tweet_id }) as
-      | { creator_id: number; post_type: ResearchPostType }
-      | undefined;
+      { creator_id: number; post_type: ResearchPostType } | undefined;
     if (!link) continue;
     const record = getTweetForCreator(db, link.creator_id, row.tweet_id);
     if (!record || !record.tweet.text.trim()) continue;
@@ -100,48 +120,45 @@ function postRows(
   return { posts, total: rows.length };
 }
 
-function frozenPosts(db: ScopeDatabase, insightId: string): CorpusPost[] {
+/** Reads only analysis-owned inputs; timeline refresh/eviction cannot rewrite evidence. */
+function frozenPosts(db: ScopeDatabase, insightId: string, tweetIds?: string[]): CorpusPost[] {
   const rows = db
     .prepare(
-      `SELECT p.tweet_id, ct.creator_id, ct.timeline_kind, ct.timeline_at, t.published_at,
-         t.in_reply_to_tweet_id, t.quoted_tweet_id
-       FROM x_insight_posts p
-       JOIN creator_tweets ct ON ct.tweet_id = p.tweet_id
-       JOIN tweets t ON t.id = p.tweet_id
-       WHERE p.insight_id = ?
-       GROUP BY p.tweet_id
-       ORDER BY julianday(COALESCE(ct.timeline_at, t.published_at)) DESC`,
+      `SELECT tweet_id, source_snapshot FROM x_insight_posts WHERE insight_id = @id
+     ${tweetIds ? "AND tweet_id IN (SELECT value FROM json_each(@ids))" : ""}`,
     )
-    .all(insightId) as Array<{
+    .all({ id: insightId, ...(tweetIds ? { ids: JSON.stringify(tweetIds) } : {}) }) as Array<{
     tweet_id: string;
-    creator_id: number;
-    timeline_kind: string;
-    timeline_at: string | null;
-    published_at: string | null;
-    in_reply_to_tweet_id: string | null;
-    quoted_tweet_id: string | null;
+    source_snapshot: string | null;
   }>;
-  return rows.flatMap((row) => {
-    const record = getTweetForCreator(db, row.creator_id, row.tweet_id);
-    if (!record) return [];
-    const postType: ResearchPostType =
-      row.timeline_kind === "repost"
-        ? "repost"
-        : row.timeline_kind === "reply" || row.in_reply_to_tweet_id
-          ? "reply"
-          : row.quoted_tweet_id
-            ? "quote"
-            : "original";
-    return [
-      {
-        tweet: toTweetViewModel(record, row.creator_id),
-        eventAt:
-          (row.timeline_kind === "repost" ? row.timeline_at : row.published_at) ??
-          record.fetchedAt,
-        postType,
-      },
-    ];
-  });
+  const posts: CorpusPost[] = [];
+  for (const row of rows) {
+    if (!row.source_snapshot) continue; // Pre-upgrade evidence already evicted cannot be recovered.
+    try {
+      const post = JSON.parse(row.source_snapshot) as CorpusPost;
+      const t = post?.tweet;
+      if (
+        !t ||
+        t.id !== row.tweet_id ||
+        typeof t.text !== "string" ||
+        typeof t.authorName !== "string" ||
+        typeof t.authorHandle !== "string" ||
+        typeof t.url !== "string" ||
+        !Number.isSafeInteger(t.creatorId) ||
+        typeof post.eventAt !== "string" ||
+        !Array.isArray(t.media) ||
+        !["original", "reply", "repost", "quote"].includes(post.postType) ||
+        (t.quoted !== null && (typeof t.quoted !== "object" || typeof t.quoted?.text !== "string"))
+      )
+        continue;
+      posts.push(post);
+    } catch {
+      /* A malformed optional snapshot must not hide the conversation. */
+    }
+  }
+  return posts.sort(
+    (a, b) => b.eventAt.localeCompare(a.eventAt) || b.tweet.id.localeCompare(a.tweet.id),
+  );
 }
 
 const stamp = (iso: string) => `${iso.slice(0, 16).replace("T", " ")} UTC`;
@@ -155,7 +172,9 @@ export function renderPost(post: CorpusPost): string {
       : post.postType === "reply"
         ? `reply${t.inReplyToHandle ? ` to @${t.inReplyToHandle}` : ""}`
         : post.postType;
-  const lines = [`[post:${t.id}] @${t.authorHandle} (${t.authorName}) · ${stamp(post.eventAt)} · ${kind}`];
+  const lines = [
+    `[post:${t.id}] @${t.authorHandle} (${t.authorName}) · ${stamp(post.eventAt)} · ${kind}`,
+  ];
   lines.push(t.text.trim());
   if (t.quoted?.text)
     lines.push(
@@ -171,7 +190,7 @@ const INSTRUCTIONS = [
   "Cite the post(s) behind each claim with that exact token at the end of the sentence or bullet, e.g. [post:1234] — at most three per claim, no other citation style, no links.",
   "Quoted text (lines starting with `> Quoting`) is someone else's words: attribute it to the quoted account, not the poster.",
   "Write in Markdown: short `##` headings, tight bullets, and bold for key names and numbers. The answer is read in a narrow side panel: use a table only for short values in at most three columns; for anything wider, give each item a `###` heading with labelled bullets (`- **Label:** value`).",
-  "Refer to people by their name or @handle, or as \"they\" — never guess anyone's gender.",
+  'Refer to people by their name or @handle, or as "they" — never guess anyone\'s gender.',
   "Lead with the answer. No preamble, no closing summary of what you did, no disclaimers about being an AI.",
   "Be specific: name who said what, include numbers, prices, dates and timeframes when posts give them.",
   "If the posts don't answer the question, say so plainly in one line. Never invent facts or outside market data.",
@@ -184,7 +203,9 @@ function scopeLine(scope: InsightScope, posts: CorpusPost[], total: number): str
     ? `${stamp(posts.at(-1)!.eventAt)} to ${stamp(posts[0].eventAt)}`
     : "no posts";
   const capped =
-    total > MAX_INSIGHT_POSTS ? ` (the newest ${posts.length} of ${total} posts in the window)` : "";
+    total > MAX_INSIGHT_POSTS
+      ? ` (the newest ${posts.length} of ${total} posts in the window)`
+      : "";
   return `Scope: ${scope.label} · ${posts.length} posts from ${authors} accounts${capped} · ${range}${scope.query ? ` · matching "${scope.query}"` : ""}.`;
 }
 
@@ -229,6 +250,8 @@ function friendlyError(error: unknown, backend: string): string {
         return `${name} took too long to answer, so the analysis was stopped.`;
       case "aborted":
         return "Stopped.";
+      case "output_truncated":
+        return `${name} used up the model's output budget (mostly on thinking) before it finished the answer. Use a mode with a lower reasoning effort, or analyze fewer posts.`;
       default:
         return `${name} couldn't finish this analysis. Try again.`;
     }
@@ -240,15 +263,28 @@ interface Execution {
   backend: AiBackendId;
   model: string;
   reasoningEffort: string | null;
+  mode: ChatModeId;
 }
-async function resolveExecution(db: ScopeDatabase): Promise<Execution> {
+async function resolveExecution(db: ScopeDatabase, mode: ChatModeId): Promise<Execution> {
   const backend = getAiBackend(db);
-  const saved = getAiChatModeSelection(db, backend, INSIGHT_MODE);
+  const saved = getAiChatModeSelection(db, backend, mode);
   const catalog = getModelCatalog();
   await catalog.checkConnection(backend);
   const execution = resolveCatalogExecution(catalog.getSnapshot(backend, db), saved);
   if (execution.problem) throw new ResearchInputError(execution.problem.message, 422);
-  return { backend, model: execution.model!, reasoningEffort: execution.reasoningEffort ?? null };
+  return {
+    backend,
+    model: execution.model!,
+    reasoningEffort: execution.reasoningEffort ?? null,
+    mode,
+  };
+}
+
+/** A requested mode, or `fallback` when the request leaves it out. */
+function parseMode(value: unknown, fallback: ChatModeId): ChatModeId {
+  if (value === undefined || value === null) return fallback;
+  if (!isChatModeId(value)) throw new ResearchInputError("Choose Quick, Balanced or Deep.");
+  return value;
 }
 
 interface Live {
@@ -260,7 +296,7 @@ interface Live {
 export interface InsightDeps {
   database: () => ScopeDatabase;
   runner?: (backend: AiBackendId) => Promise<AiRunner>;
-  resolve?: (db: ScopeDatabase) => Promise<Execution>;
+  resolve?: (db: ScopeDatabase, mode: ChatModeId) => Promise<Execution>;
   jobsRoot?: string;
 }
 
@@ -274,6 +310,7 @@ interface InsightRow {
   backend: string;
   model: string;
   reasoning_effort: string | null;
+  mode: ChatModeId;
   session_id: string | null;
   status: InsightStatus;
   error: string | null;
@@ -286,6 +323,7 @@ export interface CreateInsightInput {
   scope: unknown;
   preset?: unknown;
   question?: unknown;
+  mode?: unknown;
 }
 
 function parseScope(db: ScopeDatabase, value: unknown): InsightScope {
@@ -341,8 +379,7 @@ export class InsightEngine {
 
   private row(id: string): InsightRow {
     const row = this.deps.database().prepare("SELECT * FROM x_insights WHERE id = ?").get(id) as
-      | InsightRow
-      | undefined;
+      InsightRow | undefined;
     if (!row) throw new ResearchInputError("This analysis no longer exists.", 404);
     return row;
   }
@@ -357,6 +394,7 @@ export class InsightEngine {
       status: row.status,
       backend: row.backend,
       model: row.model,
+      mode: row.mode,
       error: row.error,
       reportId: row.report_id,
       createdAt: row.created_at,
@@ -388,43 +426,35 @@ export class InsightEngine {
         status: InsightStatus;
         created_at: string;
       }>
-    ).map(
-      (m): InsightMessage => ({
-        id: m.id,
-        role: m.role,
-        // Live text from the in-flight run; the row is written when it ends.
-        content: this.live.get(id)?.messageId === m.id ? this.live.get(id)!.content : m.content,
-        status: m.status,
-        createdAt: m.created_at,
-      }),
-    );
+    ).map((m): InsightMessage => ({
+      id: m.id,
+      role: m.role,
+      // Live text from the in-flight run; the row is written when it ends.
+      content: this.live.get(id)?.messageId === m.id ? this.live.get(id)!.content : m.content,
+      status: m.status,
+      createdAt: m.created_at,
+    }));
     const cited = new Set(
       messages.flatMap((m) => [...m.content.matchAll(CITATION_PATTERN)].map((match) => match[1])),
     );
-    const sources: Record<string, InsightSource> = {};
-    if (cited.size) {
-      const lookup = db.prepare(
-        `SELECT ct.creator_id FROM x_insight_posts p JOIN creator_tweets ct ON ct.tweet_id = p.tweet_id
-         WHERE p.insight_id = ? AND p.tweet_id = ? LIMIT 1`,
-      );
-      for (const tweetId of cited) {
-        const link = lookup.get(id, tweetId) as { creator_id: number } | undefined;
-        const record = link ? getTweetForCreator(db, link.creator_id, tweetId) : null;
-        if (!record) continue;
-        const tweet = toTweetViewModel(record, link!.creator_id);
-        sources[tweetId] = {
-          id: tweet.id,
-          authorName: tweet.authorName,
-          authorHandle: tweet.authorHandle,
-          authorAvatarUrl: tweet.authorAvatarUrl,
-          creatorId: tweet.creatorId,
-          text: tweet.text,
-          url: tweet.url,
-          publishedAt: tweet.publishedAt,
-        };
-      }
-    }
+    const sources = Object.fromEntries(
+      (cited.size ? this.sourcePosts(id, [...cited]) : []).map((source) => [source.id, source]),
+    );
     return { ...this.summary(row), messages, sources };
+  }
+
+  /** All frozen inputs for saving a brief, or just the cited IDs for its live view. */
+  sourcePosts(id: string, tweetIds?: string[]): InsightSource[] {
+    return frozenPosts(this.deps.database(), id, tweetIds).map(({ tweet }) => ({
+      id: tweet.id,
+      authorName: tweet.authorName,
+      authorHandle: tweet.authorHandle,
+      authorAvatarUrl: tweet.authorAvatarUrl,
+      creatorId: tweet.creatorId,
+      text: tweet.text,
+      url: tweet.url,
+      publishedAt: tweet.publishedAt,
+    }));
   }
 
   /** Counts what an analysis of this scope would read, without starting one. */
@@ -446,19 +476,21 @@ export class InsightEngine {
     const preset = presetById(typeof input.preset === "string" ? input.preset : null);
     const question = typeof input.question === "string" ? input.question.trim() : "";
     if (!preset && !question) throw new ResearchInputError("Pick an analysis or ask a question.");
-    if (question.length > 4000) throw new ResearchInputError("Keep the question under 4,000 characters.");
+    if (question.length > 4000)
+      throw new ResearchInputError("Keep the question under 4,000 characters.");
+    const mode = parseMode(input.mode, DEFAULT_INSIGHT_MODE);
     const { posts, total } = postRows(db, scope);
     if (!posts.length)
       throw new ResearchInputError(
         "There are no posts with text in this view yet. Widen the time range or sync first.",
       );
-    const execution = await (this.deps.resolve ?? resolveExecution)(db);
+    const execution = await (this.deps.resolve ?? resolveExecution)(db, mode);
     const id = randomUUID();
     const title = preset ? `${preset.label} · ${scope.label}` : question.slice(0, 120);
     const assistantId = db.transaction(() => {
       db.prepare(
-        `INSERT INTO x_insights (id, list_id, title, preset, scope_json, post_count, backend, model, reasoning_effort, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running')`,
+        `INSERT INTO x_insights (id, list_id, title, preset, scope_json, post_count, backend, model, reasoning_effort, mode, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running')`,
       ).run(
         id,
         scope.listId !== null &&
@@ -472,13 +504,15 @@ export class InsightEngine {
         execution.backend,
         execution.model,
         execution.reasoningEffort,
+        execution.mode,
       );
-      const freeze = db.prepare("INSERT OR IGNORE INTO x_insight_posts (insight_id, tweet_id) VALUES (?, ?)");
-      for (const post of posts) freeze.run(id, post.tweet.id);
-      db.prepare("INSERT INTO x_insight_messages (insight_id, role, content) VALUES (?, 'user', ?)").run(
-        id,
-        question || preset!.label,
+      const freeze = db.prepare(
+        "INSERT OR IGNORE INTO x_insight_posts (insight_id, tweet_id, source_snapshot) VALUES (?, ?, ?)",
       );
+      for (const post of posts) freeze.run(id, post.tweet.id, JSON.stringify(post));
+      db.prepare(
+        "INSERT INTO x_insight_messages (insight_id, role, content) VALUES (?, 'user', ?)",
+      ).run(id, question || preset!.label);
       return Number(
         db
           .prepare(
@@ -494,7 +528,8 @@ export class InsightEngine {
     return this.detail(id);
   }
 
-  async followUp(id: string, questionInput: unknown): Promise<InsightDetail> {
+  /** Asks a follow-up; `modeInput` defaults to the mode the insight last ran in. */
+  async followUp(id: string, questionInput: unknown, modeInput?: unknown): Promise<InsightDetail> {
     const db = this.deps.database();
     const row = this.row(id);
     if (this.live.has(id) || row.status === "running")
@@ -502,16 +537,17 @@ export class InsightEngine {
     const question = typeof questionInput === "string" ? questionInput.trim() : "";
     if (!question || question.length > 4000)
       throw new ResearchInputError("Ask a follow-up of 1–4,000 characters.");
-    const execution = await (this.deps.resolve ?? resolveExecution)(db);
+    const mode = parseMode(modeInput, row.mode);
+    const execution = await (this.deps.resolve ?? resolveExecution)(db, mode);
     const history = this.history(id);
     const assistantId = db.transaction(() => {
       db.prepare(
-        "UPDATE x_insights SET status = 'running', error = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-      ).run(id);
-      db.prepare("INSERT INTO x_insight_messages (insight_id, role, content) VALUES (?, 'user', ?)").run(
-        id,
-        question,
-      );
+        `UPDATE x_insights SET status = 'running', error = NULL, mode = ?,
+           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`,
+      ).run(execution.mode, id);
+      db.prepare(
+        "INSERT INTO x_insight_messages (insight_id, role, content) VALUES (?, 'user', ?)",
+      ).run(id, question);
       return Number(
         db
           .prepare(
@@ -559,7 +595,10 @@ export class InsightEngine {
     const turns: Array<{ question: string; answer: string }> = [];
     for (let i = 0; i + 1 < messages.length; i += 2)
       if (messages[i + 1].status === "complete")
-        turns.push({ question: messages[i].content, answer: messages[i + 1].content.slice(0, 6000) });
+        turns.push({
+          question: messages[i].content,
+          answer: messages[i + 1].content.slice(0, 6000),
+        });
     return turns.slice(-4);
   }
 
@@ -593,7 +632,8 @@ export class InsightEngine {
     try {
       const workDir = this.workDir(id);
       mkdirSync(workDir, { recursive: true });
-      if (!isAiBackendId(execution.backend)) throw new ResearchInputError("Choose an AI provider in Settings.");
+      if (!isAiBackendId(execution.backend))
+        throw new ResearchInputError("Choose an AI provider in Settings.");
       const runner = await (this.deps.runner ?? createAiRunner)(execution.backend);
       const run = runner({
         prompt: prompt(workDir),
@@ -631,7 +671,8 @@ export class InsightEngine {
     } finally {
       this.live.delete(id);
       const content =
-        live.content || (status === "cancelled" ? "Stopped before an answer was written." : error ?? "");
+        live.content ||
+        (status === "cancelled" ? "Stopped before an answer was written." : (error ?? ""));
       db.transaction(() => {
         db.prepare("UPDATE x_insight_messages SET content = ?, status = ? WHERE id = ?").run(
           content,
@@ -640,8 +681,18 @@ export class InsightEngine {
         );
         db.prepare(
           `UPDATE x_insights SET status = ?, error = ?, session_id = COALESCE(?, session_id),
-             backend = ?, model = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`,
-        ).run(status, error, sessionId, execution.backend, execution.model, id);
+             backend = ?, model = ?, reasoning_effort = ?, mode = ?,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`,
+        ).run(
+          status,
+          error,
+          sessionId,
+          execution.backend,
+          execution.model,
+          execution.reasoningEffort,
+          execution.mode,
+          id,
+        );
       })();
     }
   }

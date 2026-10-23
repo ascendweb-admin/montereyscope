@@ -126,16 +126,19 @@ function SessionRunner({ session }: { session: Session }) {
       href: engine.threadId ? `/chat?thread=${engine.threadId}` : "/chat",
       status: engine.generating
         ? "running"
-        : engine.turnError
-          ? "failed"
-          : engine.messages.findLast((message) => message.role === "assistant")?.interrupted
-            ? "stopped"
-            : "done",
+        : engine.stoppedByUser
+          ? "stopped"
+          : engine.turnError
+            ? "failed"
+            : engine.messages.findLast((message) => message.role === "assistant")?.interrupted
+              ? "stopped"
+              : "done",
       message: engine.turnError?.message,
       cancel: engine.generating ? engine.stop : undefined,
     });
   }, [
     engine.generating,
+    engine.stoppedByUser,
     engine.threadId,
     engine.turnError,
     engine.messages,
@@ -159,6 +162,7 @@ export function BackgroundChatProvider({ children }: { children: ReactNode }) {
 const idle: ChatEngine = {
   messages: [],
   selectedSources: [],
+  sourceMetadata: [],
   threadId: null,
   draft: "",
   setDraft: () => {},
@@ -170,6 +174,7 @@ const idle: ChatEngine = {
   selectMode: () => {},
   turnMode: "deep",
   generating: false,
+  stoppedByUser: false,
   canSend: false,
   send: () => {},
   retryLast: () => {},

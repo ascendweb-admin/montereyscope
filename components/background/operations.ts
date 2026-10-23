@@ -3,7 +3,8 @@
 import type { RefreshContentOutcome, RefreshFeedOutcome } from "@/app/actions/feeds";
 import type { TranscriptActionResult, TranscriptSelectionInput } from "@/app/actions/transcripts";
 import type { XRefreshActionOutcome, XFetchActionOutcome } from "@/app/actions/x";
-import { runBackgroundTask } from "./task-store";
+import { isTemporaryXError, X_BUSY_MESSAGE } from "@/lib/x/model";
+import { runBackgroundTask, type BackgroundTask } from "./task-store";
 
 async function request<T>(payload: object): Promise<T> {
   const response = await fetch("/api/background", {
@@ -14,6 +15,12 @@ async function request<T>(payload: object): Promise<T> {
   if (!response.ok) throw new Error("Task request failed");
   return response.json() as Promise<T>;
 }
+/** X being busy stops a fetch without failing it: Activity shows it neutral, not red. */
+function xFetchStatus(result: { ok: boolean; errorCode?: string }): BackgroundTask["status"] {
+  return result.ok ? "done" : isTemporaryXError(result.errorCode) ? "stopped" : "failed";
+}
+const calmX = <T extends { ok: boolean; errorCode?: string; message?: string }>(result: T): T =>
+  !result.ok && isTemporaryXError(result.errorCode) ? { ...result, message: X_BUSY_MESSAGE } : result;
 export const creatorTaskKey = (id: number) => `creator:${id}`;
 export const transcriptTaskKey = (id: string) => `transcript:${id}`;
 export function refreshCreatorContentAction(creatorId: number): Promise<RefreshContentOutcome> {
@@ -54,7 +61,8 @@ export function refreshCreatorTweetsAction(
       label: mode === "older" ? "Loading older posts" : "Fetching recent posts",
       href: `/channels/${creatorId}`,
     },
-    () => request({ operation: "tweets", creatorId, mode, limit }),
+    async () => calmX(await request<XRefreshActionOutcome>({ operation: "tweets", creatorId, mode, limit })),
+    xFetchStatus,
   );
 }
 export function fetchTweetsAction(
@@ -75,7 +83,8 @@ export function fetchTweetsAction(
           ok: false,
           message: `${result.batch.failedCount} posts could not be fetched. Try again from the creator page.`,
         };
-      return result;
+      return calmX(result);
     },
+    xFetchStatus,
   );
 }

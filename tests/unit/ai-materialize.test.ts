@@ -12,7 +12,7 @@ import {
   maxMaterializedBytes,
   TRUNCATION_MARKER,
 } from "@/lib/ai/materialize";
-import { INITIAL_MIGRATIONS } from "@/lib/db/migrations";
+import { ALL_MIGRATIONS } from "@/lib/db/migrations";
 import { runMigrations } from "@/lib/db/migrator";
 
 const JOB_ID = "job-0001";
@@ -28,7 +28,7 @@ describe("ai transcript materialization", () => {
     jobsRoot = path.join(dir, "ai-jobs");
     db = new Database(path.join(dir, "test.db"));
     db.pragma("foreign_keys = ON");
-    runMigrations(db, INITIAL_MIGRATIONS);
+    runMigrations(db, ALL_MIGRATIONS);
     db.prepare(
       "INSERT INTO creators (id, display_name, channel_url) VALUES (1, 'Sample Creator', 'https://example.invalid/c')",
     ).run();
@@ -72,6 +72,7 @@ describe("ai transcript materialization", () => {
       [
         "Title: Video videoManual01",
         "Creator: Sample Creator",
+        "Channel: YouTube",
         "URL: https://www.youtube.com/watch?v=videoManual01",
         "Published: 2026-02-03T09:30:00.000Z",
         "Language: en",
@@ -84,6 +85,32 @@ describe("ai transcript materialization", () => {
     const automatic = readFileSync(path.join(jobDir, "transcripts", "videoAuto0001.txt"), "utf8");
     expect(automatic).toContain("Caption source: automatic");
     expect(automatic.endsWith("Automatic caption text.\n")).toBe(true);
+  });
+
+  it("adds a Featuring line after Channel only for videos that feature someone", () => {
+    seedVideo("videoManual01");
+    seedVideo("videoGuest001");
+    seedTranscript("videoManual01", "Own channel text.");
+    seedTranscript("videoGuest001", "Guest appearance text.");
+    db.prepare(
+      "INSERT INTO creators (id, display_name, channel_url, followed) VALUES (2, 'Dana Guest', 'https://example.invalid/d', 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO profile_videos (profile_id, video_id) SELECT profile_id, 'videoGuest001' FROM creators WHERE id = 2",
+    ).run();
+
+    const { jobDir } = materialize(["videoManual01", "videoGuest001"]);
+
+    const guest = readFileSync(path.join(jobDir, "transcripts", "videoGuest001.txt"), "utf8");
+    expect(guest.split("\n").slice(0, 5)).toEqual([
+      "Title: Video videoGuest001",
+      "Creator: Sample Creator",
+      "Channel: YouTube",
+      "Featuring: Dana Guest",
+      "URL: https://www.youtube.com/watch?v=videoGuest001",
+    ]);
+    const own = readFileSync(path.join(jobDir, "transcripts", "videoManual01.txt"), "utf8");
+    expect(own).not.toContain("Featuring:");
   });
 
   it("writes a manifest at the job root listing the scope and the files", () => {
@@ -103,6 +130,8 @@ describe("ai transcript materialization", () => {
           id: "videoManual01",
           title: "Video videoManual01",
           creator: "Sample Creator",
+          channel: "YouTube",
+          featuring: [],
           publishedAt: "2026-02-03T09:30:00.000Z",
           hasTranscript: true,
           durationSeconds: null,

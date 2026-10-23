@@ -12,8 +12,11 @@ import {
   addCreator,
   findDuplicateCreator,
   getCreator,
+  listAllCreators,
   listCreators,
   removeCreator,
+  setCreatorAvatar,
+  setCreatorFollowed,
 } from "@/lib/creators/repository";
 import { saveResolvedCreator } from "@/lib/creators/service";
 
@@ -170,6 +173,126 @@ describe("listCreators and getCreator", () => {
     expect(
       findDuplicateCreator(db, { youtubeChannelId: null, channelUrl: "https://none" }),
     ).toBeNull();
+  });
+});
+
+describe("source-only hosts (followed = 0)", () => {
+  const HOST = {
+    youtubeChannelId: "UCAAAAAAAAAAAAAAAAAAAAAA",
+    handle: "hostchannel",
+    displayName: "Host Channel",
+    channelUrl: "https://www.youtube.com/channel/UCAAAAAAAAAAAAAAAAAAAAAA",
+    avatarUrl: null,
+  };
+
+  it("follows new creators by default and stores source-only hosts as not followed", () => {
+    expect(addCreator(db, MKBHD).creator.followed).toBe(true);
+    const host = addCreator(db, { ...HOST, followed: false });
+    expect(host.status).toBe("created");
+    expect(host.creator.followed).toBe(false);
+    expect(getCreator(db, host.creator.id)?.followed).toBe(false);
+  });
+
+  it("lists only followed creators, and every creator through listAllCreators", () => {
+    addCreator(db, MKBHD);
+    addCreator(db, { ...HOST, followed: false });
+
+    expect(listCreators(db).map((creator) => creator.displayName)).toEqual(["Marques Brownlee"]);
+    expect(listAllCreators(db).map((creator) => creator.displayName)).toEqual([
+      "Host Channel",
+      "Marques Brownlee",
+    ]);
+  });
+
+  it("still de-duplicates against a hidden host", () => {
+    const host = addCreator(db, { ...HOST, followed: false }).creator;
+    expect(findDuplicateCreator(db, HOST)?.id).toBe(host.id);
+    expect(addCreator(db, { ...HOST, followed: false })).toMatchObject({
+      status: "already_saved",
+      creator: { id: host.id, followed: false },
+    });
+    expect(listAllCreators(db)).toHaveLength(1);
+  });
+
+  it("promotes a hidden host when the channel is added normally, and reports it as created", () => {
+    const host = addCreator(db, { ...HOST, followed: false }).creator;
+
+    const added = addCreator(db, { ...HOST, avatarUrl: "https://yt3.googleusercontent.com/host" });
+
+    expect(added.status).toBe("created");
+    expect(added.creator).toMatchObject({
+      id: host.id,
+      followed: true,
+      avatarUrl: "https://yt3.googleusercontent.com/host",
+    });
+    expect(listCreators(db).map((creator) => creator.id)).toEqual([host.id]);
+    // Adding it a third time is the usual friendly no-op.
+    expect(addCreator(db, HOST).status).toBe("already_saved");
+  });
+
+  it("promotes without overwriting an avatar the host already has", () => {
+    const host = addCreator(db, {
+      ...HOST,
+      avatarUrl: "https://yt3.googleusercontent.com/kept",
+      followed: false,
+    }).creator;
+    addCreator(db, { ...HOST, avatarUrl: "https://yt3.googleusercontent.com/new" });
+    expect(getCreator(db, host.id)?.avatarUrl).toBe("https://yt3.googleusercontent.com/kept");
+  });
+
+  it("leaves a followed channel followed when a source-only add finds it", () => {
+    const saved = addCreator(db, HOST).creator;
+    expect(addCreator(db, { ...HOST, followed: false })).toMatchObject({
+      status: "already_saved",
+      creator: { id: saved.id, followed: true },
+    });
+    expect(getCreator(db, saved.id)?.followed).toBe(true);
+  });
+
+  it("flips followed with setCreatorFollowed", () => {
+    const { creator } = addCreator(db, { ...HOST, followed: false });
+    expect(setCreatorFollowed(db, creator.id, true)).toBe(true);
+    expect(getCreator(db, creator.id)?.followed).toBe(true);
+    expect(setCreatorFollowed(db, creator.id, false)).toBe(true);
+    expect(getCreator(db, creator.id)?.followed).toBe(false);
+    expect(setCreatorFollowed(db, 9999, true)).toBe(false);
+  });
+
+  it("stores an avatar only from a platform image CDN", () => {
+    const { creator } = addCreator(db, { ...HOST, followed: false });
+    expect(setCreatorAvatar(db, creator.id, "https://yt3.googleusercontent.com/avatar")).toBe(true);
+    expect(getCreator(db, creator.id)?.avatarUrl).toBe("https://yt3.googleusercontent.com/avatar");
+
+    // Anything else changes nothing: other hosts, plain http, and missing rows.
+    expect(setCreatorAvatar(db, creator.id, "https://evil.example/avatar.png")).toBe(false);
+    expect(setCreatorAvatar(db, creator.id, "http://yt3.googleusercontent.com/avatar")).toBe(false);
+    expect(setCreatorAvatar(db, 9999, "https://yt3.googleusercontent.com/avatar")).toBe(false);
+    expect(getCreator(db, creator.id)?.avatarUrl).toBe("https://yt3.googleusercontent.com/avatar");
+  });
+
+  it("keeps existing creators followed when the column is added by migration 032", () => {
+    db.close();
+    const dir = mkdtempSync(path.join(tmpdir(), "localtube-creators-old-"));
+    tempDirs.push(dir);
+    db = new Database(path.join(dir, "test.db"));
+    db.pragma("foreign_keys = ON");
+    runMigrations(
+      db,
+      ALL_MIGRATIONS.filter((migration) => migration.id < "032"),
+    );
+    db.prepare("INSERT INTO creators (display_name, channel_url) VALUES (?, ?)").run(
+      "Older channel",
+      "https://www.youtube.com/@older",
+    );
+
+    runMigrations(db, ALL_MIGRATIONS);
+
+    expect(listCreators(db).map((creator) => [creator.displayName, creator.followed])).toEqual([
+      ["Older channel", true],
+    ]);
+    expect(() =>
+      db.prepare("UPDATE creators SET followed = 2 WHERE display_name = 'Older channel'").run(),
+    ).toThrow(/CHECK/);
   });
 });
 

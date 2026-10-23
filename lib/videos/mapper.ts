@@ -86,9 +86,38 @@ export function mapLiveStatus(value: unknown): LiveStatus {
   }
 }
 
+const AB_TEST_THUMBNAIL_PATH = /^\/(vi|vi_webp)\/([A-Za-z0-9_-]{6,20})\/([a-z0-9]+)_custom_\d+\.(jpg|webp)$/;
+
+/**
+ * Rewrites a thumbnail served for a YouTube "Test & Compare" A/B variant
+ * (`/vi/<id>/hq720_custom_2.jpg?sqp=…`) to the video's stable image
+ * (`/vi/<id>/hq720.jpg`). Variant URLs rotate during the test and 404 once
+ * it ends; the stable URL always serves whichever thumbnail is live. Any
+ * other URL is returned unchanged. Migration 027 applies the same rewrite to
+ * stored rows.
+ */
+export function stableThumbnailUrl(url: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  if (!/(^|\.)ytimg\.com$/.test(parsed.hostname)) {
+    return url;
+  }
+  const match = AB_TEST_THUMBNAIL_PATH.exec(parsed.pathname);
+  if (match === null) {
+    return url;
+  }
+  const [, folder, videoId, base, extension] = match;
+  return `https://i.ytimg.com/${folder}/${videoId}/${base}.${extension}`;
+}
+
 /**
  * Picks the best video thumbnail: HTTPS only, YouTube image hosts only,
- * largest area wins. Returns null rather than an unsafe URL.
+ * largest area wins, A/B test variants pinned to the stable image. Returns
+ * null rather than an unsafe URL.
  */
 export function pickThumbnailUrl(thumbnails: unknown): string | null {
   if (!Array.isArray(thumbnails)) {
@@ -121,7 +150,7 @@ export function pickThumbnailUrl(thumbnails: unknown): string | null {
       bestUrl = url;
     }
   }
-  return bestUrl;
+  return bestUrl === null ? null : stableThumbnailUrl(bestUrl);
 }
 
 /**

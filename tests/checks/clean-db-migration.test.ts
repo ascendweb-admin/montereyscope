@@ -46,17 +46,27 @@ describe("clean-database migration gate", () => {
     expect(tables).toEqual([
       "ai_messages",
       "ai_model_catalog",
+      "ai_report_index",
+      "ai_report_text",
+      "ai_report_text_config",
+      "ai_report_text_content",
+      "ai_report_text_data",
+      "ai_report_text_docsize",
+      "ai_report_text_idx",
       "ai_reports",
       "ai_threads",
       "categories",
-      "creator_categories",
+      "creator_profiles",
       "creator_tweets",
       "creators",
+      "profile_categories",
+      "profile_videos",
       "schema_migrations",
       "settings",
       "sqlite_sequence",
       "transcripts",
       "tweets",
+      "video_digests",
       "videos",
       "x_analysis_batches",
       "x_analysis_jobs",
@@ -108,11 +118,22 @@ describe("clean-database migration gate", () => {
       "020",
       "021",
       "022",
+      "023",
+      "024",
+      "025",
+      "026",
+      "027",
+      "028",
+      "029",
+      "030",
+      "031",
+      "032",
     ]);
 
     // WAL + foreign keys are enabled per connection by getDb().
     expect(db.pragma("journal_mode", { simple: true })).toBe("wal");
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     db.exec("INSERT INTO x_tweet_text(x_tweet_text, rank) VALUES ('integrity-check', 1)");
+    db.exec("INSERT INTO ai_report_text(ai_report_text, rank) VALUES ('integrity-check', 1)");
   });
 });

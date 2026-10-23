@@ -1,3 +1,4 @@
+import { readJsonObject } from "@/lib/http/request-json";
 import {
   addCreatorFromUrl,
   httpStatusForServiceError,
@@ -36,7 +37,7 @@ interface AddCreatorRequestBody {
 export async function POST(request: Request) {
   let body: AddCreatorRequestBody;
   try {
-    body = (await request.json()) as AddCreatorRequestBody;
+    body = (await readJsonObject(request)) as AddCreatorRequestBody;
   } catch {
     return Response.json(
       { error: { code: "invalid_body", message: 'Request body must be JSON with a "url" field.' } },

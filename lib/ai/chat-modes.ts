@@ -48,7 +48,7 @@ export const CHAT_MODES: readonly ChatModeConfig[] = [
     workingLabel: "Thinking…",
     timeoutMs: 5 * MINUTE_MS,
     directive:
-      "Stay conversational: answer like a knowledgeable colleague you can chat with — short, direct replies of a few sentences unless more is genuinely needed, no long lists or exhaustive write-ups unless asked. Still ground every claim in the transcripts and cite it as usual. If a question clearly calls for deeper analysis, answer what you can and suggest switching to the deep mode.",
+      "Stay conversational: answer like a knowledgeable colleague you can chat with — short, direct replies of a few sentences unless more is genuinely needed, no long lists or exhaustive write-ups unless asked. Still ground every claim in the sources and cite it as usual. If a question clearly calls for deeper analysis, answer what you can and suggest switching to the deep mode.",
   },
   {
     id: "balanced",
@@ -57,7 +57,7 @@ export const CHAT_MODES: readonly ChatModeConfig[] = [
     workingLabel: "Reviewing the transcripts…",
     timeoutMs: 10 * MINUTE_MS,
     directive:
-      "Work at everyday analyst depth: read enough of the transcripts to answer confidently, cover the main findings clearly and concisely, and skip exhaustive cross-referencing unless the user asks for it.",
+      "Work at everyday analyst depth: read enough of the sources to answer confidently, cover the main findings clearly and concisely, and skip exhaustive cross-referencing unless the user asks for it.",
   },
   {
     id: "deep",
@@ -66,9 +66,17 @@ export const CHAT_MODES: readonly ChatModeConfig[] = [
     workingLabel: "Reading the transcripts…",
     timeoutMs: 15 * MINUTE_MS,
     directive:
-      "You are a senior analyst in deep-research mode: take the time to read every transcript in scope, cross-reference them, and deliver a complete, rigorous answer that surfaces every relevant finding, theme, and contradiction. Depth beats speed — do not stop at a first pass.",
+      "You are a senior analyst in deep-research mode: take the time to read every source in scope closely, cross-reference them, and deliver a complete, rigorous answer that surfaces every relevant finding, theme, and contradiction. Depth beats speed — do not stop at a first pass.",
   },
 ];
+
+/** What each mode runs on for the active provider, for the mode switchers. */
+export interface ChatModeModels {
+  /** "Codex", "Claude" or "OpenCode". */
+  provider: string;
+  /** "Sonnet 5.5 · Medium" per mode. */
+  modes: Record<ChatModeId, string>;
+}
 
 /** Type guard for untrusted mode values (request bodies, storage). */
 export function isChatModeId(value: unknown): value is ChatModeId {

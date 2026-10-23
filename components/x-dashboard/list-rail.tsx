@@ -151,8 +151,8 @@ export function ListRail({
         >
           <Settings2 aria-hidden="true" className="size-3.5" />
           {autoSyncMinutes
-            ? `Auto-sync every ${autoSyncMinutes >= 60 ? `${autoSyncMinutes / 60} h` : `${autoSyncMinutes} min`}`
-            : "Auto-sync is off"}
+            ? `Updates every ${autoSyncMinutes >= 60 ? `${autoSyncMinutes / 60} h` : `${autoSyncMinutes} min`}, faster for the list you're viewing`
+            : "Automatic updates are off"}
         </Link>
       </div>
     </nav>

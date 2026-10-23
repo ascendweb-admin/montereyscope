@@ -1,15 +1,12 @@
 {
-  "sourceCommit": "f502960dc16524d47bd77da8b65f6b210559ba98",
-  "scopeVersion": "0.1.10",
+  "sourceCommit": "16bdd44eb93b03d71a8b4225bd8c5d993b7e3cd2",
+  "sourceBranch": "main (local scope-desktop)",
+  "scopeVersion": "0.1.9",
   "electronVersion": "43.7.7",
   "target": "darwin-x64",
   "candidateMinimumMacOS": "12.0",
   "signed": false,
   "notarized": false,
-  "installerVerified": false,
-  "profile": "monterey-claude-fix",
-  "changes": [
-    "Desktop readiness no longer waits for yt-dlp version diagnostics.",
-    "On macOS, slow or failed Claude status checks remain retryable instead of reporting a false sign-out."
-  ]
+  "profile": "monterey-main-16bdd44",
+  "applicationSourceUnmodified": true
 }

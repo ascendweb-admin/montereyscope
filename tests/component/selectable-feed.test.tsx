@@ -200,7 +200,7 @@ describe("SelectableFeed", () => {
     expect(screen.queryByText(/selected/)).toBeNull();
   });
 
-  it("refuses selections beyond the analysis cap with a clear note (stage 7)", () => {
+  it("refuses selections beyond the video limit with a clear note (stage 7)", () => {
     const many = Array.from({ length: 26 }, (_, index) =>
       card({ videoId: `capvid${String(index).padStart(5, "0")}`, title: `Cap video ${index}` }),
     );
@@ -214,12 +214,33 @@ describe("SelectableFeed", () => {
 
     // The 26th tick is refused with a readable note, and nothing breaks.
     selectCheckbox("Cap video 25");
-    expect(screen.getByText(/Analyses are capped at 25 sources/)).toBeTruthy();
+    expect(screen.getByText(/Analyses take up to 25 videos at once/)).toBeTruthy();
     expect(screen.getByText("25 videos selected")).toBeTruthy();
 
     // Deselecting still works and clears the note.
     selectCheckbox("Cap video 24");
-    expect(screen.queryByText(/Analyses are capped at 25 sources/)).toBeNull();
+    expect(screen.queryByText(/Analyses take up to 25 videos at once/)).toBeNull();
     expect(screen.getByText("24 videos selected")).toBeTruthy();
+  });
+
+  it("measures the selection in hours and refuses a video past the hours limit", () => {
+    const streams = Array.from({ length: 3 }, (_, index) =>
+      card({
+        videoId: `longvid${String(index).padStart(4, "0")}`,
+        title: `Long stream ${index}`,
+        durationSeconds: 20 * 3_600,
+      }),
+    );
+    render(<SelectableFeed videos={streams} livestreams={[]} hasEverRefreshed={true} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Select videos" }));
+    selectCheckbox("Long stream 0");
+    // One 20-hour stream is far past what one pass reads closely.
+    expect(screen.getByText(/20 h · Long videos summarized first/)).toBeTruthy();
+    selectCheckbox("Long stream 1");
+    selectCheckbox("Long stream 2");
+
+    expect(screen.getByText(/Analyses take up to 50 hours of video at once/)).toBeTruthy();
+    expect(screen.getByText("2 videos selected")).toBeTruthy();
   });
 });

@@ -1840,8 +1840,8 @@ function ChatModeModelEditor({
         </div>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="flex flex-col gap-1.5">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="flex min-w-0 flex-col gap-1.5">
           <span className="text-sm font-medium">Model</span>
           <ModelPicker
             provider={backend}
@@ -1855,7 +1855,7 @@ function ChatModeModelEditor({
           </p>
         </div>
 
-        <div className="flex flex-col gap-1.5">
+        <div className="flex min-w-0 flex-col gap-1.5">
           <span className="text-sm font-medium">Reasoning effort</span>
           {usable && effortsKnown && reasoningOptions.length > 0 ? (
             <>

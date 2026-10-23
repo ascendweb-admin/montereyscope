@@ -63,7 +63,7 @@ const TARGETS = Object.freeze({
     betterSqlite3Prebuild: "darwin-arm64",
     // Candidate floor only: verify every native dependency, including frozen
     // Python payloads, and test on this OS before publishing support.
-    minimumMacOS: "13.0",
+    minimumMacOS: "12.0",
   }),
   "darwin-x64": Object.freeze({
     key: "darwin-x64",

@@ -16,7 +16,7 @@ export function GET() {
   }
 }
 
-/** POST /api/x-dashboard/insights — {scope, preset?|question?} starts an analysis. */
+/** POST /api/x-dashboard/insights — {scope, preset?|question?, mode?} starts an analysis. */
 export async function POST(request: Request) {
   const body = await readXMutation(request);
   if (!body.ok) return body.response;

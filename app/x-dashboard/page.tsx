@@ -1,8 +1,8 @@
 import { getDb } from "@/lib/db/connection";
 import { listCreators } from "@/lib/creators/repository";
 import { listCategories, listCreatorCategoryAssignments } from "@/lib/categories";
-import { getModelCatalog } from "@/lib/ai/models/catalog";
-import { getAiBackend, getAiChatModeSelection, getXSyncSettings } from "@/lib/settings/settings";
+import { getChatModeModels } from "@/lib/ai/models/mode-labels";
+import { getXSyncSettings } from "@/lib/settings/settings";
 import { getXConnectionStatus } from "@/lib/x/service";
 import { listResearchLists } from "@/lib/x/research/repository";
 import { unreadCounts } from "@/lib/x/dashboard/feed";
@@ -10,23 +10,6 @@ import { XDashboard } from "@/components/x-dashboard/dashboard";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "X Dashboard" };
-
-const PROVIDER_NAMES = { codex: "Codex", claude: "Claude", opencode: "OpenCode" } as const;
-
-/** The AI model insights will use, as Settings → AI configured it. */
-function aiLabel(): string {
-  const db = getDb();
-  const backend = getAiBackend(db);
-  const { model } = getAiChatModeSelection(db, backend, "balanced");
-  try {
-    const found = getModelCatalog()
-      .getSnapshot(backend, db)
-      .models.find((m) => m.id === model);
-    return `${PROVIDER_NAMES[backend]} · ${found?.label ?? model}`;
-  } catch {
-    return `${PROVIDER_NAMES[backend]} · ${model}`;
-  }
-}
 
 export default async function XDashboardPage({
   searchParams,
@@ -65,7 +48,7 @@ export default async function XDashboardPage({
       xConnected={status?.capability === "connected" || status?.capability === "session_only"}
       xHandle={status?.user?.handle ?? null}
       autoSyncMinutes={getXSyncSettings(db).autoSyncMinutes}
-      aiLabel={aiLabel()}
+      aiModels={await getChatModeModels(db)}
       initialInsightId={typeof params.insight === "string" ? params.insight : null}
       initialListId={params.list && /^\d+$/.test(params.list) ? Number(params.list) : null}
     />

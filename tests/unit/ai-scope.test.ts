@@ -5,8 +5,8 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { resolveScope } from "@/lib/ai/scope";
-import { INITIAL_MIGRATIONS } from "@/lib/db/migrations";
+import { resolveScope, resolveSourceScope } from "@/lib/ai/scope";
+import { ALL_MIGRATIONS } from "@/lib/db/migrations";
 import { runMigrations } from "@/lib/db/migrator";
 
 describe("ai scope resolution", () => {
@@ -17,7 +17,7 @@ describe("ai scope resolution", () => {
     dir = mkdtempSync(path.join(tmpdir(), "localtube-ai-scope-"));
     db = new Database(path.join(dir, "test.db"));
     db.pragma("foreign_keys = ON");
-    runMigrations(db, INITIAL_MIGRATIONS);
+    runMigrations(db, ALL_MIGRATIONS);
   });
 
   afterEach(() => {
@@ -70,6 +70,8 @@ describe("ai scope resolution", () => {
           id: "videoKnown1",
           title: "Me at the zoo",
           creator: "Sample Creator",
+          channel: "YouTube",
+          featuring: [],
           publishedAt: "2026-01-15T10:00:00.000Z",
           hasTranscript: true,
           durationSeconds: 19,
@@ -133,6 +135,19 @@ describe("ai scope resolution", () => {
     expect(resolution.videos[0]).toMatchObject({ publishedAt: null, durationSeconds: null });
   });
 
+  it("names the person a channel belongs to, and the channel itself", () => {
+    seedCreator(1, "Jane's Clips");
+    db.prepare("UPDATE creators SET handle = 'janeclips' WHERE id = 1").run();
+    db.prepare("UPDATE creator_profiles SET display_name = 'Jane Doe' WHERE id = 1").run();
+    seedVideo("videoClip0001", 1);
+    seedTranscript("videoClip0001");
+
+    expect(resolveScope(db, ["videoClip0001"]).videos[0]).toMatchObject({
+      creator: "Jane Doe",
+      channel: "YouTube @janeclips",
+    });
+  });
+
   it("joins each video with its own creator", () => {
     seedCreator(1, "First Creator");
     seedCreator(2, "Second Creator");
@@ -164,5 +179,75 @@ describe("ai scope resolution", () => {
     expect(resolution.videos).toHaveLength(600);
     expect(resolution.unknownVideoIds).toEqual([]);
     expect(resolution.missingTranscriptVideoIds).toHaveLength(600);
+  });
+  describe("featuring", () => {
+    function profileOf(creatorId: number): number {
+      return db
+        .prepare<[number], { profile_id: number }>("SELECT profile_id FROM creators WHERE id = ?")
+        .get(creatorId)!.profile_id;
+    }
+
+    function feature(creatorId: number, videoId: string, addedAt?: string): void {
+      db.prepare(
+        "INSERT INTO profile_videos (profile_id, video_id, added_at) VALUES (?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))",
+      ).run(profileOf(creatorId), videoId, addedAt ?? null);
+    }
+
+    function seedHiddenHostVideo(): void {
+      seedCreator(1, "Luke Belmar");
+      seedCreator(2, "PBD Podcast");
+      db.prepare("UPDATE creators SET followed = 0, handle = 'pbdpodcast' WHERE id = 2").run();
+      seedVideo("videoGuest001", 2, { title: "Luke on the podcast" });
+      seedTranscript("videoGuest001");
+      feature(1, "videoGuest001");
+    }
+
+    it("names the featured person and keeps the host as the creator", () => {
+      seedHiddenHostVideo();
+
+      expect(resolveScope(db, ["videoGuest001"]).videos[0]).toMatchObject({
+        creator: "PBD Podcast",
+        channel: "YouTube @pbdpodcast",
+        featuring: ["Luke Belmar"],
+      });
+    });
+
+    it("lists every featured person in the order they were attached", () => {
+      seedHiddenHostVideo();
+      seedCreator(3, "Dana Guest");
+      feature(3, "videoGuest001", "2000-01-01T00:00:00.000Z");
+
+      expect(resolveScope(db, ["videoGuest001"]).videos[0].featuring).toEqual([
+        "Dana Guest",
+        "Luke Belmar",
+      ]);
+    });
+
+    it("leaves a channel's own videos without a featuring list", () => {
+      seedCreator(1, "Sample Creator");
+      seedVideo("videoOwn00001", 1);
+      seedTranscript("videoOwn00001");
+
+      expect(resolveScope(db, ["videoOwn00001"]).videos[0].featuring).toEqual([]);
+    });
+
+    it("fills featuring on mixed-source scopes too", () => {
+      seedHiddenHostVideo();
+      seedVideo("videoOwn00001", 1);
+      seedTranscript("videoOwn00001");
+
+      const { sources } = resolveSourceScope(db, [
+        { kind: "video", id: "videoGuest001" },
+        { kind: "video", id: "videoOwn00001" },
+      ]);
+      expect(sources[0]).toMatchObject({
+        id: "videoGuest001",
+        creator: "PBD Podcast",
+        person: "PBD Podcast",
+        channel: "YouTube @pbdpodcast",
+        featuring: ["Luke Belmar"],
+      });
+      expect(sources[1]).toMatchObject({ id: "videoOwn00001", featuring: [] });
+    });
   });
 });

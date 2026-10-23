@@ -3,6 +3,7 @@
  * state, and AI insights. No server imports — the dashboard UI and the route
  * handlers share these.
  */
+import type { ChatModeId } from "@/lib/ai/chat-modes";
 import type { ResearchPost, ResearchPostType } from "@/lib/x/research/model";
 
 export const PERIODS = ["24h", "7d", "30d", "90d", "all"] as const;
@@ -28,6 +29,9 @@ export function periodBounds(period: Period, now = Date.now()): { since: string;
   const since = period === "all" ? EPOCH : now - PERIOD_DAYS[period] * 86_400_000;
   return { since: new Date(since).toISOString(), until: new Date(now + 60_000).toISOString() };
 }
+/** Days of history a timeframe asks for; null for all time. */
+export const periodDays = (period: Period): number | null =>
+  period === "all" ? null : PERIOD_DAYS[period];
 
 export const SHOW_FILTERS = ["posts", "replies", "everything"] as const;
 export type ShowFilter = (typeof SHOW_FILTERS)[number];
@@ -92,11 +96,40 @@ export interface SyncCreatorState {
   lastSyncedAt: string | null;
   retryAt: string | null;
   message: string | null;
+  /** The X failure code behind "error", "disconnected" or "paused"; null otherwise. */
+  errorCode: string | null;
   newPosts: number;
   /** True while this is the creator's first sync. */
   firstSync: boolean;
   /** Older posts still importing in the background after the recent ones arrived. */
   olderPosts: { since: string; waiting: boolean } | null;
+  /** Every post from here to the last sync is saved (null until the first import finishes). */
+  coveredSince: string | null;
+}
+/**
+ * How much of the timeframe in view is saved. Choosing a longer timeframe
+ * imports the missing older posts in the background.
+ */
+export interface FeedCoverage {
+  /** Start of the timeframe Scope fills automatically (all time stops at 90 days). */
+  since: string;
+  /** Accounts whose saved posts reach back that far. */
+  covered: number;
+  total: number;
+  /** Accounts importing older posts right now. */
+  importing: number;
+  /** How far back every account reaches so far: the latest of their oldest saved days. */
+  reach: string | null;
+}
+/** What the dashboard polls: sync state for the accounts in view and what changed. */
+export interface DashboardStatus {
+  sync: SyncSnapshot;
+  unread: UnreadCounts;
+  /** Changes whenever posts are saved for these accounts, so the feed can refresh in place. */
+  revision: string;
+  coverage: FeedCoverage | null;
+  /** How often Scope checks these accounts for new posts while they are on screen (0: off). */
+  checkEveryMs: number;
 }
 export interface SyncSnapshot {
   state: SyncState;
@@ -135,6 +168,8 @@ export interface InsightSummary {
   status: InsightStatus;
   backend: string;
   model: string;
+  /** The chat mode (Settings → AI model and effort) the latest run used. */
+  mode: ChatModeId;
   error: string | null;
   reportId: number | null;
   createdAt: string;

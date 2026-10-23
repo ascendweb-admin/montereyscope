@@ -44,6 +44,7 @@ declare global {
     scopeApp?: {
       info: () => Promise<DesktopAppResponse<DesktopAppInfo>>;
       openLogs: () => Promise<DesktopAppResponse<{ opened: boolean }>>;
+      exportReportPdf?: (reportId: number) => Promise<DesktopAppResponse<{ canceled: boolean }>>;
       integrationStatus?: () => Promise<DesktopAppResponse<DesktopIntegrationStatus>>;
       installMenuEntry?: () => Promise<DesktopAppResponse<DesktopIntegrationStatus>>;
       removeMenuEntry?: () => Promise<DesktopAppResponse<DesktopIntegrationStatus>>;
@@ -53,6 +54,23 @@ declare global {
 
 export function hasDesktopAppBridge(): boolean {
   return typeof window !== "undefined" && window.scopeApp !== undefined;
+}
+
+export function hasReportPdfBridge(): boolean {
+  return typeof window !== "undefined" && typeof window.scopeApp?.exportReportPdf === "function";
+}
+
+export async function saveReportPdf(
+  reportId: number,
+): Promise<DesktopAppResponse<{ canceled: boolean }>> {
+  if (!window.scopeApp?.exportReportPdf) {
+    return { ok: false, error: { message: "PDF export is available in the Scope desktop app." } };
+  }
+  try {
+    return await window.scopeApp.exportReportPdf(reportId);
+  } catch {
+    return { ok: false, error: { message: "Could not save the report as PDF. Try again." } };
+  }
 }
 
 /** True only when the host exposes the Linux menu-integration channel. */

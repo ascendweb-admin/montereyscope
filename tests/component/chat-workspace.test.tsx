@@ -12,7 +12,7 @@ import type { ReactElement } from "react";
 
 const render = (element: ReactElement) => rtlRender(element, { wrapper: BackgroundChatProvider });
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { ChatWorkspace, type ChatWorkspaceThread } from "@/app/chat/chat-view";
 
@@ -126,12 +126,13 @@ interface ControlledStream {
 }
 
 /** A stream the test extends over time, to watch rendering arrive in steps. */
-function controlledSse(): ControlledStream {
+function controlledSse(signal?: AbortSignal | null): ControlledStream {
   const encoder = new TextEncoder();
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   const stream = new ReadableStream<Uint8Array>({
     start(c) {
       controller = c;
+      signal?.addEventListener("abort", () => c.error(new DOMException("Aborted", "AbortError")));
     },
   });
   return {
@@ -236,6 +237,48 @@ function postBodies(): Array<Record<string, unknown>> {
 }
 
 describe("ChatWorkspace — history sidebar", () => {
+  it("adds a newly stopped conversation to history even before its first answer", async () => {
+    let stream!: ControlledStream;
+    const saved: ChatWorkspaceThread = {
+      id: 11,
+      title: "Stop before the answer",
+      videoIds: [VIDEOS[0].id],
+      mode: "quick",
+      messageCount: 1,
+      createdAt: isoAgo(0),
+      lastMessageAt: isoAgo(0),
+    };
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === "/api/ai/chat") {
+        stream = controlledSse(init?.signal);
+        return stream.response;
+      }
+      if (String(input) === "/api/ai/chat/threads") return jsonResponse({ threads: [saved] });
+      throw new Error(`unexpected fetch: ${String(input)}`);
+    });
+    renderWorkspace({ initialThreads: [], initialVideoIds: [VIDEOS[0].id] });
+    await sendMessage(saved.title);
+    await waitFor(() => expect(stream).toBeDefined());
+    stream.push([
+      { type: "thread", threadId: saved.id, created: true },
+      { type: "user_message", id: 1, content: saved.title, createdAt: "x" },
+    ]);
+    await waitFor(() => expect(window.location.search).toBe("?thread=11"));
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: saved.title, level: 1 })).toBeTruthy(),
+    );
+    expect(screen.getByRole("button", { name: `Delete ${saved.title}` })).toBeTruthy();
+  });
+
+  it("keeps a saved conversation's source count after its live feed cache is cleared", async () => {
+    routeThreads();
+    renderWorkspace({ videos: [], initialThreadId: 7 });
+    await waitFor(() => expect(screen.getByText("First answer")).toBeTruthy());
+    expect(screen.getByText("1 source · Quick")).toBeTruthy();
+    expect(screen.queryByText(/0 sources|0 creators/)).toBeNull();
+  });
+
   it("lists every conversation across every scope, bucketed by recency", async () => {
     renderWorkspace();
 
@@ -272,7 +315,7 @@ describe("ChatWorkspace — history sidebar", () => {
     await waitFor(() => expect(screen.getByText("First answer")).toBeTruthy());
     // The thread title shows in the header and the first user message in the
     // log; the seeded instruction stays server-side knowledge.
-    expect(screen.getByText("First question?", { selector: "h2" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "First question?", level: 1 })).toBeTruthy();
     expect(within(screen.getByRole("log")).getByText("First question?")).toBeTruthy();
     expect(screen.queryByText("SEEDED SYSTEM INSTRUCTION")).toBeNull();
 
@@ -308,6 +351,26 @@ describe("ChatWorkspace — history sidebar", () => {
 });
 
 describe("ChatWorkspace — picking sources for a fresh chat", () => {
+  it("opens the picker in its search box", async () => {
+    // happy-dom skips the focusing a browser does on showModal: focus moves
+    // to the dialog's first focusable element (its Close button), which is
+    // what the search box has to win against.
+    const showModal = HTMLDialogElement.prototype.showModal;
+    const spy = vi.spyOn(HTMLDialogElement.prototype, "showModal").mockImplementation(function (
+      this: HTMLDialogElement,
+    ) {
+      showModal.call(this);
+      this.querySelector<HTMLElement>("button, input")?.focus();
+    });
+    onTestFinished(() => spy.mockRestore());
+    renderWorkspace();
+    fireEvent.click(screen.getAllByRole("button", { name: "Choose sources" })[0]);
+    const dialog = await screen.findByRole("dialog");
+
+    const search = within(dialog).getByRole("searchbox", { name: "Search sources" });
+    await waitFor(() => expect(document.activeElement).toBe(search));
+  });
+
   it("narrows source groups with category filters", async () => {
     renderWorkspace();
     fireEvent.click(screen.getAllByRole("button", { name: "Choose sources" })[0]);
@@ -413,7 +476,9 @@ describe("ChatWorkspace — picking sources for a fresh chat", () => {
           readyForAnalysis: true,
         },
       ],
-      creators: [{ id: 6, displayName: "Tulip King", avatarUrl: null, platform: "x" }],
+      creators: [
+        { id: 6, profileId: 6, displayName: "Tulip King", avatarUrl: null, platform: "x" },
+      ],
     });
     fireEvent.click(screen.getAllByRole("button", { name: "Choose sources" })[0]);
     const dialog = await screen.findByRole("dialog");
@@ -439,9 +504,9 @@ describe("ChatWorkspace — picking sources for a fresh chat", () => {
         },
       ],
       creators: [
-        { id: 1, displayName: "Alpha Channel", avatarUrl: null, platform: "youtube" },
-        { id: 2, displayName: "Beta Channel", avatarUrl: null, platform: "rumble" },
-        { id: 6, displayName: "Tulip King", avatarUrl: null, platform: "x" },
+        { id: 1, profileId: 1, displayName: "Alpha Channel", avatarUrl: null, platform: "youtube" },
+        { id: 2, profileId: 2, displayName: "Beta Channel", avatarUrl: null, platform: "rumble" },
+        { id: 6, profileId: 6, displayName: "Tulip King", avatarUrl: null, platform: "x" },
       ],
     });
     fireEvent.click(screen.getAllByRole("button", { name: "Choose sources" })[0]);
@@ -459,6 +524,57 @@ describe("ChatWorkspace — picking sources for a fresh chat", () => {
     fireEvent.click(within(dialog).getByRole("menuitemradio", { name: /^X/ }));
     expect(within(dialog).getByRole("region", { name: "Tulip King" })).toBeTruthy();
     expect(within(dialog).queryByRole("region", { name: "Beta Channel" })).toBeNull();
+  });
+
+  it("groups one person's accounts across platforms", async () => {
+    renderWorkspace({
+      tweets: [
+        {
+          id: "1900000000000000003",
+          creatorId: 6,
+          authorHandle: "alpha",
+          authorName: "Alpha on X",
+          text: "Alpha's post on X",
+          mediaPreviewUrl: null,
+          categoryIds: [],
+          readyForAnalysis: true,
+        },
+      ],
+      creators: [
+        { id: 1, profileId: 9, displayName: "Alpha", avatarUrl: null, platform: "youtube" },
+        { id: 2, profileId: 2, displayName: "Beta Channel", avatarUrl: null, platform: "rumble" },
+        { id: 6, profileId: 9, displayName: "Alpha", avatarUrl: null, platform: "x" },
+      ],
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Choose sources" })[0]);
+    const dialog = await screen.findByRole("dialog");
+
+    // Two YouTube videos and one X post land in one group for the person.
+    const group = within(dialog).getByRole("region", { name: "Alpha" });
+    expect(within(group).getByText("2 videos · 1 post")).toBeTruthy();
+    expect(within(group).getByText("YouTube, X ·")).toBeTruthy();
+    expect(within(dialog).queryByRole("region", { name: "Alpha on X" })).toBeNull();
+    expect(within(dialog).getByRole("region", { name: "Beta Channel" })).toBeTruthy();
+  });
+
+  it("opens the picker focused on one creator from a creator-page link (?creators=)", async () => {
+    window.history.replaceState(null, "", "/chat?creators=2");
+    renderWorkspace({
+      creators: [
+        { id: 1, profileId: 1, displayName: "Alpha Channel", avatarUrl: null, platform: "youtube" },
+        { id: 2, profileId: 2, displayName: "Beta Channel", avatarUrl: null, platform: "rumble" },
+      ],
+      initialFocusedCreator: 2,
+    });
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("checkbox", { name: "Select Beta interview" })).toBeTruthy();
+    expect(within(dialog).queryByRole("checkbox", { name: "Select Alpha deep dive" })).toBeNull();
+
+    // Closing drops the param so a reload doesn't reopen the picker.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(window.location.search).toBe("");
   });
 
   it("prefills the scope from the collapsed panel's expand (?videos=)", async () => {
@@ -486,6 +602,23 @@ describe("ChatWorkspace — picking sources for a fresh chat", () => {
         { videoIds: ["vidB000001", "vidA000001"], message: "Compare both videos", mode: "deep" },
       ]),
     );
+  });
+
+  it("names the model and effort the selected mode runs on", async () => {
+    routeThreads();
+    renderWorkspace({
+      initialVideoIds: ["vidA000001"],
+      modeModels: {
+        provider: "Claude",
+        modes: { quick: "Haiku 4.5", balanced: "Sonnet 5.5 · Medium", deep: "Opus 5.5 · High" },
+      },
+    });
+
+    const label = await screen.findByRole("link", { name: "Opus 5.5 · High" });
+    expect(label.getAttribute("href")).toBe("/settings");
+    expect(label.getAttribute("title")).toContain("Claude · Opus 5.5 · High");
+    fireEvent.click(screen.getByRole("button", { name: "Quick" }));
+    expect(screen.getByRole("link", { name: "Haiku 4.5" })).toBeTruthy();
   });
 
   it("drops ids the library no longer knows from a preselected scope", () => {

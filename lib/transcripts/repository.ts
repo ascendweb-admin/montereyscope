@@ -55,8 +55,11 @@ export function countTranscripts(db: ScopeDatabase): number {
  * Returns the number of rows removed.
  */
 export function clearAllTranscripts(db: ScopeDatabase): number {
-  const result = db.prepare("DELETE FROM transcripts").run();
-  return Number(result.changes);
+  return db.transaction(() => {
+    // Digests summarize transcripts (lib/ai/digests.ts); they go with them.
+    db.prepare("DELETE FROM video_digests").run();
+    return Number(db.prepare("DELETE FROM transcripts").run().changes);
+  })();
 }
 
 export interface SaveTranscriptInput {

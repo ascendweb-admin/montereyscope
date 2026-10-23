@@ -12,18 +12,25 @@
  */
 import type { ScopeDatabase } from "@/lib/db/connection";
 import type { CreatorPlatform } from "@/lib/creators/repository";
-import {
-  sourceKey,
-  type ContentKind,
-  type SourceRef,
-} from "@/lib/content/model";
+import { sourceKey, type ContentKind, type SourceRef } from "@/lib/content/model";
+import { listFeaturedProfiles } from "@/lib/videos/attribution";
 
 /** One requested video that exists in the cached feed. */
 export interface ScopedVideo {
   id: string;
   title: string;
-  /** Creator display name, joined from the creators table. */
+  /** The person (creator profile) the video's channel belongs to. */
   creator: string;
+  /**
+   * The platform account it was published on, e.g. "YouTube @janedoe" — a
+   * person's sources can span several platforms.
+   */
+  channel?: string | null;
+  /**
+   * People the video features without owning its channel (an interview or
+   * guest appearance), in label order. Empty for a channel's own videos.
+   */
+  featuring: string[];
   /** ISO 8601 publication timestamp, or null when unknown. */
   publishedAt: string | null;
   hasTranscript: boolean;
@@ -45,16 +52,32 @@ interface ScopeRow {
   id: string;
   title: string;
   creator: string;
+  platform: CreatorPlatform | null;
+  handle: string | null;
   published_at: string | null;
   duration_seconds: number | null;
   has_transcript: number;
 }
 
-function toScopedVideo(row: ScopeRow): ScopedVideo {
+const PLATFORM_NAMES: Record<CreatorPlatform, string> = {
+  youtube: "YouTube",
+  rumble: "Rumble",
+  x: "X",
+};
+
+/** "YouTube @janedoe", or just the platform when the handle is unknown. */
+export function describeChannel(platform: CreatorPlatform | null, handle: string | null): string {
+  const name = PLATFORM_NAMES[platform ?? "youtube"];
+  return handle ? `${name} @${handle.replace(/^@/, "")}` : name;
+}
+
+function toScopedVideo(row: ScopeRow, featuring: readonly string[]): ScopedVideo {
   return {
     id: row.id,
     title: row.title,
     creator: row.creator,
+    channel: describeChannel(row.platform, row.handle),
+    featuring: [...featuring],
     publishedAt: row.published_at,
     hasTranscript: Number(row.has_transcript) === 1,
     durationSeconds: row.duration_seconds === null ? null : Number(row.duration_seconds),
@@ -78,11 +101,13 @@ export function resolveScope(db: ScopeDatabase, videoIds: readonly string[]): Sc
     const placeholders = chunk.map(() => "?").join(", ");
     const rows = db
       .prepare<[...string[]], ScopeRow>(
-        `SELECT v.id, v.title, c.display_name AS creator,
+        `SELECT v.id, v.title, COALESCE(p.display_name, c.display_name) AS creator,
+                c.platform, c.handle,
                 v.published_at, v.duration_seconds,
                 (t.video_id IS NOT NULL) AS has_transcript
          FROM videos v
          JOIN creators c ON c.id = v.creator_id
+         LEFT JOIN creator_profiles p ON p.id = c.profile_id
          LEFT JOIN transcripts t ON t.video_id = v.id
          WHERE v.id IN (${placeholders})`,
       )
@@ -92,6 +117,7 @@ export function resolveScope(db: ScopeDatabase, videoIds: readonly string[]): Sc
     }
   }
 
+  const featured = listFeaturedProfiles(db, [...known.keys()]);
   const videos: ScopedVideo[] = [];
   const unknownVideoIds: string[] = [];
   const missingTranscriptVideoIds: string[] = [];
@@ -101,7 +127,12 @@ export function resolveScope(db: ScopeDatabase, videoIds: readonly string[]): Sc
       unknownVideoIds.push(id);
       continue;
     }
-    videos.push(toScopedVideo(row));
+    videos.push(
+      toScopedVideo(
+        row,
+        (featured.get(id) ?? []).map((profile) => profile.displayName),
+      ),
+    );
     if (Number(row.has_transcript) !== 1) {
       missingTranscriptVideoIds.push(id);
     }
@@ -135,6 +166,16 @@ export interface ScopedSource {
   /** Creator display name (for tweets: the post's author). */
   creator: string;
   creatorId: number;
+  /**
+   * The person the saved account belongs to — for videos the same as
+   * `creator`; for posts the person whose timeline holds it (a repost's
+   * author is someone else).
+   */
+  person: string;
+  /** The saved platform account, e.g. "YouTube @janedoe" or "X @jane". */
+  channel: string;
+  /** Video only (empty for posts): people featured on someone else's channel. */
+  featuring: string[];
   platform: CreatorPlatform;
   canonicalUrl: string;
   publishedAt: string | null;
@@ -144,6 +185,8 @@ export interface ScopedSource {
   durationSeconds?: number | null;
   /** Tweet only: author handle without the @. */
   authorHandle?: string;
+  /** Tweet only: the saved account's handle without the @, when known. */
+  accountHandle?: string | null;
   /** Tweet only: whether the payload is truncated/unavailable. */
   contentStatus?: "summary" | "complete" | "unavailable";
 }
@@ -159,10 +202,12 @@ export interface SourceScopeResolution {
 
 const VIDEO_SCOPE_SELECT = `
   SELECT v.id, v.title, v.url, v.published_at, v.duration_seconds,
-         c.id AS creator_id, c.display_name AS creator, c.platform AS platform,
+         c.id AS creator_id, COALESCE(p.display_name, c.display_name) AS creator,
+         c.platform AS platform, c.handle AS handle,
          (t.video_id IS NOT NULL) AS has_content
   FROM videos v
   JOIN creators c ON c.id = v.creator_id
+  LEFT JOIN creator_profiles p ON p.id = c.profile_id
   LEFT JOIN transcripts t ON t.video_id = v.id
   WHERE v.id IN (%PLACEHOLDERS%)
 `;
@@ -170,14 +215,18 @@ const VIDEO_SCOPE_SELECT = `
 const TWEET_SCOPE_SELECT = `
   SELECT tw.id, tw.text, tw.url, tw.published_at, tw.author_handle, tw.author_name,
          tw.content_status, tw.in_reply_to_handle,
-         MIN(ct.creator_id) AS creator_id,
-         MIN(c.display_name) AS creator,
-         MIN(c.platform) AS platform
+         ct.creator_id AS creator_id,
+         COALESCE(p.display_name, c.display_name) AS person,
+         c.handle AS handle
   FROM tweets tw
   JOIN creator_tweets ct ON ct.tweet_id = tw.id
   JOIN creators c ON c.id = ct.creator_id
+  LEFT JOIN creator_profiles p ON p.id = c.profile_id
   WHERE tw.id IN (%PLACEHOLDERS%)
-  GROUP BY tw.id
+    -- A post in several saved timelines is attributed to the oldest account.
+    AND ct.creator_id = (
+      SELECT MIN(ct2.creator_id) FROM creator_tweets ct2 WHERE ct2.tweet_id = tw.id
+    )
 `;
 
 interface VideoScopeRow {
@@ -189,6 +238,7 @@ interface VideoScopeRow {
   creator_id: number;
   creator: string;
   platform: CreatorPlatform | null;
+  handle: string | null;
   has_content: number;
 }
 
@@ -202,8 +252,8 @@ interface TweetScopeRow {
   content_status: "summary" | "complete" | "unavailable";
   in_reply_to_handle: string | null;
   creator_id: number;
-  creator: string;
-  platform: CreatorPlatform | null;
+  person: string;
+  handle: string | null;
 }
 
 /** First non-empty line of a post, trimmed to a display-friendly length. */
@@ -256,12 +306,24 @@ export function resolveSourceScope(
         title: row.title,
         creator: row.creator,
         creatorId: Number(row.creator_id),
+        person: row.creator,
+        channel: describeChannel(row.platform, row.handle),
+        featuring: [],
         platform: row.platform ?? "youtube",
         canonicalUrl: row.url,
         publishedAt: row.published_at,
         readyForAnalysis: Number(row.has_content) === 1,
         durationSeconds: row.duration_seconds === null ? null : Number(row.duration_seconds),
       });
+    }
+  }
+
+  // One extra chunked query, kept apart from the main SELECT so a video with
+  // no attribution costs nothing and the SELECT stays unchanged.
+  for (const [videoId, people] of listFeaturedProfiles(db, [...videos.keys()])) {
+    const source = videos.get(videoId);
+    if (source) {
+      source.featuring = people.map((profile) => profile.displayName);
     }
   }
 
@@ -281,11 +343,15 @@ export function resolveSourceScope(
         title: tweetTitle(row.text),
         creator: row.author_name,
         creatorId: Number(row.creator_id),
+        person: row.person,
+        channel: describeChannel("x", row.handle),
+        featuring: [],
         platform: "x",
         canonicalUrl: row.url,
         publishedAt: row.published_at,
         readyForAnalysis: row.content_status === "complete" && row.text.trim().length > 0,
         authorHandle: row.author_handle,
+        accountHandle: row.handle,
         contentStatus: row.content_status,
       });
     }

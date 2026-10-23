@@ -6,11 +6,14 @@ import { Database, Trash2 } from "lucide-react";
 import {
   clearFeedMetadataAction,
   clearTranscriptCacheAction,
+  getCacheCountsAction,
+  getCacheSizesAction,
   clearTweetCacheAction,
 } from "@/app/actions/maintenance";
 import { saveRecentItemsPerTabAction } from "@/app/actions/settings";
 import { AiBackendSetting } from "@/app/settings/ai-backend-setting";
 import { XConnectionCard } from "@/app/settings/x-connection-card";
+import { XSyncDetails } from "@/app/settings/x-sync-details";
 import type { XConnectionStatus } from "@/lib/x/model";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Button } from "@/components/ui/button";
@@ -27,6 +30,8 @@ interface SettingsFormProps {
   currentValue: number;
   cachedTranscriptCount: number;
   cachedVideoCount: number;
+  /** Videos added to Other videos, which clearing feed metadata keeps. */
+  keptVideoCount: number;
   cachedTweetCount: number;
   cacheSizes: CacheSizes;
   aiBackend: AiBackendId;
@@ -50,6 +55,7 @@ export function SettingsForm({
   currentValue,
   cachedTranscriptCount,
   cachedVideoCount,
+  keptVideoCount,
   cachedTweetCount,
   cacheSizes,
   aiBackend,
@@ -145,9 +151,12 @@ export function SettingsForm({
 
       <XConnectionCard initialStatus={xStatus} cachedTweetCount={cachedTweetCount} />
 
+      <XSyncDetails />
+
       <LocalCacheSection
         initialTranscriptCount={cachedTranscriptCount}
         initialVideoCount={cachedVideoCount}
+        keptVideoCount={keptVideoCount}
         initialTweetCount={cachedTweetCount}
         initialSizes={cacheSizes}
         showToast={showToast}
@@ -173,15 +182,22 @@ export function SettingsForm({
   );
 }
 
+/** "3 videos you added to Other videos are kept." — what feed clearing spares. */
+function keptVideosNote(count: number): string {
+  return `${count} ${count === 1 ? "video" : "videos"} you added to Other videos ${count === 1 ? "is" : "are"} kept.`;
+}
+
 function LocalCacheSection({
   initialTranscriptCount,
   initialVideoCount,
+  keptVideoCount,
   initialTweetCount,
   initialSizes,
   showToast,
 }: {
   initialTranscriptCount: number;
   initialVideoCount: number;
+  keptVideoCount: number;
   initialTweetCount: number;
   initialSizes: CacheSizes;
   showToast: (message: string, tone: ToastTone) => void;
@@ -225,15 +241,33 @@ function LocalCacheSection({
       return;
     }
     setVideoCount(0);
-    setTranscriptCount(0);
-    setSizes((current) => ({ ...current, cachedVideoBytes: 0, cachedTranscriptBytes: 0 }));
+    if (keptVideoCount === 0) {
+      setTranscriptCount(0);
+      setSizes((current) => ({ ...current, cachedVideoBytes: 0, cachedTranscriptBytes: 0 }));
+    }
     setConfirming(null);
     showToast(
       outcome.deletedCount === 0
-        ? "Nothing to clear — no feed metadata is cached."
+        ? keptVideoCount === 0
+          ? "Nothing to clear — no feed metadata is cached."
+          : "Nothing to clear — only videos you added to Other videos are cached."
         : `Cleared cached entries for ${outcome.deletedCount} ${outcome.deletedCount === 1 ? "video" : "videos"}. Saved creators were kept.`,
       "success",
     );
+    if (keptVideoCount > 0) {
+      // Kept videos keep their transcripts, so read back what is left. Best
+      // effort: the figures are corrected on the next visit anyway.
+      try {
+        const [counts, freshSizes] = await Promise.all([
+          getCacheCountsAction(),
+          getCacheSizesAction(),
+        ]);
+        setTranscriptCount(counts.cachedTranscripts);
+        setSizes(freshSizes);
+      } catch {
+        // Leave the previous figures in place.
+      }
+    }
   };
 
   const clearTweets = async (): Promise<void> => {
@@ -315,6 +349,7 @@ function LocalCacheSection({
                 : `${videoCount} ${videoCount === 1 ? "entry" : "entries"} stored across all channels.`}{" "}
               Clearing empties channel pages until you press <strong>Refresh feed</strong>, which
               fetches metadata again. Saved creators stay.
+              {keptVideoCount > 0 && ` ${keptVideosNote(keptVideoCount)}`}
             </p>
           </div>
           <Button
@@ -397,6 +432,7 @@ function LocalCacheSection({
           channel pages will show nothing until you press <strong>Refresh feed</strong> again — that
           refetches titles, thumbnails, dates, and durations with yt-dlp. Cached transcripts go with
           their videos.
+          {keptVideoCount > 0 && ` ${keptVideosNote(keptVideoCount)}`}
         </p>
         <p className="flex items-start gap-2 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
           <Database aria-hidden="true" className="mt-0.5 size-4 shrink-0" />

@@ -113,13 +113,15 @@ function createXConnection({
     debounceTimer = null;
   let queue = Promise.resolve(),
     storageQueue = Promise.resolve(),
-    retryAt = 0,
     closed = false,
     clearing = Promise.resolve();
   // x.com homepage + ondemand bundle for transaction ids: memory only, never on disk.
   let transactionSeed = null;
   const active = new Set();
   const watchers = new Map();
+  // X rate-limits each endpoint separately: a spent timeline quota must not block profile
+  // lookups or people search, so a 429 holds only the operation that got it.
+  const retryAt = new Map();
 
   function newIsolatedSession() {
     const created = session.fromPartition(`scope-x-${crypto.randomUUID()}`, { cache: false });
@@ -272,9 +274,10 @@ function createXConnection({
       .catch(() => {})
       .then(async () => {
         if (closed || expectedGeneration !== generation) throw failure("cancelled");
-        if (Date.now() < retryAt) {
+        const heldUntil = retryAt.get(operation) ?? 0;
+        if (Date.now() < heldUntil) {
           const error = failure("rate_limited");
-          error.retryAfterSeconds = Math.ceil((retryAt - Date.now()) / 1000);
+          error.retryAfterSeconds = Math.ceil((heldUntil - Date.now()) / 1000);
           throw error;
         }
         const controller = new AbortController();
@@ -301,7 +304,7 @@ function createXConnection({
           if (expectedGeneration === generation) {
             if (error.code !== "cancelled") log(describeFailure(operation, error));
             if (error.code === "rate_limited")
-              retryAt = Date.now() + 1000 * (error.retryAfterSeconds ?? 60);
+              retryAt.set(operation, Date.now() + 1000 * (error.retryAfterSeconds ?? 60));
             if (
               ["session_expired", "verification_required"].includes(error.code) &&
               phase === "connected"

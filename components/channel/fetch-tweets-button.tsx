@@ -11,6 +11,7 @@ import { refreshCreatorTweetsAction } from "@/components/background/operations";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/pending";
 import { useToast } from "@/components/ui/toast";
+import { isTemporaryXError, X_BUSY_MESSAGE } from "@/lib/x/model";
 
 interface FetchTweetsButtonProps {
   creatorId: number;
@@ -42,7 +43,8 @@ export function FetchTweetsButton({
     const outcome = await refreshCreatorTweetsAction(creatorId, "recent");
     setPending(false);
     if (!outcome.ok) {
-      showToast(outcome.message ?? `Could not fetch ${creatorName}'s posts.`, "error");
+      if (isTemporaryXError(outcome.errorCode)) showToast(X_BUSY_MESSAGE, "info");
+      else showToast(outcome.message ?? `Could not fetch ${creatorName}'s posts.`, "error");
       return;
     }
     if (outcome.status === "already_in_progress") {

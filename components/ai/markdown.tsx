@@ -45,7 +45,7 @@ const QUOTE_PATTERN = /^>\s?(.*)$/;
  * whole (and rendered as one chip) instead of leaving stranded brackets.
  */
 const INLINE_PATTERN =
-  /(\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\*[^*\n]+\*|\((?:\/|[\w@.-]+\/)*(?:transcripts|tweets)\/[\w-]+\.txt\)|\b(?:\/|[\w@.-]+\/)*(?:transcripts|tweets)\/[\w-]+\.txt\b)/g;
+  /(\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\*[^*\n]+\*|\((?:\/|[\w@.-]+\/)*(?:transcripts|tweets)\/[\w-]+\.txt\)|\[(?:\/|[\w@.-]+\/)*(?:transcripts|tweets)\/[\w-]+\.txt\]|\b(?:\/|[\w@.-]+\/)*(?:transcripts|tweets)\/[\w-]+\.txt\b)/g;
 /** A whole token that is one source reference; group 1 is the folder. */
 const CITATION_PATTERN = /^(?:\/|[\w@.-]+\/)*(transcripts|tweets)\/([A-Za-z0-9_-]+)\.txt$/;
 
@@ -130,8 +130,9 @@ function parseBlocks(text: string): Block[] {
 
 /**
  * Resolves a token to a scope source when it is a source-file reference.
- * Parentheses captured around the reference count as citation punctuation,
- * not prose — `(transcripts/….txt)` cites exactly like the bare path. Tweet
+ * Parentheses or brackets captured around the reference count as citation
+ * punctuation, not prose — `(transcripts/….txt)` and the post bundles'
+ * `[tweets/….txt]` id cite exactly like the bare path. Tweet
  * references (`tweets/….txt`) resolve through the namespaced index key so a
  * numeric post id can never collide with a video id.
  */
@@ -139,7 +140,10 @@ function citationSource(token: string, sources: SourceIndex | undefined): ChatSo
   if (!sources) {
     return null;
   }
-  const inner = token.startsWith("(") && token.endsWith(")") ? token.slice(1, -1) : token;
+  const wrapped =
+    (token.startsWith("(") && token.endsWith(")")) ||
+    (token.startsWith("[") && token.endsWith("]"));
+  const inner = wrapped ? token.slice(1, -1) : token;
   const match = CITATION_PATTERN.exec(inner);
   if (!match) {
     return null;
@@ -152,8 +156,21 @@ function citationSource(token: string, sources: SourceIndex | undefined): ChatSo
   return sources.get(id) ?? sources.get(`video:${id}`) ?? null;
 }
 
-/** Sentinel marking a dropped repeat citation, tidied away before render. */
-const DROP = Symbol("repeat citation");
+/** Sentinel marking a dropped citation, tidied away before render. */
+const DROP = Symbol("dropped citation");
+
+/**
+ * A mention of a post bundle file (`tweets/<handle>.txt`, `tweets/<handle>-2.txt`)
+ * rather than of one post: it names no source, so with a source index it is
+ * tidied away like a repeat instead of showing a raw path.
+ */
+function isBundleReference(token: string): boolean {
+  const wrapped =
+    (token.startsWith("(") && token.endsWith(")")) ||
+    (token.startsWith("[") && token.endsWith("]"));
+  const match = CITATION_PATTERN.exec(wrapped ? token.slice(1, -1) : token);
+  return match !== null && match[1] === "tweets" && !/^\d+$/.test(match[2]);
+}
 
 /**
  * A repeat citation of an already-cited source renders as nothing — one chip
@@ -218,6 +235,9 @@ function renderInline(
     }
     if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
       const inner = part.slice(1, -1);
+      if (sources && isBundleReference(inner)) {
+        return DROP;
+      }
       const source = citationSource(inner, sources);
       if (source) {
         if (cited.has(source.id)) {
@@ -231,6 +251,9 @@ function renderInline(
           {inner}
         </code>
       );
+    }
+    if (sources && isBundleReference(part)) {
+      return DROP;
     }
     const source = citationSource(part, sources);
     if (source) {

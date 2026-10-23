@@ -89,6 +89,10 @@ export function PostCitation({ ids, sources }: { ids: readonly string[]; sources
 
   useEffect(() => clearTimer, [clearTimer]);
   useEffect(() => {
+    if (pinned && card)
+      cardRef.current?.querySelector<HTMLAnchorElement>("a")?.focus({ preventScroll: true });
+  }, [pinned, card]);
+  useEffect(() => {
     if (!card) return;
     const outside = (event: Event) => {
       const target = event.target as Node;
@@ -98,16 +102,29 @@ export function PostCitation({ ids, sources }: { ids: readonly string[]; sources
       if (outside(event)) close();
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+        pillRef.current?.focus({ preventScroll: true });
+      }
     };
     // The card is fixed to the viewport: scrolling anything else would strand it.
     const onScroll = (event: Event) => {
+      if (outside(event)) {
+        if (cardRef.current?.contains(document.activeElement))
+          pillRef.current?.focus({ preventScroll: true });
+        close();
+      }
+    };
+    const onFocus = (event: FocusEvent) => {
       if (outside(event)) close();
     };
+    document.addEventListener("focusin", onFocus);
     document.addEventListener("pointerdown", onPointer);
     document.addEventListener("keydown", onKey);
     document.addEventListener("scroll", onScroll, true);
     return () => {
+      document.removeEventListener("focusin", onFocus);
       document.removeEventListener("pointerdown", onPointer);
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("scroll", onScroll, true);
@@ -149,7 +166,11 @@ export function PostCitation({ ids, sources }: { ids: readonly string[]; sources
           {groups.slice(0, 3).map((group, index) => (
             <CreatorAvatar
               key={group[0].creatorId}
-              creator={{ id: group[0].creatorId, displayName: group[0].authorName, avatarUrl: group[0].authorAvatarUrl }}
+              creator={{
+                id: group[0].creatorId,
+                displayName: group[0].authorName,
+                avatarUrl: group[0].authorAvatarUrl,
+              }}
               className={cn("size-4 text-[7px]", index > 0 && "-ml-1.5 ring-1 ring-background")}
             />
           ))}
@@ -167,6 +188,13 @@ export function PostCitation({ ids, sources }: { ids: readonly string[]; sources
               ref={cardRef}
               role="dialog"
               aria-label={`Cited post${posts.length === 1 ? "" : "s"}`}
+              onBlur={(event) => {
+                if (
+                  !pillRef.current?.contains(event.relatedTarget) &&
+                  !cardRef.current?.contains(event.relatedTarget)
+                )
+                  close();
+              }}
               onMouseEnter={clearTimer}
               onMouseLeave={hoverClose}
               style={{ left: card.left, top: card.top, bottom: card.bottom, width: CARD_WIDTH }}
@@ -181,7 +209,11 @@ export function PostCitation({ ids, sources }: { ids: readonly string[]; sources
                 <span key={source.id} className="block border-b px-3.5 py-3 last:border-b-0">
                   <span className="flex items-center gap-2">
                     <CreatorAvatar
-                      creator={{ id: source.creatorId, displayName: source.authorName, avatarUrl: source.authorAvatarUrl }}
+                      creator={{
+                        id: source.creatorId,
+                        displayName: source.authorName,
+                        avatarUrl: source.authorAvatarUrl,
+                      }}
                       className="size-6 text-[9px]"
                     />
                     <span className="min-w-0 flex-1 truncate leading-tight">
@@ -219,7 +251,6 @@ export function PostCitation({ ids, sources }: { ids: readonly string[]; sources
   );
 }
 
-
 function renderInline(nodes: Inline[], sources: Sources, key = "i"): ReactNode[] {
   return nodes.map((node, index) => {
     const k = `${key}-${index}`;
@@ -247,7 +278,7 @@ function renderInline(nodes: Inline[], sources: Sources, key = "i"): ReactNode[]
             href={node.href}
             target="_blank"
             rel="noreferrer"
-            className="text-sky-600 underline-offset-2 hover:underline dark:text-sky-400"
+            className="text-sky-700 underline-offset-2 hover:underline dark:text-sky-400"
           >
             {renderInline(node.children, sources, k)}
           </a>
@@ -318,7 +349,9 @@ function renderBlock(block: Block, sources: Sources, key: string): ReactNode {
       if (
         block.header.length > 3 ||
         (block.header.length === 3 &&
-          block.rows.some((row) => row.some((cell) => cell.replace(CITATION_PATTERN, "").length > PROSE_CELL)))
+          block.rows.some((row) =>
+            row.some((cell) => cell.replace(CITATION_PATTERN, "").length > PROSE_CELL),
+          ))
       ) {
         const groups: Array<{ title: string; rows: string[][] }> = [];
         for (const row of block.rows) {
@@ -335,7 +368,14 @@ function renderBlock(block: Block, sources: Sources, key: string): ReactNode {
                 renderInline(withoutCitations(parseInline(text), cited), sources, k);
               const title = group.title ? cell(group.title, `${key}-${g}-t`) : null;
               const rows = group.rows.map((row, r) => (
-                <dl key={r} className={cn("space-y-2", (group.title || r) && "mt-2.5", r && "border-t pt-2.5")}>
+                <dl
+                  key={r}
+                  className={cn(
+                    "space-y-2",
+                    (group.title || r) && "mt-2.5",
+                    r && "border-t pt-2.5",
+                  )}
+                >
                   {row.slice(1).map((value, c) =>
                     value.trim() ? (
                       <div key={c} className="min-w-0">
@@ -360,7 +400,11 @@ function renderBlock(block: Block, sources: Sources, key: string): ReactNode {
                       <span className="mr-1">Sources</span>
                       {creators.length ? (
                         creators.map((posts) => (
-                          <PostCitation key={posts[0].creatorId} ids={posts.map((post) => post.id)} sources={sources} />
+                          <PostCitation
+                            key={posts[0].creatorId}
+                            ids={posts.map((post) => post.id)}
+                            sources={sources}
+                          />
                         ))
                       ) : (
                         <PostCitation ids={cited} sources={sources} />

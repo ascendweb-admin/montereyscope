@@ -24,7 +24,7 @@ export {
   materializeSources,
   materializeTranscripts,
   maxMaterializedBytes,
-  renderTweetFile,
+  renderPostBlock,
   TRUNCATION_MARKER,
 } from "./materialize";
 export type {
@@ -114,17 +114,32 @@ export type {
   ReportJobDeps,
   ReportMeta,
   ReportOptions,
+  ReportOrigin,
   ReportQueue,
   ReportScopeInput,
   ReportSource,
   ReportVideo,
 } from "./reports";
+export { searchReportText, syncReportIndex } from "./report-index";
+export type { ReportTextMatch } from "./report-index";
+export type { ReportOutlineEntry } from "./report-document";
+export type { ReportCategory, ReportCreator } from "./report-people";
 export {
-  MAX_SCOPE_SOURCES,
+  MAX_SCOPE_POSTS,
+  MAX_SCOPE_VIDEO_HOURS,
   MAX_SCOPE_VIDEOS,
-  formatScopeCapMessage,
+  estimateScopeLoad,
   formatSkippedSources,
   planChatScope,
   planSourceScope,
+  readingBudgetTokens,
+  scopeLimitProblem,
 } from "./scope-selection";
-export type { ScopeCandidate, ScopePlan, SourceCandidate, SourcePlan } from "./scope-selection";
+export type {
+  ScopeCandidate,
+  ScopeLoad,
+  ScopePlan,
+  ScopeReading,
+  SourceCandidate,
+  SourcePlan,
+} from "./scope-selection";

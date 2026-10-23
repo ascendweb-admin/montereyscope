@@ -44,6 +44,7 @@ export default async function SettingsPage() {
         currentValue={recentItemsPerTab}
         cachedTranscriptCount={counts.cachedTranscripts}
         cachedVideoCount={counts.cachedVideos}
+        keptVideoCount={counts.keptVideos}
         cachedTweetCount={counts.cachedTweets}
         cacheSizes={sizes}
         aiBackend={aiBackend}

@@ -50,3 +50,34 @@ export function exactSearchExpression(search: ExactSearch): string {
   // Quoted speech stays separately indexed and cannot count as authored mentions.
   return `text : (${expression})`;
 }
+
+/** Unicode61 does not segment CJK text into words. Match its literal phrases
+ * within authored text, while keeping word boundaries/FTS behavior elsewhere. */
+export function exactSearchFilter(search: ExactSearch): {
+  sql: string;
+  params: Record<string, string>;
+} {
+  const cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+  if (![...search.terms, ...search.aliases, ...search.exclusions].some((term) => cjk.test(term))) {
+    return {
+      sql: "text_rowid IN (SELECT rowid FROM x_tweet_text WHERE x_tweet_text MATCH @match)",
+      params: { match: exactSearchExpression(search) },
+    };
+  }
+  const params: Record<string, string> = {};
+  let index = 0;
+  const phrase = (term: string): string => {
+    const key = `phrase${index++}`;
+    params[key] = cjk.test(term) ? term : `text : ${literalPhrase(term)}`;
+    return cjk.test(term)
+      ? `instr(lower(text), lower(@${key})) > 0`
+      : `text_rowid IN (SELECT rowid FROM x_tweet_text WHERE x_tweet_text MATCH @${key})`;
+  };
+  const required = search.terms.map(phrase);
+  if (search.aliases.length) required.push(`(${search.aliases.map(phrase).join(" OR ")})`);
+  const excluded = search.exclusions.map(phrase);
+  return {
+    sql: `(${required.join(" AND ")})${excluded.length ? ` AND NOT (${excluded.join(" OR ")})` : ""}`,
+    params,
+  };
+}

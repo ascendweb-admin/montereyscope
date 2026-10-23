@@ -140,7 +140,6 @@ function firstString(value: unknown): string | null {
  * environment inference uses, so the report matches what a chat turn sees.
  */
 export async function getClaudeAuthStatus(): Promise<ClaudeAuthStatus> {
-  const macOS = process.platform === "darwin";
   try {
     const launch = await resolveClaudeLaunch();
     if (launch.kind === "unresolved") {
@@ -150,38 +149,24 @@ export async function getClaudeAuthStatus(): Promise<ClaudeAuthStatus> {
     const versionProbe = await execFileStatus(
       launch.command,
       [...launch.argsPrefix, "--version"],
-      macOS ? 15_000 : 4_000,
+      4_000,
       env,
     );
     if (!versionProbe.ran) {
-      return {
-        ...EMPTY_CLAUDE_STATUS,
-        ...(macOS && versionProbe.failure !== "missing_executable" ? { statusError: true } : {}),
-      };
+      return { ...EMPTY_CLAUDE_STATUS };
     }
     const version =
       parseClaudeVersion(versionProbe.stdout) ?? parseClaudeVersion(versionProbe.stderr);
     const compatible = isSupportedClaudeVersion(version);
-    if (macOS && (versionProbe.failure || versionProbe.exitCode !== 0 || version === null)) {
-      return { ...EMPTY_CLAUDE_STATUS, installed: true, version, compatible, statusError: true };
-    }
 
     const statusProbe = await execFileStatus(
       launch.command,
       [...launch.argsPrefix, "auth", "status", "--json"],
-      macOS ? 30_000 : 10_000,
+      10_000,
       env,
     );
     const parsed = extractJsonObject(`${statusProbe.stdout}\n${statusProbe.stderr}`);
-    if (
-      !parsed ||
-      typeof parsed.loggedIn !== "boolean" ||
-      (macOS &&
-        (!statusProbe.ran ||
-          statusProbe.failure ||
-          (statusProbe.exitCode !== 0 &&
-            !(statusProbe.exitCode === 1 && parsed.loggedIn === false))))
-    ) {
+    if (!parsed || typeof parsed.loggedIn !== "boolean") {
       return { ...EMPTY_CLAUDE_STATUS, installed: true, version, compatible, statusError: true };
     }
     const authenticated = parsed.loggedIn === true;
@@ -214,7 +199,7 @@ export async function getClaudeAuthStatus(): Promise<ClaudeAuthStatus> {
   } catch (error) {
     // One provider's failure must never hide the others.
     console.error("[ai/auth] claude status failed:", error);
-    return { ...EMPTY_CLAUDE_STATUS, ...(macOS ? { statusError: true } : {}) };
+    return { ...EMPTY_CLAUDE_STATUS };
   }
 }
 

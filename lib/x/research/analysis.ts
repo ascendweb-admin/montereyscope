@@ -49,6 +49,8 @@ import {
   insertBatch,
   nextBatch,
   readJob,
+  readJobCore,
+  type AnalysisJobCore,
   saveBatch,
   saveState,
   analysisPostResults,
@@ -110,6 +112,8 @@ const safeProviderReason = (error: unknown) => {
     return "The AI provider reached a usage limit. Resume manually when available.";
   if (/auth|not_found|signing/.test(kind))
     return "The AI provider is unavailable. Check Settings and Resume manually.";
+  if (kind === "output_truncated")
+    return "The model ran out of output budget before finishing this batch. Pick a lower reasoning depth, then Resume manually.";
   if (/timeout/.test(kind))
     return "The AI call timed out. Completed checkpoints are saved; Resume manually.";
   return "The AI provider could not complete this batch. Completed checkpoints are saved; Resume manually.";
@@ -375,7 +379,7 @@ export class ResearchAnalysisEngine {
     };
   }
   private validate(
-    job: AnalysisJob,
+    job: AnalysisJobCore,
     batch: AnalysisBatch,
     output: Record<string, unknown>,
   ): unknown {
@@ -412,11 +416,11 @@ export class ResearchAnalysisEngine {
     const db = this.deps.database(),
       started = Date.now();
     let runner: AiRunner | null = null;
-    const attemptStart = this.job(id).state;
+    const attemptStart = readJobCore(db, id).state;
     const initialCalls = attemptStart.calls,
       initialTokens = attemptStart.chargedTokens;
     while (!signal.aborted && !this.stopped) {
-      let job = this.job(id);
+      let job = readJobCore(db, id);
       if (job.state.status === "cancelled" || job.state.status === "paused") return;
       if (Date.now() - started >= job.config.limits.maxRunMs) {
         this.pause(id, "Execution time budget reached. Resume manually from saved checkpoints.");
@@ -503,8 +507,9 @@ export class ResearchAnalysisEngine {
           for await (const event of run.events) void event;
         })();
         const [result] = await Promise.all([run.completed, consume]);
-        if (signal.aborted || ["cancelled", "paused"].includes(this.job(id).state.status)) return;
-        job = this.job(id);
+        if (signal.aborted || ["cancelled", "paused"].includes(readJobCore(db, id).state.status))
+          return;
+        job = readJobCore(db, id);
         const reported = usageTokens(result.usage);
         if (reported !== null) {
           job.state.reportedTokens += reported;
@@ -520,7 +525,8 @@ export class ResearchAnalysisEngine {
           this.assertDisk(id);
         })();
       } catch (error) {
-        if (signal.aborted || ["cancelled", "paused"].includes(this.job(id).state.status)) return;
+        if (signal.aborted || ["cancelled", "paused"].includes(readJobCore(db, id).state.status))
+          return;
         const contextLimit =
           /context.{0,30}(limit|length|window)|too many tokens|output budget|exceeds.*output/i.test(
             error instanceof Error ? error.message : "",
@@ -576,7 +582,7 @@ export class ResearchAnalysisEngine {
         "The analysis reached its configured disk budget. Increase it and Resume from saved checkpoints.",
       );
   }
-  private addInputs(job: AnalysisJob, phase: AnalysisBatch["phase"], inputs: BatchInput[]) {
+  private addInputs(job: AnalysisJobCore, phase: AnalysisBatch["phase"], inputs: BatchInput[]) {
     const db = this.deps.database();
     db.transaction(() => {
       const ordinal =
@@ -595,7 +601,7 @@ export class ResearchAnalysisEngine {
       this.assertDisk(job.id);
     })();
   }
-  private splitBatch(job: AnalysisJob, batch: AnalysisBatch, contextLimit: boolean): boolean {
+  private splitBatch(job: AnalysisJobCore, batch: AnalysisBatch, contextLimit: boolean): boolean {
     const input = batch.input;
     let inputs: BatchInput[];
     if (batch.phase === "scan") {
@@ -643,7 +649,7 @@ export class ResearchAnalysisEngine {
     return true;
   }
   /** Advance only after every leaf checkpoint in the preceding phase validates. */
-  private advance(job: AnalysisJob): boolean {
+  private advance(job: AnalysisJobCore): boolean {
     const db = this.deps.database();
     const batches = batchList(db, job.id).filter((b) => b.status !== "superseded");
     if (batches.some((b) => b.status !== "complete"))
@@ -759,7 +765,7 @@ export class ResearchAnalysisEngine {
     this.finish(job, claims);
     return true;
   }
-  private finish(job: AnalysisJob, claims: Finding[], emptyText?: string) {
+  private finish(job: AnalysisJobCore, claims: Finding[], emptyText?: string) {
     // Render prose exclusively from verified, evidence-bearing claims: a free
     // answer string cannot smuggle uncited assertions past mechanical checks.
     const text =

@@ -205,6 +205,20 @@ describe("catalog-driven chat defaults", () => {
     expect(screen.getByText("GPT-6 Mystery")).toBeTruthy();
   });
 
+  it("keeps an empty model search connected to a valid listbox", async () => {
+    renderWithCatalog();
+    await waitFor(() => expect(screen.getByText(/Models updated/)).toBeTruthy());
+    const trigger = screen.getByRole("button", { name: /Model for Quick/ });
+    fireEvent.click(trigger);
+    const search = screen.getByRole("combobox", { name: "Search models" });
+    fireEvent.change(search, { target: { value: "no-such-model" } });
+    const list = document.getElementById(search.getAttribute("aria-controls")!);
+    expect(list?.getAttribute("role")).toBe("listbox");
+    expect(search.getAttribute("aria-activedescendant")).toBeNull();
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it("opens and navigates the list without scrolling page ancestors", async () => {
     const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView");
     const focus = vi.spyOn(HTMLElement.prototype, "focus");

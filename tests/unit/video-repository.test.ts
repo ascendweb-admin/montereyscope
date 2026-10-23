@@ -10,9 +10,15 @@ import { ALL_MIGRATIONS } from "@/lib/db/migrations";
 import { runMigrations } from "@/lib/db/migrator";
 import { addCreator } from "@/lib/creators/repository";
 import { saveTranscript } from "@/lib/transcripts/repository";
+import { attachVideoToProfile } from "@/lib/videos/attribution";
 import {
+  clearAllCachedFeeds,
+  countAllVideos,
+  countAttributedVideos,
   countCachedVideos,
+  countClearableVideos,
   getVideoForCreator,
+  insertVideoIfMissing,
   listAllVideosWithCreator,
   listCachedVideos,
   listFeedVideos,
@@ -399,5 +405,182 @@ describe("listAllVideosWithCreator (AI Research reads)", () => {
 
   it("returns an empty list with no cached videos", () => {
     expect(listAllVideosWithCreator(db)).toEqual([]);
+  });
+});
+
+describe("insertVideoIfMissing", () => {
+  const OTHER = {
+    youtubeChannelId: "UCBJycsmduvYEL83R_U4JriQ",
+    handle: "other",
+    displayName: "Other Channel",
+    channelUrl: "https://www.youtube.com/channel/UCBJycsmduvYEL83R_U4JriQ",
+    avatarUrl: null,
+  };
+
+  function lastRefreshedAt(creatorId: number): string | null {
+    return (
+      db
+        .prepare<[number], { last_refreshed_at: string | null }>(
+          "SELECT last_refreshed_at FROM creators WHERE id = ?",
+        )
+        .get(creatorId) as { last_refreshed_at: string | null }
+    ).last_refreshed_at;
+  }
+
+  it("stores a new video under its host without stamping a refresh", () => {
+    const { creator } = addCreator(db, CREATOR);
+
+    expect(
+      insertVideoIfMissing(
+        db,
+        creator.id,
+        draft({
+          id: "Imported001",
+          publishedAt: "2026-08-20T12:00:00.000Z",
+          liveStatus: "not_live",
+        }),
+      ),
+    ).toBe(true);
+
+    expect(getVideoForCreator(db, creator.id, "Imported001")).toMatchObject({
+      title: "Video Imported001",
+      publishedAt: "2026-08-20T12:00:00.000Z",
+      durationSeconds: 120,
+      liveStatus: "not_live",
+    });
+    expect(lastRefreshedAt(creator.id)).toBeNull();
+  });
+
+  it("leaves an existing video's creator, fields and refresh stamps untouched", () => {
+    const owner = addCreator(db, CREATOR).creator;
+    const host = addCreator(db, { ...OTHER, followed: false }).creator;
+    mergeCreatorFeed(db, {
+      creatorId: owner.id,
+      videos: [draft({ id: "Shared00001", title: "Original title" })],
+      refreshedAt: "2026-08-20T10:00:00.000Z",
+    });
+
+    expect(insertVideoIfMissing(db, host.id, draft({ id: "Shared00001", title: "Changed" }))).toBe(
+      false,
+    );
+
+    expect(getVideoForCreator(db, owner.id, "Shared00001")).toMatchObject({
+      title: "Original title",
+    });
+    expect(getVideoForCreator(db, host.id, "Shared00001")).toBeNull();
+    expect(lastRefreshedAt(owner.id)).toBe("2026-08-20T10:00:00.000Z");
+    expect(lastRefreshedAt(host.id)).toBeNull();
+  });
+});
+
+describe("clearAllCachedFeeds and the attributed-video counts", () => {
+  function seedLibrary() {
+    const followed = addCreator(db, CREATOR).creator;
+    const host = addCreator(db, {
+      youtubeChannelId: "UCAAAAAAAAAAAAAAAAAAAAAA",
+      handle: "hosts",
+      displayName: "Host Channel",
+      channelUrl: "https://www.youtube.com/channel/UCAAAAAAAAAAAAAAAAAAAAAA",
+      avatarUrl: null,
+      followed: false,
+    }).creator;
+    mergeCreatorFeed(db, {
+      creatorId: followed.id,
+      videos: [
+        draft({ id: "Feed0000001" }),
+        draft({ id: "Feed0000002" }),
+        draft({ id: "Picked00001" }),
+      ],
+      refreshedAt: "2026-08-20T10:00:00.000Z",
+    });
+    insertVideoIfMissing(db, host.id, draft({ id: "Hosted00001" }));
+    attachVideoToProfile(db, followed.profileId, "Hosted00001");
+    // A followed channel's video can be hand-picked too.
+    attachVideoToProfile(db, followed.profileId, "Picked00001");
+    saveTranscript(
+      db,
+      { videoId: "Hosted00001", language: "en", source: "manual", plainText: "Kept." },
+      "2026-08-21T10:00:00.000Z",
+    );
+    saveTranscript(
+      db,
+      { videoId: "Feed0000001", language: "en", source: "manual", plainText: "Cleared." },
+      "2026-08-21T10:00:00.000Z",
+    );
+    return { followed, host };
+  }
+
+  it("counts what clearing removes apart from what it keeps", () => {
+    seedLibrary();
+    expect(countAllVideos(db)).toBe(4);
+    expect(countClearableVideos(db)).toBe(2);
+    expect(countAttributedVideos(db)).toBe(2);
+  });
+
+  it("counts a video once however many people feature it", () => {
+    const { host } = seedLibrary();
+    const second = addCreator(db, {
+      ...CREATOR,
+      youtubeChannelId: "UC0000000000000000000000",
+      channelUrl: "https://www.youtube.com/@second",
+      handle: "second",
+      displayName: "Second",
+    }).creator;
+    attachVideoToProfile(db, second.profileId, "Hosted00001");
+    expect(host.followed).toBe(false);
+    expect(countAttributedVideos(db)).toBe(2);
+  });
+
+  it("deletes only unattributed videos, keeps their host and transcript, and resets stamps", () => {
+    const { followed, host } = seedLibrary();
+
+    expect(clearAllCachedFeeds(db)).toBe(2);
+
+    expect(countAllVideos(db)).toBe(2);
+    expect(countClearableVideos(db)).toBe(0);
+    expect(
+      listAllVideosWithCreator(db)
+        .map((video) => video.id)
+        .sort(),
+    ).toEqual(["Hosted00001", "Picked00001"]);
+    expect(db.prepare("SELECT video_id FROM transcripts ORDER BY video_id").all()).toEqual([
+      { video_id: "Hosted00001" },
+    ]);
+    expect(db.prepare("SELECT id FROM creators WHERE id = ?").get(host.id)).toBeDefined();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM profile_videos").get()).toEqual({ n: 2 });
+    expect(
+      db.prepare("SELECT last_refreshed_at FROM creators WHERE id = ?").get(followed.id),
+    ).toEqual({ last_refreshed_at: null });
+  });
+
+  it("drops a source-only host that has no attributed video left", () => {
+    const { host } = seedLibrary();
+    // A stray video that was never attributed breaks the invariant; clearing repairs it.
+    const stray = addCreator(db, {
+      youtubeChannelId: "UCBBBBBBBBBBBBBBBBBBBBBB",
+      handle: "stray",
+      displayName: "Stray Host",
+      channelUrl: "https://www.youtube.com/channel/UCBBBBBBBBBBBBBBBBBBBBBB",
+      avatarUrl: null,
+      followed: false,
+    }).creator;
+    insertVideoIfMissing(db, stray.id, draft({ id: "Stray000001" }));
+
+    expect(clearAllCachedFeeds(db)).toBe(3);
+
+    expect(db.prepare("SELECT id FROM creators WHERE id = ?").get(stray.id)).toBeUndefined();
+    expect(db.prepare("SELECT id FROM creators WHERE id = ?").get(host.id)).toBeDefined();
+  });
+
+  it("clears everything on a library with nothing hand-picked", () => {
+    const { creator } = addCreator(db, CREATOR);
+    mergeCreatorFeed(db, {
+      creatorId: creator.id,
+      videos: ORDINARY,
+      refreshedAt: "2026-08-20T10:00:00.000Z",
+    });
+    expect(clearAllCachedFeeds(db)).toBe(ORDINARY.length);
+    expect(countAllVideos(db)).toBe(0);
+    expect(countAttributedVideos(db)).toBe(0);
   });
 });

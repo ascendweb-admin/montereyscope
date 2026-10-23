@@ -75,6 +75,34 @@ describe("AppDialog", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("closes when a press starts and ends on the backdrop", () => {
+    const onClose = vi.fn();
+    render(<Harness open onClose={onClose} />);
+    const dialog = document.querySelector("dialog") as HTMLDialogElement;
+    fireEvent.pointerDown(dialog);
+    fireEvent.click(dialog);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays open when a drag starts inside the panel and is released on the backdrop", () => {
+    const onClose = vi.fn();
+    render(
+      <Harness open onClose={onClose}>
+        <p>Selectable text</p>
+      </Harness>,
+    );
+    const dialog = document.querySelector("dialog") as HTMLDialogElement;
+    // Text selection: press on the panel content, release over the backdrop.
+    // The browser fires the click on the common ancestor, the <dialog>.
+    fireEvent.pointerDown(screen.getByText("Selectable text"));
+    fireEvent.click(dialog);
+    expect(onClose).not.toHaveBeenCalled();
+    // A later genuine backdrop click still works.
+    fireEvent.pointerDown(dialog);
+    fireEvent.click(dialog);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("restores focus to the opener element after closing", async () => {
     function ToggleHarness() {
       const [open, setOpen] = useState(false);

@@ -1,6 +1,13 @@
 import type { ScopeDatabase } from "@/lib/db/connection";
 import type { CategoryColor, CategorySummary, CreatorCategory } from "./model";
 
+/**
+ * Categories describe a person, so memberships live on creator profiles
+ * (`profile_categories`). Account-keyed readers stay for the surfaces that
+ * work per platform account (feed rows, the X dashboard): an account simply
+ * carries its person's categories.
+ */
+
 interface CategoryRow {
   id: number;
   name: string;
@@ -9,7 +16,7 @@ interface CategoryRow {
 }
 
 interface AssignmentRow {
-  creator_id: number;
+  owner_id: number;
   id: number;
   name: string;
   color: CategoryColor;
@@ -24,12 +31,14 @@ function toSummary(row: CategoryRow): CategorySummary {
   };
 }
 
+const CATEGORY_SUMMARY_SELECT = `SELECT c.id, c.name, c.color, COUNT(pc.profile_id) AS creator_count
+       FROM categories c
+       LEFT JOIN profile_categories pc ON pc.category_id = c.id`;
+
 export function listCategories(db: ScopeDatabase): CategorySummary[] {
   return db
     .prepare<[], CategoryRow>(
-      `SELECT c.id, c.name, c.color, COUNT(cc.creator_id) AS creator_count
-       FROM categories c
-       LEFT JOIN creator_categories cc ON cc.category_id = c.id
+      `${CATEGORY_SUMMARY_SELECT}
        GROUP BY c.id
        ORDER BY c.name COLLATE NOCASE ASC`,
     )
@@ -40,9 +49,7 @@ export function listCategories(db: ScopeDatabase): CategorySummary[] {
 export function getCategory(db: ScopeDatabase, id: number): CategorySummary | null {
   const row = db
     .prepare<[number], CategoryRow>(
-      `SELECT c.id, c.name, c.color, COUNT(cc.creator_id) AS creator_count
-       FROM categories c
-       LEFT JOIN creator_categories cc ON cc.category_id = c.id
+      `${CATEGORY_SUMMARY_SELECT}
        WHERE c.id = ?
        GROUP BY c.id`,
     )
@@ -50,31 +57,67 @@ export function getCategory(db: ScopeDatabase, id: number): CategorySummary | nu
   return row ? toSummary(row) : null;
 }
 
-export function listCreatorCategoryAssignments(db: ScopeDatabase): Map<number, CreatorCategory[]> {
-  const rows = db
-    .prepare<[], AssignmentRow>(
-      `SELECT cc.creator_id, c.id, c.name, c.color
-       FROM creator_categories cc
-       JOIN categories c ON c.id = cc.category_id
-       ORDER BY c.name COLLATE NOCASE ASC`,
-    )
-    .all();
+function toAssignmentMap(rows: AssignmentRow[]): Map<number, CreatorCategory[]> {
   const result = new Map<number, CreatorCategory[]>();
   for (const row of rows) {
-    const categories = result.get(Number(row.creator_id)) ?? [];
+    const categories = result.get(Number(row.owner_id)) ?? [];
     categories.push({ id: Number(row.id), name: row.name, color: row.color });
-    result.set(Number(row.creator_id), categories);
+    result.set(Number(row.owner_id), categories);
   }
   return result;
 }
 
+/** Profile id → that person's categories, alphabetical. */
+export function listProfileCategoryAssignments(db: ScopeDatabase): Map<number, CreatorCategory[]> {
+  return toAssignmentMap(
+    db
+      .prepare<[], AssignmentRow>(
+        `SELECT pc.profile_id AS owner_id, c.id, c.name, c.color
+         FROM profile_categories pc
+         JOIN categories c ON c.id = pc.category_id
+         ORDER BY c.name COLLATE NOCASE ASC`,
+      )
+      .all(),
+  );
+}
+
+/** Account (creators.id) → its person's categories, alphabetical. */
+export function listCreatorCategoryAssignments(db: ScopeDatabase): Map<number, CreatorCategory[]> {
+  return toAssignmentMap(
+    db
+      .prepare<[], AssignmentRow>(
+        `SELECT cr.id AS owner_id, c.id, c.name, c.color
+         FROM creators cr
+         JOIN profile_categories pc ON pc.profile_id = cr.profile_id
+         JOIN categories c ON c.id = pc.category_id
+         ORDER BY c.name COLLATE NOCASE ASC`,
+      )
+      .all(),
+  );
+}
+
+export function listCategoriesForProfile(db: ScopeDatabase, profileId: number): CreatorCategory[] {
+  return db
+    .prepare<[number], AssignmentRow>(
+      `SELECT pc.profile_id AS owner_id, c.id, c.name, c.color
+       FROM profile_categories pc
+       JOIN categories c ON c.id = pc.category_id
+       WHERE pc.profile_id = ?
+       ORDER BY c.name COLLATE NOCASE ASC`,
+    )
+    .all(profileId)
+    .map((row) => ({ id: Number(row.id), name: row.name, color: row.color }));
+}
+
+/** The categories of the person a saved account belongs to. */
 export function listCategoriesForCreator(db: ScopeDatabase, creatorId: number): CreatorCategory[] {
   return db
     .prepare<[number], AssignmentRow>(
-      `SELECT cc.creator_id, c.id, c.name, c.color
-       FROM creator_categories cc
-       JOIN categories c ON c.id = cc.category_id
-       WHERE cc.creator_id = ?
+      `SELECT cr.id AS owner_id, c.id, c.name, c.color
+       FROM creators cr
+       JOIN profile_categories pc ON pc.profile_id = cr.profile_id
+       JOIN categories c ON c.id = pc.category_id
+       WHERE cr.id = ?
        ORDER BY c.name COLLATE NOCASE ASC`,
     )
     .all(creatorId)
@@ -116,7 +159,7 @@ export function deleteCategory(db: ScopeDatabase, id: number): boolean {
 
 function existingIds(
   db: ScopeDatabase,
-  table: "categories" | "creators",
+  table: "categories" | "creator_profiles",
   ids: number[],
 ): Set<number> {
   if (ids.length === 0) {
@@ -133,28 +176,31 @@ export function categoriesExist(db: ScopeDatabase, ids: number[]): boolean {
   return existingIds(db, "categories", ids).size === ids.length;
 }
 
-export function creatorsExist(db: ScopeDatabase, ids: number[]): boolean {
-  return existingIds(db, "creators", ids).size === ids.length;
+export function profilesExistForCategories(db: ScopeDatabase, ids: number[]): boolean {
+  return existingIds(db, "creator_profiles", ids).size === ids.length;
 }
 
-export function replaceCreatorCategories(
+export function replaceProfileCategories(
   db: ScopeDatabase,
-  creatorId: number,
+  profileId: number,
   categoryIds: number[],
 ): void {
   const replace = db.transaction(() => {
-    db.prepare("DELETE FROM creator_categories WHERE creator_id = ?").run(creatorId);
+    db.prepare("DELETE FROM profile_categories WHERE profile_id = ?").run(profileId);
     const insert = db.prepare(
-      "INSERT INTO creator_categories (creator_id, category_id) VALUES (?, ?)",
+      "INSERT INTO profile_categories (profile_id, category_id) VALUES (?, ?)",
     );
     for (const categoryId of categoryIds) {
-      insert.run(creatorId, categoryId);
+      insert.run(profileId, categoryId);
     }
   });
   replace();
 }
 
-/** Adds memberships without clearing existing ones, used by the add flow. */
+/**
+ * Adds memberships to the person a saved account belongs to without clearing
+ * existing ones — the add flow files a newly saved account this way.
+ */
 export function addCreatorCategories(
   db: ScopeDatabase,
   creatorId: number,
@@ -164,28 +210,29 @@ export function addCreatorCategories(
     return;
   }
   const insert = db.prepare(
-    "INSERT OR IGNORE INTO creator_categories (creator_id, category_id) VALUES (?, ?)",
+    `INSERT OR IGNORE INTO profile_categories (profile_id, category_id)
+     SELECT profile_id, ? FROM creators WHERE id = ?`,
   );
   const add = db.transaction(() => {
     for (const categoryId of categoryIds) {
-      insert.run(creatorId, categoryId);
+      insert.run(categoryId, creatorId);
     }
   });
   add();
 }
 
-export function replaceCategoryCreators(
+export function replaceCategoryProfiles(
   db: ScopeDatabase,
   categoryId: number,
-  creatorIds: number[],
+  profileIds: number[],
 ): void {
   const replace = db.transaction(() => {
-    db.prepare("DELETE FROM creator_categories WHERE category_id = ?").run(categoryId);
+    db.prepare("DELETE FROM profile_categories WHERE category_id = ?").run(categoryId);
     const insert = db.prepare(
-      "INSERT INTO creator_categories (creator_id, category_id) VALUES (?, ?)",
+      "INSERT INTO profile_categories (profile_id, category_id) VALUES (?, ?)",
     );
-    for (const creatorId of creatorIds) {
-      insert.run(creatorId, categoryId);
+    for (const profileId of profileIds) {
+      insert.run(profileId, categoryId);
     }
   });
   replace();

@@ -312,7 +312,10 @@ describe("buildClaudeArgs", () => {
     // the manifest stay protected.
     expect(args).toEqual(expect.arrayContaining(["--allowedTools", "Edit(./**)"]));
     expect(args).toEqual(
-      expect.arrayContaining(["--disallowedTools", "Edit(transcripts/**),Edit(manifest.json)"]),
+      expect.arrayContaining([
+        "--disallowedTools",
+        "Edit(transcripts/**),Edit(tweets/**),Edit(digests/**),Edit(manifest.json)",
+      ]),
     );
     // Never the bypass modes.
     expect(args).not.toContain("--dangerously-skip-permissions");

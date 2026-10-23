@@ -10,6 +10,8 @@ export interface BackgroundTask {
   message?: string;
   result?: unknown;
   cancel?: () => void;
+  /** When the task finished (ms), so an old failure can tell it was overtaken. */
+  endedAt?: number;
 }
 const listeners = new Set<() => void>();
 let tasks: BackgroundTask[] = [];
@@ -50,6 +52,8 @@ export function useBackgroundTask(key: string) {
 export function runBackgroundTask<T extends { ok: boolean; message?: string }>(
   task: Pick<BackgroundTask, "key" | "label" | "href">,
   work: () => Promise<T>,
+  /** How a finished result reads in Activity; by default ok is done, anything else failed. */
+  statusOf: (result: T) => BackgroundTask["status"] = (result) => (result.ok ? "done" : "failed"),
 ): Promise<T> {
   const existing = inFlight.get(task.key);
   if (existing) return existing as Promise<T>;
@@ -65,9 +69,10 @@ export function runBackgroundTask<T extends { ok: boolean; message?: string }>(
     .then((result) => {
       updateTask({
         ...task,
-        status: result.ok ? "done" : "failed",
+        status: statusOf(result),
         message: result.message,
         result,
+        endedAt: Date.now(),
       });
       return result;
     })
@@ -86,7 +91,7 @@ export async function trackAcceptedReport(response: Response): Promise<void> {
     updateTask({
       key: `report:${body.report.id}`,
       label: body.report.title ? `Report: ${body.report.title}` : `Report #${body.report.id}`,
-      href: "/reports",
+      href: `/reports?report=${body.report.id}`,
       status: body.report.status,
     });
 }

@@ -1,9 +1,10 @@
 import { AddCreatorDialog } from "@/components/library/add-creator-dialog";
-import { CreatorLibrary } from "@/components/library/creator-library";
+import { CreatorLibrary, type LibraryCreator } from "@/components/library/creator-library";
 import { LibraryEmptyState } from "@/components/library/library-empty-state";
 import { ManageCategoriesDialog } from "@/components/categories/manage-categories-dialog";
-import { listCategories, listCreatorCategoryAssignments } from "@/lib/categories";
-import { listCreators } from "@/lib/creators/repository";
+import { listCategories } from "@/lib/categories";
+import { listProfileSummaries } from "@/lib/creators/profile-service";
+import { listProfileLinkSuggestions } from "@/lib/creators/profile-suggestions";
 import { listResearchLists } from "@/lib/x/research/repository";
 import { getDb } from "@/lib/db/connection";
 
@@ -11,20 +12,26 @@ import { getDb } from "@/lib/db/connection";
 export const dynamic = "force-dynamic";
 
 export default function HomePage() {
-  const creators = listCreators(getDb());
-  const categories = listCategories(getDb());
-  const assignments = listCreatorCategoryAssignments(getDb());
-  const researchLists = listResearchLists(getDb());
-  const creatorModels = creators.map((creator) => ({
-    id: creator.id,
-    platform: creator.platform,
-    displayName: creator.displayName,
-    handle: creator.handle,
-    avatarUrl: creator.avatarUrl,
-    categories: assignments.get(creator.id) ?? [],
-    researchListNames: researchLists
-      .filter((list) => list.creatorIds.includes(creator.id))
-      .map((list) => list.name),
+  const db = getDb();
+  const profiles = listProfileSummaries(db);
+  const categories = listCategories(db);
+  const researchLists = listResearchLists(db);
+  const creatorModels: LibraryCreator[] = profiles.map((profile) => ({
+    id: profile.id,
+    displayName: profile.displayName,
+    avatarUrl: profile.avatarUrl,
+    avatarCreatorId: profile.avatarCreatorId,
+    categories: profile.categories,
+    accounts: profile.accounts.map((account) => ({
+      id: account.id,
+      platform: account.platform,
+      displayName: account.displayName,
+      handle: account.handle,
+      lastRefreshedAt: account.lastRefreshedAt,
+      researchListNames: researchLists
+        .filter((list) => list.creatorIds.includes(account.id))
+        .map((list) => list.name),
+    })),
   }));
 
   return (
@@ -33,19 +40,31 @@ export default function HomePage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Creator library</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Saved channels and their recent videos and livestreams.
+            The creators you follow, with every platform they publish on in one place.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <ManageCategoriesDialog categories={categories} creators={creatorModels} />
+          <ManageCategoriesDialog
+            categories={categories}
+            creators={creatorModels.map((creator) => ({
+              id: creator.id,
+              displayName: creator.displayName,
+              handle: creator.accounts.find((account) => account.handle)?.handle ?? null,
+              categories: creator.categories,
+            }))}
+          />
           <AddCreatorDialog categories={categories} />
         </div>
       </div>
 
-      {creators.length === 0 ? (
+      {profiles.length === 0 ? (
         <LibraryEmptyState categories={categories} />
       ) : (
-        <CreatorLibrary creators={creatorModels} categories={categories} />
+        <CreatorLibrary
+          creators={creatorModels}
+          categories={categories}
+          linkSuggestions={listProfileLinkSuggestions(db)}
+        />
       )}
     </main>
   );

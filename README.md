@@ -19,9 +19,31 @@ download-and-install instructions friends receive with a release.
 Maintainers can prepare the four downloads with the
 [draft-release procedure](docs/desktop-release.md).
 
+A creator is a person, not a single channel: their YouTube, Rumble, and X
+accounts share one library card and one creator page (an Overview of everything
+they published plus a tab per account). Add another platform from the creator
+page, choose "Add to an existing creator" when saving, or link creators that are
+the same person — the library suggests likely matches by name and handle, and
+any account can be unlinked again. AI Chat labels every source with
+its creator, so answers can compare what one person says across platforms.
+
+**Other videos.** A person often matters most where they appear on someone
+else's channel: a podcast guest spot, an interview. On a creator's page, **Add
+videos** takes pasted YouTube or Rumble video links and files them under that
+person's **Other videos** tab (a single link pasted into **Add creator** can be
+added to a person the same way). They then behave like the person's own videos:
+select several and ask AI, or include them in a report, and answers cite them as
+"{person} on {channel}". Only videos with English captions can be added; there is
+no speech-to-text, and a video that is live or has no English captions says so.
+The channel hosting such a video stays out of your library (no card, no Refresh
+all) until you choose **Follow {channel}** on the video's page, or paste the link
+into **Add creator** and pick **Follow {channel} as a creator**; either adds it as
+a normal creator. Removing the last hand-picked video of a hidden channel removes
+the channel too.
+
 Organize creators into color-coded categories from the library. A creator can
 belong to several categories, and the same category filters are available in
-the library, AI Research, and the chat source picker so large collections stay
+the library and the chat source picker so large collections stay
 quick to navigate. Existing creators start as **Uncategorized** and remain
 untouched when a category is deleted.
 
@@ -147,7 +169,8 @@ Use **Settings → Local cache** inside the app:
 - _Clear cached transcripts_ deletes stored transcripts (they are fetched
   again on demand).
 - _Clear cached feed metadata_ deletes cached video lists and refresh times;
-  saved creators are always kept.
+  saved creators are always kept, and so are videos you added to a person's
+  Other videos (the dialog says how many).
 
 Both show exact counts and ask for confirmation first.
 
@@ -157,7 +180,7 @@ scope can ask AI questions about the transcripts you have already cached
 and generate reports from them:
 
 - **Ask AI** — on a video page, on a selection of channel videos, or across
-  several creators on the **AI Research** page. Conversations are kept as
+  several creators in **AI Chat**. Conversations are kept as
   threads locally and can be reopened and continued.
 - **Three intelligence modes** — the panel's switcher picks how hard the AI
   works on each conversation: **Quick** (fast, conversational answers),

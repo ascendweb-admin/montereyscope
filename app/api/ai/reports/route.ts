@@ -1,3 +1,4 @@
+import { readJsonObject } from "@/lib/http/request-json";
 import { readXMutation } from "@/lib/x/http";
 import { researchThread, saveResearchReport } from "@/lib/x/research/experience";
 import { researchError } from "@/lib/x/research/http";
@@ -15,9 +16,10 @@ import { researchError } from "@/lib/x/research/http";
  * with the queued row.
  *
  * GET returns every report newest-first for the reports list page, each with
- * its extracted headline and standfirst and its scope resolved against the
+ * its extracted headline and standfirst, its scope resolved against the
  * cached feed (titles, creators, thumbnails) so the cards can show what the
- * report covers and link to its sources.
+ * report covers and link to its sources, the people and categories behind
+ * those sources, and the finished document's outline and reading time.
  */
 import { getThread } from "@/lib/ai/threads";
 import {
@@ -25,10 +27,11 @@ import {
   isReportProfileId,
   isReportStyleId,
   listReports,
-  MAX_SCOPE_VIDEOS,
   publicReportFor,
   resolveSourceScope,
+  syncReportIndex,
 } from "@/lib/ai";
+import { scopeLoadOf, scopeLimitResponse } from "@/lib/ai/scope-limits";
 import { normalizeSourceRefs, videoIdsToSourceRefs, type SourceRef } from "@/lib/content/model";
 import { getDb } from "@/lib/db/connection";
 
@@ -76,19 +79,6 @@ function validateThreadId(value: unknown): number | null {
   return typeof id === "number" && Number.isInteger(id) && id >= 1 ? id : null;
 }
 
-/** The stage-7 scope guard, mirroring the chat route's refusal. */
-function scopeTooLarge(sources: readonly SourceRef[]): Response | null {
-  const unique = new Set(sources.map((source) => `${source.kind}:${source.id}`));
-  if (unique.size <= MAX_SCOPE_VIDEOS) {
-    return null;
-  }
-  return jsonError(
-    422,
-    "scope_too_large",
-    `Analyses are capped at ${MAX_SCOPE_VIDEOS} sources at once — this selection covers ${unique.size}. Deselect a few and try again.`,
-  );
-}
-
 /**
  * Normalizes the request's scope: new `sources` payload wins; legacy
  * `videoIds` normalize once; sending both is ambiguous and rejected.
@@ -123,7 +113,7 @@ export async function POST(request: Request) {
   const guardedRequest = request.clone();
   let body: ReportsRequestBody;
   try {
-    body = (await request.json()) as ReportsRequestBody;
+    body = (await readJsonObject(request)) as ReportsRequestBody;
   } catch {
     return jsonError(400, "invalid_body", "Request body must be JSON.");
   }
@@ -188,17 +178,21 @@ export async function POST(request: Request) {
     sources = normalized;
   }
 
-  // The stage-7 scope guard, checked before any database work: fresh
-  // selections and threads created before the cap existed get the same
-  // readable refusal.
-  const tooLarge = scopeTooLarge(sources);
-  if (tooLarge !== null) {
-    return tooLarge;
+  // The scope limits: counts before any database work, hours once the
+  // videos' lengths are known — fresh selections and threads created before
+  // the limits existed get the same readable refusal.
+  const tooMany = scopeLimitResponse(scopeLoadOf(sources));
+  if (tooMany !== null) {
+    return tooMany;
   }
 
   // Videos without a transcript still count: the report job fetches their
   // captions before it starts writing.
   const scope = resolveSourceScope(db, sources);
+  const tooLong = scopeLimitResponse(scopeLoadOf(sources, scope));
+  if (tooLong !== null) {
+    return tooLong;
+  }
   if (!scope.sources.some((source) => source.readyForAnalysis || source.kind === "video")) {
     return jsonError(
       422,
@@ -226,6 +220,9 @@ export async function POST(request: Request) {
 
 export async function GET() {
   const db = getDb();
+  // Reports that finished since the last listing get their outline and
+  // reading time read here, before the rows are built.
+  syncReportIndex(db);
   const reports = listReports(db).map((report) => publicReportFor(db, report));
   return Response.json({ reports }, { headers: { "Cache-Control": "no-store" } });
 }

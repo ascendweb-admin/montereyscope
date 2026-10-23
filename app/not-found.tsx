@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Compass } from "lucide-react";
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 
 /**
  * App-wide 404 for URLs that match no route. Segment-specific states (like
@@ -10,7 +10,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
  */
 export default function NotFound() {
   return (
-    <main id="main" className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 md:px-8 md:py-10">
+    <main
+      id="main"
+      tabIndex={-1}
+      className="outline-none mx-auto w-full max-w-5xl flex-1 px-4 py-8 md:px-8 md:py-10"
+    >
       <Card className="border-dashed">
         <CardHeader className="items-center gap-3 pb-2 text-center">
           <span
@@ -19,7 +23,7 @@ export default function NotFound() {
           >
             <Compass className="size-7 text-muted-foreground" />
           </span>
-          <CardTitle className="text-xl">Page not found</CardTitle>
+          <h1 className="text-xl font-semibold leading-none tracking-tight">Page not found</h1>
           <CardDescription className="max-w-md text-balance">
             That address does not match anything in scope. It may be a typo, or the page moved after
             a creator was removed.

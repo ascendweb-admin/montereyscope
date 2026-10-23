@@ -27,8 +27,10 @@ export {
   addCreator,
   findDuplicateCreator,
   getCreator,
+  listAllCreators,
   listCreators,
   removeCreator,
+  setCreatorFollowed,
 } from "./repository";
 export type {
   AddCreatorResult,

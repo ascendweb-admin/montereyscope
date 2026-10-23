@@ -12,7 +12,7 @@ import type { CatalogModel, ProviderCatalogSnapshot } from "./types";
 import { findCatalogModel, isCatalogModelUsable } from "./types";
 
 export type ExecutionProblemCode =
-  "model_unavailable" | "model_not_supported" | "effort_unavailable";
+  "provider_disconnected" | "model_unavailable" | "model_not_supported" | "effort_unavailable";
 
 export interface ExecutionProblem {
   code: ExecutionProblemCode;
@@ -43,6 +43,17 @@ export function resolveCatalogExecution(
   selection: ChatModeSelection,
 ): ResolvedModelExecution {
   const label = providerLabel(snapshot.provider);
+  // A disconnected provider intentionally has no usable catalog. Ask the
+  // user to establish that connection before diagnosing a saved model.
+  if (snapshot.connected === false) {
+    return {
+      catalogModel: null,
+      problem: {
+        code: "provider_disconnected",
+        message: `${label} is not connected on this machine. Open Settings → AI providers to install or connect it, then try again.`,
+      },
+    };
+  }
   const catalogModel = findCatalogModel(snapshot.models, selection.model);
   if (catalogModel === null) {
     return {

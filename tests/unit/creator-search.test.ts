@@ -64,6 +64,54 @@ describe("creator input classification", () => {
     expect(classifyCreatorInput("youtube compilations", "youtube")).toBe("search");
   });
 
+  it("recognizes a single YouTube or Rumble video link whatever platform is selected", () => {
+    const videoLinks = [
+      "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+      "https://youtu.be/jNQXAC9IVRw?si=abc",
+      "https://m.youtube.com/watch?v=jNQXAC9IVRw&list=PL123&t=42",
+      "https://www.youtube.com/shorts/jNQXAC9IVRw",
+      "https://www.youtube.com/live/jNQXAC9IVRw",
+      "https://rumble.com/v7emyxa-warning-this-new-flu-shot.html",
+      // Bare hosts get https:// before they are checked.
+      "youtube.com/watch?v=jNQXAC9IVRw",
+      "youtu.be/jNQXAC9IVRw",
+      "rumble.com/v7emyxa-warning.html",
+      "  https://www.youtube.com/watch?v=jNQXAC9IVRw  ",
+    ];
+    for (const link of videoLinks) {
+      for (const platform of ["youtube", "rumble", "x"] as const) {
+        expect(classifyCreatorInput(link, platform), `${link} on ${platform}`).toBe("video");
+      }
+    }
+  });
+
+  it("leaves channel links, profile links, post links, and names as they were", () => {
+    // Channel and profile links still resolve directly.
+    expect(classifyCreatorInput("https://www.youtube.com/@PewDiePie", "youtube")).toBe("link");
+    expect(
+      classifyCreatorInput("https://www.youtube.com/channel/UC-lHJZR3Gqxm24_Vd_AJ5Yw", "youtube"),
+    ).toBe("link");
+    expect(classifyCreatorInput("https://rumble.com/c/Bongino", "rumble")).toBe("link");
+    expect(classifyCreatorInput("https://rumble.com/user/HowToCultivateCrypto", "rumble")).toBe(
+      "link",
+    );
+    expect(classifyCreatorInput("https://x.com/elonmusk", "x")).toBe("link");
+    // An X post is still an X link, not a video.
+    expect(classifyCreatorInput("https://x.com/elonmusk/status/1234567890", "x")).toBe("link");
+    // Links that are not a single video keep their existing resolve errors.
+    expect(classifyCreatorInput("https://www.youtube.com/playlist?list=PL123", "youtube")).toBe(
+      "link",
+    );
+    expect(classifyCreatorInput("https://www.youtube.com/watch", "youtube")).toBe("link");
+    expect(classifyCreatorInput("http://www.youtube.com/watch?v=jNQXAC9IVRw", "youtube")).toBe(
+      "link",
+    );
+    expect(classifyCreatorInput("https://vimeo.com/12345", "youtube")).toBe("link");
+    // Names stay names, even ones that mention a site or a video.
+    expect(classifyCreatorInput("youtube watch video", "youtube")).toBe("search");
+    expect(classifyCreatorInput("PewDiePie", "youtube")).toBe("search");
+  });
+
   it("expands shorthand links into the URLs the resolvers accept", () => {
     expect(expandCreatorLink("@MrBeast", "youtube")).toBe("https://www.youtube.com/@MrBeast");
     expect(expandCreatorLink("UC-lHJZR3Gqxm24_Vd_AJ5Yw", "youtube")).toBe(
@@ -482,6 +530,58 @@ describe("searchCreators", () => {
       },
     });
     expect(rumble.ok && rumble.results[0].savedCreatorId).toBe(rumbleSaved.id);
+  });
+
+  it("does not mark a source-only host as saved", async () => {
+    addCreator(db, {
+      youtubeChannelId: "UC-lHJZR3Gqxm24_Vd_AJ5Yw",
+      handle: "pewdiepie",
+      displayName: "PewDiePie",
+      channelUrl: "https://www.youtube.com/channel/UC-lHJZR3Gqxm24_Vd_AJ5Yw",
+      avatarUrl: null,
+      platform: "youtube",
+      followed: false,
+    });
+    addCreator(db, {
+      youtubeChannelId: null,
+      handle: "bongino",
+      displayName: "Bongino",
+      channelUrl: "https://rumble.com/c/Bongino",
+      avatarUrl: null,
+      platform: "rumble",
+      followed: false,
+    });
+
+    const youtube = await searchCreators(db, "youtube", "pewdiepie", {
+      deps: {
+        youtube: async () => ({
+          ok: true,
+          results: [
+            result({
+              id: "UC-lHJZR3Gqxm24_Vd_AJ5Yw",
+              youtubeChannelId: "UC-lHJZR3Gqxm24_Vd_AJ5Yw",
+            }),
+          ],
+        }),
+      },
+    });
+    expect(youtube.ok && youtube.results.map((row) => row.savedCreatorId)).toEqual([null]);
+
+    const rumble = await searchCreators(db, "rumble", "bongino", {
+      deps: {
+        rumble: async () => ({
+          ok: true,
+          results: [
+            result({
+              platform: "rumble",
+              id: "c/bongino",
+              channelUrl: "https://rumble.com/c/bongino",
+            }),
+          ],
+        }),
+      },
+    });
+    expect(rumble.ok && rumble.results[0].savedCreatorId).toBeNull();
   });
 
   it("maps X accounts into rows and passes connection errors through", async () => {

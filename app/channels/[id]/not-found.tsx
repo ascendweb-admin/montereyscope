@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { UserX } from "lucide-react";
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 
 /**
  * Designed fallback for unknown or removed creator IDs on channel pages.
@@ -9,7 +9,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
  */
 export default function ChannelNotFound() {
   return (
-    <main id="main" className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 md:px-8 md:py-10">
+    <main
+      id="main"
+      tabIndex={-1}
+      className="outline-none mx-auto w-full max-w-5xl flex-1 px-4 py-8 md:px-8 md:py-10"
+    >
       <Card className="border-dashed">
         <CardHeader className="items-center gap-3 pb-2 text-center sm:items-center">
           <span
@@ -18,7 +22,9 @@ export default function ChannelNotFound() {
           >
             <UserX className="size-7 text-muted-foreground" />
           </span>
-          <CardTitle className="text-xl">Creator not in your library</CardTitle>
+          <h1 className="text-xl font-semibold leading-none tracking-tight">
+            Creator not in your library
+          </h1>
           <CardDescription className="max-w-md text-balance">
             This channel was never saved, or it has been removed. Head back to your library to add
             it again or pick another creator.

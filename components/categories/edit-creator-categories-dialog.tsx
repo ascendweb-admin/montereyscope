@@ -2,23 +2,30 @@
 
 import { useState } from "react";
 
-import { setCreatorCategoriesAction } from "@/app/actions/categories";
+import { setProfileCategoriesAction } from "@/app/actions/categories";
 import { CategoryMultiSelect } from "@/components/categories/category-multi-select";
 import { AppDialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
 import type { CategorySummary, CreatorCategory } from "@/lib/categories";
 
+/**
+ * Files a person under categories. `creator.id` is the creator profile id:
+ * categories describe the person, so every linked account shares them.
+ */
 export function EditCreatorCategoriesDialog({
   open,
   onClose,
   creator,
   categories,
+  onSaved,
 }: {
   open: boolean;
   onClose: () => void;
   creator: { id: number; displayName: string; categories: CreatorCategory[] };
   categories: readonly CategorySummary[];
+  /** Shows the confirmation in the parent (which outlives this dialog); defaults to a local toast. */
+  onSaved?: (message: string) => void;
 }) {
   const [selected, setSelected] = useState<ReadonlySet<number>>(
     () => new Set(creator.categories.map((category) => category.id)),
@@ -39,14 +46,19 @@ export function EditCreatorCategoriesDialog({
   const save = async (): Promise<void> => {
     setPending(true);
     setError(null);
-    const outcome = await setCreatorCategoriesAction(creator.id, [...selected]);
+    const outcome = await setProfileCategoriesAction(creator.id, [...selected]);
     setPending(false);
     if (!outcome.ok) {
       setError(outcome.message ?? "The category selection could not be saved.");
       return;
     }
     onClose();
-    showToast(`Updated categories for ${creator.displayName}.`, "success");
+    const message = `Updated categories for ${creator.displayName}.`;
+    if (onSaved) {
+      onSaved(message);
+    } else {
+      showToast(message, "success");
+    }
   };
 
   return (

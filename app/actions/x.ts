@@ -102,7 +102,7 @@ export async function refreshCreatorTweetsAction(
         message: outcome.error.message,
       };
     }
-    revalidatePath(`/channels/${creatorId}`);
+    revalidatePath("/creators/[id]", "page");
     revalidatePath("/");
     revalidatePath("/feed");
     return {
@@ -126,6 +126,7 @@ export async function refreshCreatorTweetsAction(
 export interface XFetchActionOutcome {
   ok: boolean;
   batch?: XFetchBatchOutcome;
+  errorCode?: string;
   message?: string;
 }
 
@@ -140,9 +141,9 @@ export async function fetchTweetsAction(
   try {
     const outcome = await fetchTweetsForCreator(getDb(), creatorId, tweetIds);
     if (!outcome.ok) {
-      return { ok: false, message: outcome.error.message };
+      return { ok: false, errorCode: outcome.error.code, message: outcome.error.message };
     }
-    revalidatePath(`/channels/${creatorId}`);
+    revalidatePath("/creators/[id]", "page");
     revalidatePath("/");
     revalidatePath("/feed");
     return { ok: true, batch: outcome };
@@ -160,7 +161,12 @@ export interface XTimelineReadOutcome {
 /** Cached-read helper for clients that re-fetch after a mutation. */
 export async function getCachedTimelineAction(
   creatorId: number,
-  options: { includeReplies?: boolean; includeReposts?: boolean; limit?: number; offset?: number } = {},
+  options: {
+    includeReplies?: boolean;
+    includeReposts?: boolean;
+    limit?: number;
+    offset?: number;
+  } = {},
 ): Promise<XTimelineReadOutcome> {
   if (!Number.isInteger(creatorId) || creatorId < 1) {
     return { ok: false, message: "That creator ID is not valid." };

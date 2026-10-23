@@ -40,12 +40,18 @@ Operations and their params:
 | `cancel`, `focus` | —                                    | connection status                                                              |
 | `user`            | `{ handle }`                         | `{ user, pinnedTweetId? }`                                                     |
 | `user_search`     | `{ query }`                          | `{ users: [{ userId, handle, displayName, avatarUrl, verified, protected }] }` |
-| `user_posts`      | `{ userId, handle, cursor?, limit }` | `{ items: [{ tweet, timelineKind?, timelineAt? }], nextCursor? }`              |
+| `user_posts`      | `{ userId, handle, cursor?, limit }` | `{ items: [{ tweet, timelineKind?, timelineAt? }], nextCursor?, rateLimit? }`  |
 | `tweet`           | `{ tweetId }`                        | `{ found: true, tweet }` or `{ found: false }`                                 |
 
 `user` and tweet payloads follow the normalized shape Scope's mapper
 (`lib/x/mapper.ts`) accepts. Ids are decimal strings; numbers are only used
 for nullable metrics.
+
+`rateLimit` is X's quota for profile timelines after that read, from its
+`x-rate-limit-*` headers: `{ limit, remaining, reset }` (reset in epoch
+seconds). It is omitted when X sent no headers. Scope paces later timeline
+reads by it (see `docs/x-sync.md`); older workers that never send it fall
+back to Scope counting its own reads.
 
 `connect`, `disconnect`, `cancel`, `focus`, and `retry-storage` belong to the
 Electron broker, not the Python worker. The frozen worker only accepts

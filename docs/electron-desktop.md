@@ -39,7 +39,11 @@ owner publication review, see [Preparing a Scope desktop release](desktop-releas
 ## Runtime design
 
 Electron starts the standalone server as a child utility process bound to a
-random `127.0.0.1` port. A new random token is required on every request and is
+`127.0.0.1` port. The first launch picks a random free port and saves it in
+`<app root>/backend-port`; later launches reuse it, because the renderer's
+browser storage (theme, chat mode, panel choices) belongs to that origin. If
+another program holds the saved port, that launch uses a fresh one and starts
+with default choices. A new random token is required on every request and is
 injected only by the app's renderer session. The server is therefore not usable
 as an unauthenticated local web service while the desktop app is running.
 

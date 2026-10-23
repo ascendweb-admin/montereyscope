@@ -406,7 +406,10 @@ def dispatch(request):
                      withQuickPromoteEligibilityTweetFields=True, withVoice=True, withV2Timeline=True)
     if cursor:
         variables["cursor"] = cursor
+    DIAGNOSTIC.pop("rateLimit", None)
     data = client._graphql_get("UserTweets", variables, features)
+    # X's quota for profile timelines after this read: the host paces later reads by it.
+    quota = DIAGNOSTIC.get("rateLimit")
     raw = get(data, "data", "user", "result")
     if get(raw, "legacy", "protected") is True:
         raise Failure("protected_account")
@@ -422,7 +425,10 @@ def dispatch(request):
     else:
         continuation = None
     encoded = base64.urlsafe_b64encode(json.dumps(continuation).encode()).decode() if continuation else None
-    return dict(items=selected, nextCursor=encoded, exhausted=encoded is None)
+    page = dict(items=selected, nextCursor=encoded, exhausted=encoded is None)
+    if quota and {"remaining", "reset"} <= quota.keys():
+        page["rateLimit"] = quota
+    return page
 
 
 def main():

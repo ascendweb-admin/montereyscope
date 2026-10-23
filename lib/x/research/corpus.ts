@@ -11,7 +11,7 @@ import {
   researchScopeSql,
 } from "./repository";
 import { calendarBounds } from "./dates";
-import { parseExactSearch, exactSearchExpression } from "./search";
+import { parseExactSearch, exactSearchFilter } from "./search";
 import { ResearchInputError } from "./input";
 import type {
   CorpusScope,
@@ -121,21 +121,22 @@ export function freezeCorpus(
   return db.transaction(() => {
     const request = resolveCorpusRequest(db, input);
     const { selection } = request;
+    const filter = selection.kind === "exact" ? exactSearchFilter(selection.search) : null;
     const params = {
       ids: JSON.stringify(request.creatorIds),
       types: JSON.stringify(request.types),
       since: request.since,
       until: request.until,
-      ...(selection.kind === "exact" ? { match: exactSearchExpression(selection.search) } : {}),
+      ...filter?.params,
     };
-    const sql = researchScopeSql(selection.kind === "exact");
+    const sql = researchScopeSql(filter?.sql);
     // Include unknown-dated memberships as exclusions, never presume they lie in range.
     const links = db
       .prepare(
         `${sql} SELECT * FROM scoped
       WHERE post_type IN (SELECT value FROM json_each(@types))
       AND (julianday(event_at) IS NULL OR (julianday(event_at) >= julianday(@since) AND julianday(event_at) < julianday(@until)))
-      ${selection.kind === "exact" ? "AND text_rowid IN (SELECT rowid FROM x_tweet_text WHERE x_tweet_text MATCH @match)" : ""}
+      ${filter ? `AND ${filter.sql}` : ""}
       ORDER BY creator_id, julianday(event_at), tweet_id`,
       )
       .all(params) as Array<{

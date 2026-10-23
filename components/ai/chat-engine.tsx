@@ -60,10 +60,10 @@ import type { SourceRef } from "@/lib/content/model";
 
 /** Client mirror of the server's ChatStreamEvent (never import lib/ai here). */
 export type ChatStreamEvent =
-  | { type: "thread"; threadId: number; created: boolean }
+  | { type: "thread"; threadId: number; created: boolean; sourceMetadata?: ChatSource[] }
   | { type: "user_message"; id: number; content: string; createdAt: string }
   | { type: "status"; phase: "thinking" | "writing" }
-  | { type: "status"; phase: "preparing"; done: number; total: number }
+  | { type: "status"; phase: "preparing"; done: number; total: number; step?: "summaries" }
   | { type: "notice"; message: string }
   | { type: "delta"; text: string }
   | { type: "message"; text: string }
@@ -82,6 +82,8 @@ export interface MessageDraft {
    * mid-answer); rendered with an explicit "may be incomplete" marker.
    */
   interrupted?: boolean;
+  /** A partial block can retry only until another turn starts. */
+  retryable?: boolean;
 }
 
 export interface TurnError {
@@ -102,14 +104,24 @@ interface ActiveSegment {
 
 export type TurnPhase = "idle" | "working" | "writing";
 
-/** Background caption fetching that runs before a new conversation's first answer. */
+/**
+ * Background work before a new conversation's first answer: captions being
+ * fetched, or (step "summaries") the long videos of a big selection being
+ * summarized so the answer can read all of it.
+ */
 export interface PreparingProgress {
   done: number;
   total: number;
+  step?: "summaries";
 }
 
 /** Status line for the preparing step, e.g. "Reading the videos — 3 of 8 ready…". */
 export function preparingLabel(progress: PreparingProgress): string {
+  if (progress.step === "summaries") {
+    return progress.total === 1
+      ? "Summarizing the long video first…"
+      : `Summarizing the long videos first — ${progress.done} of ${progress.total} done…`;
+  }
   if (progress.total === 1) {
     return "Reading the video…";
   }
@@ -137,6 +149,7 @@ const ERROR_TITLES: Record<string, string> = {
   claude_timeout: "The answer took too long.",
   claude_failed: "The AI turn failed.",
   aborted: "The turn was cancelled.",
+  output_truncated: "The answer was cut off.",
   chat_failed: "Something went wrong.",
   network: "scope's server isn't reachable.",
   no_transcripts: "No cached sources in this selection.",
@@ -258,13 +271,15 @@ export function MessageBubble({
       {message.interrupted ? (
         <p className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
           <span>Stopped here — this answer may be incomplete.</span>
-          <button
-            type="button"
-            onClick={onRetry}
-            className="shrink-0 rounded-sm font-medium text-foreground underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            Ask again
-          </button>
+          {message.retryable !== false ? (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="shrink-0 rounded-sm font-medium text-foreground underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Ask again
+            </button>
+          ) : null}
         </p>
       ) : null}
     </div>
@@ -292,13 +307,14 @@ export interface ChatEngineOptions {
   showToast?: (message: string, tone: ToastTone) => void;
   /** Called when a turn creates a new thread (e.g. to sync the URL). */
   onThreadCreated?: (threadId: number) => void;
-  /** Called when a turn completes (e.g. to refresh the thread history). */
+  /** Called once when a turn settles, including failure or Stop (e.g. refresh history). */
   onTurnComplete?: () => void;
 }
 
 export interface ChatEngine {
   messages: MessageDraft[];
   selectedSources: readonly SourceRef[];
+  sourceMetadata: readonly ChatSource[];
   threadId: number | null;
   draft: string;
   setDraft: (draft: string) => void;
@@ -314,6 +330,8 @@ export interface ChatEngine {
   /** The mode the in-flight turn was dispatched with (status text truthfulness). */
   turnMode: ChatModeId;
   generating: boolean;
+  /** Outcome of the last turn, retained until another turn starts. */
+  stoppedByUser: boolean;
   canSend: boolean;
   send: (raw: string) => void;
   /** Re-sends the last user message after a failed or stopped turn. */
@@ -344,7 +362,9 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
   const { scope, scopeSources, scrollerRef } = options;
   const [messages, setMessages] = useState<MessageDraft[]>([]);
   const [threadId, setThreadId] = useState<number | null>(null);
+  const [stoppedByUser, setStoppedByUser] = useState(false);
   const [threadSources, setThreadSources] = useState<SourceRef[]>([]);
+  const [sourceMetadata, setSourceMetadata] = useState<ChatSource[]>([]);
   const [draft, setDraft] = useState("");
   const [turnPhase, setTurnPhase] = useState<TurnPhase>("idle");
   const [preparing, setPreparing] = useState<PreparingProgress | null>(null);
@@ -369,6 +389,7 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
   const stoppedByUserRef = useRef(false);
   const optimisticIdRef = useRef<string | null>(null);
   const sentMessageRef = useRef("");
+  const sentMessageIdRef = useRef<number | null>(null);
   const atBottomRef = useRef(true);
   const revealTimerRef = useRef<number | null>(null);
 
@@ -500,22 +521,27 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
    * flagged, with an "Ask again" way to retry right where it stopped.
    */
   const markInterrupted = useCallback((): void => {
+    const activeSegments = segmentsRef.current;
     setMessages((prev) => {
       const index = prev.findLastIndex((message) => message.role === "assistant");
       const target = index === -1 ? undefined : prev[index];
-      if (!target || target.interrupted) {
+      if (
+        !target ||
+        target.interrupted ||
+        !activeSegments.some((segment) => segment.id === target.id)
+      ) {
         return prev;
       }
       // A failure can beat the chase buffer: text the segment holds but has
       // not revealed yet still counts as a partial answer on screen.
       const hasText =
         target.content.length > 0 ||
-        segmentsRef.current.some((segment) => segment.id === target.id && segment.text.length > 0);
+        activeSegments.some((segment) => segment.id === target.id && segment.text.length > 0);
       if (!hasText) {
         return prev;
       }
       const next = [...prev];
-      next[index] = { ...target, interrupted: true };
+      next[index] = { ...target, interrupted: true, retryable: true };
       return next;
     });
   }, []);
@@ -526,12 +552,14 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
         case "thread": {
           setPreparing(null);
           setThreadId(event.threadId);
+          if (event.sourceMetadata) setSourceMetadata(event.sourceMetadata);
           if (event.created) {
             onThreadCreatedRef.current?.(event.threadId);
           }
           break;
         }
         case "user_message": {
+          sentMessageIdRef.current = event.id;
           // Reconcile the optimistic message with its persisted identity.
           const optimisticId = optimisticIdRef.current;
           if (optimisticId) {
@@ -547,7 +575,9 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
         case "status": {
           if (event.phase === "preparing") {
             setPreparing(
-              event.done < event.total ? { done: event.done, total: event.total } : null,
+              event.done < event.total
+                ? { done: event.done, total: event.total, step: event.step }
+                : null,
             );
             break;
           }
@@ -609,6 +639,7 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
             removeOptimisticUser();
           }
           setTurnPhase("idle");
+          onTurnCompleteRef.current?.();
           if (event.code === "aborted" && stoppedByUserRef.current) {
             // The user pressed Stop; the partial text stays, clearly marked.
             markInterrupted();
@@ -628,7 +659,7 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
       payload:
         | { videoIds: string[]; message: string; mode: ChatModeId }
         | { sources: SourceRef[]; message: string; mode: ChatModeId }
-        | { threadId: number; message: string; mode: ChatModeId },
+        | { threadId: number; message: string; mode: ChatModeId; retryMessageId?: number },
     ): Promise<void> => {
       if (!("threadId" in payload))
         setThreadSources(
@@ -639,10 +670,12 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
       const controller = new AbortController();
       abortRef.current = controller;
       stoppedByUserRef.current = false;
+      setStoppedByUser(false);
       turnCompleteRef.current = false;
       setTurnMode(payload.mode);
       setTurnPhase("working");
       ensureReveal();
+      let receivedTerminal = false;
       try {
         const response = await fetch("/api/ai/chat", {
           method: "POST",
@@ -661,7 +694,10 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
           failTurn(failure.code, failure.message);
           return;
         }
-        await consumeSse(response.body, handleStreamEvent);
+        await consumeSse(response.body, (event) => {
+          if (event.type === "done" || event.type === "error") receivedTerminal = true;
+          handleStreamEvent(event);
+        });
         if (!turnCompleteRef.current) {
           // The stream ended without a terminal event; never leave the
           // composer locked, and mark any partial answer.
@@ -684,6 +720,9 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
         console.error("[ai/chat-engine] chat request failed:", error);
         failTurn("network", "scope could not reach the chat service. Is the server running?");
       } finally {
+        // A client abort or disconnected stream has no terminal SSE event.
+        // The server may already have committed its thread and question.
+        if (!receivedTerminal) onTurnCompleteRef.current?.();
         setPreparing(null);
         if (abortRef.current === controller) {
           abortRef.current = null;
@@ -695,21 +734,49 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
 
   /** Posts one user message as the next turn of this conversation. */
   const dispatchMessage = useCallback(
-    (message: string): void => {
+    (message: string, retryMessageId?: number): void => {
+      // Settle the previous reveal before opening this turn. Its partial
+      // text remains labelled, but its retry must not resend a later question.
+      const settled = segmentsRef.current;
+      stopReveal();
+      segmentsRef.current = [];
+      setMessages((prev) =>
+        prev
+          .filter(
+            (entry) =>
+              !settled.some((segment) => segment.id === entry.id && segment.text.length === 0),
+          )
+          .map((entry) => {
+            const segment = settled.find((candidate) => candidate.id === entry.id);
+            return {
+              ...entry,
+              ...(segment ? { content: segment.text, streaming: false } : {}),
+              ...(entry.interrupted ? { retryable: false } : {}),
+            };
+          }),
+      );
       sentMessageRef.current = message;
-      optimisticIdRef.current = nextId("u");
-      const optimisticId = optimisticIdRef.current;
-      setMessages((prev) => [...prev, { id: optimisticId, role: "user", content: message }]);
+      if (retryMessageId === undefined) {
+        sentMessageIdRef.current = null;
+        optimisticIdRef.current = nextId("u");
+        const optimisticId = optimisticIdRef.current;
+        setMessages((prev) => [...prev, { id: optimisticId, role: "user", content: message }]);
+      }
       const sources = scopeSourcesRef.current;
       void runTurn(
         threadId === null
           ? sources.length > 0
             ? { sources: [...sources], message, mode }
             : { videoIds: [...scopeRef.current], message, mode }
-          : { threadId, message, mode },
+          : {
+              threadId,
+              message,
+              mode,
+              ...(retryMessageId !== undefined ? { retryMessageId } : {}),
+            },
       );
     },
-    [mode, nextId, runTurn, threadId],
+    [mode, nextId, runTurn, stopReveal, threadId],
   );
 
   const send = useCallback(
@@ -727,19 +794,24 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
 
   /**
    * Re-sends the last user message (the "Try again" affordance for a failed
-   * or stopped turn). Unlike send it never touches the draft, so text typed
-   * while the turn was running survives the retry.
+   * or stopped turn). Consume a restored copy of that question, while keeping
+   * a different draft the user typed while the turn was running.
    */
   const retryLast = useCallback((): void => {
     if (!canSend || turnPhase !== "idle" || sentMessageRef.current.length === 0) {
       return;
     }
     setTurnError(null);
-    dispatchMessage(sentMessageRef.current);
+    if (draftRef.current === sentMessageRef.current) {
+      draftRef.current = "";
+      setDraft("");
+    }
+    dispatchMessage(sentMessageRef.current, sentMessageIdRef.current ?? undefined);
   }, [canSend, dispatchMessage, turnPhase]);
 
   const stop = useCallback((): void => {
     stoppedByUserRef.current = true;
+    setStoppedByUser(true);
     abortRef.current?.abort();
   }, []);
 
@@ -762,6 +834,7 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
             selectedSources?: SourceRef[];
           };
           messages?: Array<{ id: number; role: string; content: string }>;
+          sourceMetadata?: ChatSource[];
         };
         if (!body.thread) {
           throw new Error("thread missing from response");
@@ -776,11 +849,14 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
         segmentsRef.current = [];
         turnCompleteRef.current = true;
         setThreadId(id);
+        setSourceMetadata(body.sourceMetadata ?? []);
         setThreadSources(
           body.thread.selectedSources ??
             (body.thread.videoIds ?? []).map((id) => ({ kind: "video" as const, id })),
         );
         setMessages(drafts);
+        sentMessageIdRef.current = null;
+        sentMessageRef.current = "";
         // The switcher follows the reopened thread's stored mode (threads
         // from before the mode system ran deep).
         if (isChatModeId(body.thread.mode)) {
@@ -808,7 +884,10 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
       return;
     }
     segmentsRef.current = [];
+    sentMessageIdRef.current = null;
+    sentMessageRef.current = "";
     setThreadId(null);
+    setSourceMetadata([]);
     setMessages([]);
     setTurnError(null);
     setNotices([]);
@@ -931,6 +1010,7 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
   return {
     messages,
     selectedSources,
+    sourceMetadata,
     threadId,
     draft,
     setDraft,
@@ -942,6 +1022,7 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
     selectMode,
     turnMode,
     generating,
+    stoppedByUser,
     canSend,
     send,
     retryLast,
@@ -966,6 +1047,15 @@ export function useChatTurnEngine(options: ChatEngineOptions): ChatEngine {
  */
 export function useChatSourceIndex(
   sources: readonly ChatSource[] | undefined,
+  archivedSources?: readonly ChatSource[],
 ): ReadonlyMap<string, ChatSource> | undefined {
-  return useMemo(() => (sources ? indexChatSources(sources) : undefined), [sources]);
+  return useMemo(() => {
+    if (!sources && !archivedSources?.length) return undefined;
+    const index = indexChatSources(archivedSources ?? []);
+    for (const source of sources ?? []) {
+      const key = source.kind === "tweet" ? `tweet:${source.id}` : source.id;
+      index.set(key, { ...index.get(key), ...source });
+    }
+    return index;
+  }, [sources, archivedSources]);
 }

@@ -4,10 +4,11 @@ import { useEffect } from "react";
 
 import { getTasks, updateTask } from "./task-store";
 import type { InsightSummary, SyncSnapshot } from "@/lib/x/dashboard/model";
+import { isRunning, needsAttention } from "@/lib/x/dashboard/sync-copy";
 
 /**
  * Mirrors X Dashboard work into the activity panel from any page: AI
- * analyses while they write, and X syncs while they run. Reads local state
+ * analyses while they write, and a new X account's first import. Reads local state
  * only; it never starts or resumes work.
  */
 export function XDashboardActivity() {
@@ -15,6 +16,8 @@ export function XDashboardActivity() {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
     const seen = new Map<string, string>();
+    /** Accounts whose first import this session watched run. */
+    const watched = new Set<number>();
     const poll = async () => {
       let busy = false;
       try {
@@ -46,30 +49,38 @@ export function XDashboardActivity() {
                 : (insight.error ?? (insight.status === "complete" ? "Analysis ready" : "Stopped")),
             });
           }
+          // Routine background updates stay out of Activity; only a new account's first import shows,
+          // and it is done once its recent posts are in (older posts keep arriving quietly).
           const sync = data.sync;
           if (sync) {
-            const running = sync.state === "syncing" || sync.state === "waiting";
-            busy ||= running;
-            const previous = seen.get("x-sync");
-            seen.set("x-sync", sync.state);
-            if (running || (previous && previous !== sync.state && (previous === "syncing" || previous === "waiting")))
+            const importing = sync.creators.filter((c) => c.firstSync && isRunning(c));
+            busy ||= importing.length > 0;
+            for (const c of importing) watched.add(c.creatorId);
+            if (importing.length)
               updateTask({
                 key: "x-sync",
-                label: "Syncing X",
+                label: "Getting posts from X",
                 href: "/x-dashboard",
-                status: running
-                  ? "running"
-                  : sync.state === "error" || sync.state === "disconnected"
-                    ? "failed"
-                    : sync.state === "paused"
-                      ? "stopped"
-                      : "done",
-                message: running
-                  ? sync.state === "waiting"
-                    ? (sync.message ?? "Waiting for X")
-                    : `${sync.total - sync.pending} of ${sync.total} accounts done`
-                  : (sync.message ?? (sync.newPosts ? `${sync.newPosts} new posts` : "Up to date")),
+                status: "running",
+                message:
+                  importing.length === 1 ? "Importing a new account…" : `Importing ${importing.length} new accounts…`,
               });
+            else if (watched.size) {
+              const finished = sync.creators.filter((c) => watched.has(c.creatorId));
+              watched.clear();
+              const problem = finished.find(needsAttention);
+              updateTask({
+                key: "x-sync",
+                label: "Getting posts from X",
+                href: "/x-dashboard",
+                status: problem ? "failed" : "done",
+                message: problem
+                  ? (problem.message ?? "An account couldn't be imported.")
+                  : finished.some((c) => !c.lastSyncedAt)
+                    ? "Posts will finish arriving on the next update."
+                    : "Posts are ready",
+              });
+            }
           }
         }
       } catch {

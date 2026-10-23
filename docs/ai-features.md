@@ -9,7 +9,7 @@ README's [AI features](../README.md#ai-features) section.
 ## Requirements
 
 - A cached transcript for every video you want to include (get one from a
-  video page or the AI Research page first).
+  video page first).
 - **One AI backend**, chosen in Settings → AI providers (stage 9; Claude
   stage 10; provider-auth stage). All three ride your own subscriptions
   through their own CLIs; scope never stores provider keys and strips ambient
@@ -57,8 +57,8 @@ and re-seeds the conversation.
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | Sidebar → "AI Chat"              | The full-screen chat workspace: every conversation from every source collection in one history, new chats, and deletions.       |
 | Video page → "Ask AI"            | Chat grounded in that one video's transcript.                                                                                   |
-| Channel page → "Select videos"   | Tick any videos, then chat about the selection.                                                                                 |
-| AI Research page                 | Pick creators, tick videos across them, chat.                                                                                   |
+| Creator page → "Select videos"   | Tick any videos on an account tab, then chat about the selection.                                                               |
+| Creator page → "Ask AI"         | Opens AI Chat with the source picker focused on that creator (every linked platform).                                           |
 | Ask AI panel → "Generate report" | Pick a depth profile and visual style, then queue an HTML report over the current selection (or the open conversation's scope). |
 | Reports page                     | Watch queued/running jobs, open finished reports, read failure reasons.                                                         |
 
@@ -233,8 +233,11 @@ shown on the Reports page.
    before the chat opens); unknown ids are reported the same way.
 2. **Materialization** — one plain-text file per selected transcript is
    written to a fresh job directory (`data/ai-jobs/<jobId>/transcripts/`),
-   each with a metadata header (title, creator, URL, date, language, caption
-   source), plus a `manifest.json` recording exactly what was written.
+   each with a metadata header (title, creator, channel, URL, date, language,
+   caption source), plus a `manifest.json` recording exactly what was written.
+   `Creator` is the person (every linked YouTube, Rumble, and X account shares
+   it) and `Channel` the platform account, e.g. `YouTube @janedoe`, so the
+   model can compare what one creator says on each platform.
 3. **AI run** — the server spawns the selected provider CLI with the job
    directory as its working directory. Chat turns use the active provider's
    model and effort/variant from the mode matrix; reports use the requested

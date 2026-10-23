@@ -7,17 +7,23 @@ import {
   addCreator,
   getCreator,
   removeCreator,
+  setCreatorFollowed,
   type CreatorRecord,
   type CreatorPlatform,
   type NewCreatorInput,
 } from "./repository";
+import { ensureHostAvatar, type HostAvatarDeps } from "./host-avatar";
 import { resolveCreatorFromUrl, type ResolvedCreator } from "./resolver";
 import { resolveRumbleCreatorPreview } from "./rumble-resolver";
-import { importRumbleVideo } from "@/lib/rumble/video-import";
 import { parseRumbleUrl } from "@/lib/rumble/urls";
+import { parseVideoLink } from "@/lib/videos/import/links";
+import { resolveVideoLinkCached } from "@/lib/videos/import/preview-cache";
+import type { ResolveDeps } from "@/lib/videos/import/resolve";
+import { importVideos } from "@/lib/videos/import/service";
 import { parseXTarget } from "@/lib/x/urls";
 import { resolveXCreator, saveXCreator, type XResolvedCreator } from "@/lib/x/service";
 import { deleteOrphanTweets } from "@/lib/x/repository";
+import { pruneSourceOnlyHosts } from "@/lib/videos/attribution";
 import { isAllowedImageUrl } from "./avatar";
 import {
   addCreatorCategories,
@@ -38,6 +44,8 @@ export interface CreatorSummary {
   /** Platform-stable account id (X user id); null for YouTube/Rumble. */
   platformUserId: string | null;
   platform: CreatorPlatform;
+  /** The person (creator profile) this account is filed under. */
+  profileId: number;
   categories: CreatorCategory[];
 }
 
@@ -52,6 +60,12 @@ const RESOLUTION_CODE_TO_STATUS: Record<string, number> = {
   ytdlp_missing: 503,
   unavailable_channel: 422,
   unavailable_video: 422,
+  // Video links (a Rumble video link also follows its channel).
+  no_english_captions: 422,
+  live_or_upcoming: 422,
+  no_channel: 422,
+  unsupported_site: 400,
+  invalid_input: 400,
   throttled: 429,
   network: 502,
   timeout: 504,
@@ -83,6 +97,7 @@ function toSummary(record: CreatorRecord, categories: CreatorCategory[] = []): C
     youtubeChannelId: record.youtubeChannelId,
     platformUserId: record.platformUserId,
     platform: record.platform,
+    profileId: record.profileId,
     categories,
   };
 }
@@ -101,6 +116,7 @@ export async function addCreatorFromUrl(
   db: ScopeDatabase,
   rawInput: string,
   platform?: CreatorPlatform,
+  deps: VideoHostDeps = {},
 ): Promise<
   | { ok: true; status: "created" | "already_saved"; creator: CreatorSummary }
   | { ok: false; error: CreatorServiceError }
@@ -126,30 +142,19 @@ export async function addCreatorFromUrl(
     };
   }
 
-  // Rumble links go through the Rumble paths: a video link imports the
-  // video and auto-provisions its creator; a channel link saves identity.
-  if (parseRumbleUrl(rawInput).ok) {
+  // Rumble links: a video link follows its channel and imports that one
+  // video through the shared import engine; a channel link saves identity.
+  const rumble = parseRumbleUrl(rawInput);
+  if (rumble.ok) {
+    if (rumble.target.kind === "video") {
+      const followed = await followHostWithVideo(db, rawInput, [], deps);
+      return followed.ok
+        ? { ok: true, status: followed.status, creator: followed.creator }
+        : { ok: false, error: followed.error };
+    }
     const preview = await resolveRumbleCreatorPreview(rawInput);
     if (!preview.ok) {
       return { ok: false, error: preview.error };
-    }
-    if (preview.creator.videoUrl !== null) {
-      const imported = await importRumbleVideo(db, preview.creator.videoUrl);
-      if (!imported.ok) {
-        return { ok: false, error: imported.error };
-      }
-      const record = getCreator(db, imported.creatorId);
-      if (!record) {
-        return {
-          ok: false,
-          error: { code: "unexpected_response", message: "The creator could not be saved." },
-        };
-      }
-      return {
-        ok: true,
-        status: imported.status,
-        creator: toSummary(record, listCategoriesForCreator(db, record.id)),
-      };
     }
     const outcome = addCreator(db, {
       youtubeChannelId: null,
@@ -205,9 +210,10 @@ export interface CreatorPreviewModel {
   avatarUrl: string | null;
   /** Rumble only: follower count when the listing page exposed it. */
   followerCount: number | null;
-  /** Rumble video links only: the video the import will cache. */
-  videoTitle: string | null;
-  videoId: string | null;
+  /**
+   * Rumble video links only: the canonical video link. Saving follows the
+   * video's channel and imports that one video (`followHostWithVideo`).
+   */
   videoUrl: string | null;
   /** X status links only: the post the import will cache. */
   tweetId: string | null;
@@ -226,8 +232,6 @@ function toXPreview(creator: XResolvedCreator): CreatorPreviewModel {
     channelUrl: creator.channelUrl,
     avatarUrl: creator.avatarUrl,
     followerCount: null,
-    videoTitle: null,
-    videoId: null,
     videoUrl: null,
     tweetId: creator.tweetId,
     tweetText: creator.tweetText,
@@ -241,11 +245,11 @@ function mismatchedPlatform(message: string): { ok: false; error: CreatorService
 }
 
 export async function resolveCreatorFromAnyUrl(
+  db: ScopeDatabase,
   rawInput: string,
   platform?: CreatorPlatform,
-): Promise<
-  { ok: true; creator: CreatorPreviewModel } | { ok: false; error: CreatorServiceError }
-> {
+  deps: VideoHostDeps = {},
+): Promise<{ ok: true; creator: CreatorPreviewModel } | { ok: false; error: CreatorServiceError }> {
   const xTarget = parseXTarget(rawInput, { allowBareHandle: platform === "x" });
 
   if (platform === "x" || (platform === undefined && xTarget.ok)) {
@@ -275,6 +279,34 @@ export async function resolveCreatorFromAnyUrl(
   }
 
   if (isRumble) {
+    // A video link previews the channel it would follow, through the same
+    // resolution (and English-caption check) that saving runs again.
+    const video = parseVideoLink(rawInput);
+    if (video.ok && video.link.platform === "rumble") {
+      const resolved = await resolveVideoLinkCached(db, video.link, deps.resolve);
+      if (!resolved.ok) {
+        return { ok: false, error: resolved.error };
+      }
+      const { host } = resolved.video;
+      return {
+        ok: true,
+        creator: {
+          platform: "rumble",
+          youtubeChannelId: null,
+          platformUserId: null,
+          handle: host.handle,
+          displayName: host.displayName,
+          channelUrl: host.channelUrl,
+          avatarUrl: null,
+          followerCount: null,
+          videoUrl: resolved.video.url,
+          tweetId: null,
+          tweetText: null,
+          tweetUrl: null,
+          tweetPublishedAt: null,
+        },
+      };
+    }
     const preview = await resolveRumbleCreatorPreview(rawInput);
     if (!preview.ok) {
       return { ok: false, error: preview.error };
@@ -291,9 +323,7 @@ export async function resolveCreatorFromAnyUrl(
         channelUrl: creator.channelUrl,
         avatarUrl: creator.avatarUrl,
         followerCount: creator.followerCount,
-        videoTitle: creator.videoTitle,
-        videoId: creator.videoId,
-        videoUrl: creator.videoUrl,
+        videoUrl: null,
         tweetId: null,
         tweetText: null,
         tweetUrl: null,
@@ -313,8 +343,6 @@ export async function resolveCreatorFromAnyUrl(
       platform: resolved.platform,
       platformUserId: null,
       followerCount: null,
-      videoTitle: null,
-      videoId: null,
       videoUrl: null,
       tweetId: null,
       tweetText: null,
@@ -453,7 +481,8 @@ export function saveResolvedCreator(
 // saveResolvedCreator's validation pattern.
 // ---------------------------------------------------------------------------
 
-const RUMBLE_CHANNEL_URL_PATTERN = /^https:\/\/(?:www\.)?rumble\.com\/(?:c|user)\/[0-9A-Za-z._-]{2,60}$/;
+const RUMBLE_CHANNEL_URL_PATTERN =
+  /^https:\/\/(?:www\.)?rumble\.com\/(?:c|user)\/[0-9A-Za-z._-]{2,60}$/;
 
 function isValidRumbleChannelUrl(value: unknown): value is string {
   return typeof value === "string" && RUMBLE_CHANNEL_URL_PATTERN.test(value);
@@ -488,8 +517,7 @@ export function validateRumbleCreatorPayload(
     };
   }
   const handleRaw = candidate.handle;
-  const handle =
-    typeof handleRaw === "string" && HANDLE_PATTERN.test(handleRaw) ? handleRaw : null;
+  const handle = typeof handleRaw === "string" && HANDLE_PATTERN.test(handleRaw) ? handleRaw : null;
 
   return {
     ok: true,
@@ -506,14 +534,16 @@ export function validateRumbleCreatorPayload(
 
 /**
  * Persists a confirmed Rumble preview. When the payload carries a video URL
- * (a video-link import) the whole import re-runs server side — the client
- * only supplies the link reference, never the video data — and the freshly
- * provisioned creator keeps the newly checked categories.
+ * the channel is followed and that one video imported through the shared
+ * engine (`followHostWithVideo`): the whole import re-runs server side — the
+ * client only supplies the link reference, never the video data — and the
+ * channel keeps the newly checked categories.
  */
 export async function saveRumbleCreatorPayload(
   db: ScopeDatabase,
   payload: unknown,
   categoryIdsValue: unknown = [],
+  deps: VideoHostDeps = {},
 ): Promise<
   | { ok: true; status: "created" | "already_saved"; creator: CreatorSummary }
   | { ok: false; error: CreatorServiceError }
@@ -537,23 +567,7 @@ export async function saveRumbleCreatorPayload(
   const videoUrl = typeof videoUrlRaw === "string" && videoUrlRaw.length > 0 ? videoUrlRaw : null;
 
   if (videoUrl !== null && parseRumbleUrl(videoUrl).ok) {
-    const imported = await importRumbleVideo(db, videoUrl);
-    if (!imported.ok) {
-      return { ok: false, error: imported.error };
-    }
-    addCreatorCategories(db, imported.creatorId, categoryIds);
-    const record = getCreator(db, imported.creatorId);
-    if (!record) {
-      return {
-        ok: false,
-        error: { code: "unexpected_response", message: "The creator could not be saved." },
-      };
-    }
-    return {
-      ok: true,
-      status: imported.status,
-      creator: toSummary(record, listCategoriesForCreator(db, record.id)),
-    };
+    return followHostWithVideo(db, videoUrl, categoryIds, deps);
   }
 
   const validated = validateRumbleCreatorPayload(payload);
@@ -586,7 +600,12 @@ export async function saveXCreatorPayload(
   payload: unknown,
   categoryIdsValue: unknown = [],
 ): Promise<
-  | { ok: true; status: "created" | "already_saved"; creator: CreatorSummary; importedTweet: boolean }
+  | {
+      ok: true;
+      status: "created" | "already_saved";
+      creator: CreatorSummary;
+      importedTweet: boolean;
+    }
   | { ok: false; error: CreatorServiceError }
 > {
   const categoryIds = normalizeIds(categoryIdsValue, 100);
@@ -633,8 +652,11 @@ export function removeCreatorById(
   const removed = removeCreator(db, id);
   if (removed) {
     // Creator timelines cascade; posts no other timeline references are
-    // reclaimed so removal does not leave orphaned text behind.
+    // reclaimed so removal does not leave orphaned text behind. If this was a
+    // person's last account their attributions went with it, so source-only
+    // hosts that only held their videos are reclaimed as well.
     deleteOrphanTweets(db);
+    pruneSourceOnlyHosts(db);
   }
   return { ok: true, removed };
 }
@@ -644,4 +666,117 @@ export function getCreatorById(db: ScopeDatabase, id: number): CreatorRecord | n
     return null;
   }
   return getCreator(db, id);
+}
+
+// ---------------------------------------------------------------------------
+// Following channels that were saved from a single video.
+// ---------------------------------------------------------------------------
+
+/** Test seams for the network work behind a followed video channel. */
+export interface VideoHostDeps {
+  resolve?: Partial<ResolveDeps>;
+  avatar?: Partial<HostAvatarDeps>;
+}
+
+/**
+ * Turns a source-only channel (saved because a hand-picked video lives on it)
+ * into a followed creator: it joins the library and gets its picture. The
+ * picture lookup is best effort and never fails the follow. Callers start the
+ * channel's first feed refresh themselves.
+ */
+export async function followCreator(
+  db: ScopeDatabase,
+  creatorId: number,
+  avatar: Partial<HostAvatarDeps> = {},
+): Promise<{ ok: true; creator: CreatorSummary } | { ok: false; error: CreatorServiceError }> {
+  if (!Number.isInteger(creatorId) || creatorId < 1) {
+    return { ok: false, error: { code: "invalid_id", message: "That channel ID is not valid." } };
+  }
+  const record = getCreator(db, creatorId);
+  if (!record) {
+    return {
+      ok: false,
+      error: { code: "not_found", message: "That channel is no longer in your library." },
+    };
+  }
+  if (record.followed) {
+    return {
+      ok: false,
+      error: {
+        code: "already_followed",
+        message: `${record.displayName} is already in your library.`,
+      },
+    };
+  }
+  if (!setCreatorFollowed(db, creatorId, true)) {
+    return {
+      ok: false,
+      error: { code: "not_found", message: "That channel is no longer in your library." },
+    };
+  }
+  await ensureHostAvatar(db, creatorId, avatar);
+  const followed = getCreator(db, creatorId) ?? { ...record, followed: true };
+  return { ok: true, creator: toSummary(followed, listCategoriesForCreator(db, creatorId)) };
+}
+
+/**
+ * "Follow {host} as a creator" for a pasted video link: the video's channel
+ * joins the library (with its picture and the chosen categories) and that one
+ * video is cached under it, without attributing it to anyone. The link goes
+ * through the same resolution and English-caption check as Other videos, and
+ * the channel's refresh time is left alone, as nothing was refreshed.
+ */
+export async function followHostWithVideo(
+  db: ScopeDatabase,
+  videoUrl: string,
+  categoryIdsValue: unknown = [],
+  deps: VideoHostDeps = {},
+): Promise<
+  | { ok: true; status: "created" | "already_saved"; creator: CreatorSummary }
+  | { ok: false; error: CreatorServiceError & { retryable?: boolean } }
+> {
+  const categoryIds = normalizeIds(categoryIdsValue, 100);
+  if (categoryIds === null) {
+    return {
+      ok: false,
+      error: { code: "invalid_payload", message: "That category selection is not valid." },
+    };
+  }
+  if (!categoriesExist(db, categoryIds)) {
+    return {
+      ok: false,
+      error: { code: "invalid_payload", message: "One of those categories no longer exists." },
+    };
+  }
+
+  const { results } = await importVideos(
+    db,
+    { urls: [videoUrl], profileId: null, followHost: true },
+    deps.resolve,
+  );
+  const row = results[0];
+  if (row === undefined || row.status === "rejected" || row.hostCreatorId === undefined) {
+    const error = row?.error;
+    return {
+      ok: false,
+      error: error
+        ? { code: error.code, message: error.message, retryable: error.retryable }
+        : { code: "unexpected_response", message: "The video could not be added." },
+    };
+  }
+
+  await ensureHostAvatar(db, row.hostCreatorId, deps.avatar);
+  addCreatorCategories(db, row.hostCreatorId, categoryIds);
+  const record = getCreator(db, row.hostCreatorId);
+  if (!record) {
+    return {
+      ok: false,
+      error: { code: "unexpected_response", message: "The creator could not be saved." },
+    };
+  }
+  return {
+    ok: true,
+    status: row.hostFollowedBefore ? "already_saved" : "created",
+    creator: toSummary(record, listCategoriesForCreator(db, record.id)),
+  };
 }

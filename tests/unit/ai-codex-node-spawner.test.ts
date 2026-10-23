@@ -88,7 +88,7 @@ describe("createNodeCodexSpawner", () => {
       "exec",
       "--json",
       "-m",
-      "gpt-5.6-sol",
+      "gpt-6.1-sol",
       "-c",
       'model_reasoning_effort="xhigh"',
       "-s",

@@ -3,7 +3,8 @@
 import { useBackgroundChat } from "@/components/ai/background-chat";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import {
   ArrowDown,
   ArrowUp,
@@ -44,9 +45,11 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PendingIndicator } from "@/components/ui/pending";
 import { useToast } from "@/components/ui/toast";
 import { useChatSidebarCollapsed } from "./sidebar-state";
+import { localAvatarSrc } from "@/lib/creators/avatar";
 import { formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { CategorySummary } from "@/lib/categories";
+import type { ChatModeModels } from "@/lib/ai/chat-modes";
 
 /**
  * The full-screen chat workspace (the "AI Chat" destination): every saved
@@ -75,6 +78,11 @@ export interface ChatWorkspaceVideo {
   durationSeconds?: number | null;
   liveStatus?: "not_live" | "is_live" | "was_live" | "upcoming" | "unknown";
   categoryIds: number[];
+  /** An appearance on another person's channel (see PickerVideo). */
+  featuredProfileId?: number | null;
+  featuredName?: string | null;
+  hostName?: string | null;
+  platform?: "youtube" | "rumble" | "x" | null;
 }
 
 export interface ChatWorkspaceTweet {
@@ -120,6 +128,10 @@ export interface ChatWorkspaceProps {
   initialVideoIds: string[];
   /** ?sources= mixed-source deep link (kind:id pairs). */
   initialSources?: SourceRef[];
+  /** ?creators= deep link: open the source picker focused on this person (profile id). */
+  initialFocusedCreator?: number | null;
+  /** The model and effort each mode runs on, shown beside the mode switcher. */
+  modeModels?: ChatModeModels;
 }
 
 const DAY_MS = 86_400_000;
@@ -263,7 +275,7 @@ function ThreadList({
         <div className="flex flex-col gap-3">
           {groups.map((group) => (
             <section key={group.label} aria-label={group.label}>
-              <p className="px-2 pb-1 text-[0.6875rem] font-semibold tracking-wide text-muted-foreground/80 uppercase">
+              <p className="px-2 pb-1 text-[0.6875rem] font-semibold tracking-wide text-muted-foreground uppercase">
                 {group.label}
               </p>
               <ul className="flex flex-col gap-0.5">
@@ -306,6 +318,14 @@ function ThreadList({
   );
 }
 
+/**
+ * X research answers cite posts as `[tweet:<id>]`; chat citations are source
+ * file paths, so rewrite them to render the same post chips.
+ */
+function researchCitationsToChat(content: string): string {
+  return content.replace(/\[tweet:(\d+)\]/g, "(tweets/$1.txt)");
+}
+
 export function ChatWorkspace({
   videos,
   tweets = [],
@@ -315,9 +335,10 @@ export function ChatWorkspace({
   initialThreadId,
   initialVideoIds,
   initialSources,
+  initialFocusedCreator = null,
+  modeModels,
 }: ChatWorkspaceProps) {
   const pathname = usePathname();
-  const router = useRouter();
   const [threads, setThreads] = useState<ChatWorkspaceThread[]>(initialThreads);
   const [scopeSources, setScopeSources] = useState<SourceRef[]>(initialSources ?? []);
   const [scope, setScope] = useState<string[]>(() =>
@@ -325,7 +346,9 @@ export function ChatWorkspace({
       ? initialSources.filter((source) => source.kind === "video").map((source) => source.id)
       : initialVideoIds,
   );
-  const [sourcesOpen, setSourcesOpen] = useState(false);
+  // A creator deep link opens the picker once; later opens start unfocused.
+  const [pickerFocus, setPickerFocus] = useState(initialFocusedCreator);
+  const [sourcesOpen, setSourcesOpen] = useState(initialFocusedCreator !== null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useChatSidebarCollapsed();
   const [threadSearch, setThreadSearch] = useState("");
@@ -399,14 +422,34 @@ export function ChatWorkspace({
   });
 
   const sourceIndex = useChatSourceIndex(
-    useMemo<ChatSource[]>(
-      () => [
-        ...videos.map((video) => ({
-          id: video.id,
-          title: video.title,
-          creator: video.creatorName,
-          thumbnailUrl: video.thumbnailUrl,
-        })),
+    useMemo<ChatSource[]>(() => {
+      const accounts = new Map(creators.map((creator) => [creator.id, creator]));
+      return [
+        ...videos.map((video) => {
+          const account = accounts.get(video.creatorId);
+          const platform = video.platform ?? account?.platform;
+          // An appearance shows the person it features, not its (hidden) host.
+          const person =
+            video.featuredProfileId != null
+              ? creators.find((creator) => creator.profileId === video.featuredProfileId)
+              : account;
+          return {
+            id: video.id,
+            platform: platform === "youtube" || platform === "rumble" ? platform : undefined,
+            title: video.title,
+            creator: video.creatorName,
+            // An appearance reads "{person} on {channel}".
+            ...(video.featuredProfileId != null && video.hostName
+              ? { channelName: video.hostName }
+              : {}),
+            creatorAvatarUrl: person
+              ? localAvatarSrc(person.avatarUrl, person.avatarCreatorId)
+              : null,
+            publishedAt: video.publishedAt,
+            durationSeconds: video.durationSeconds,
+            thumbnailUrl: video.thumbnailUrl,
+          };
+        }),
         ...tweets.map((tweet) => ({
           id: tweet.id,
           kind: "tweet" as const,
@@ -416,9 +459,9 @@ export function ChatWorkspace({
           publishedAt: tweet.publishedAt,
           thumbnailUrl: tweet.mediaPreviewUrl,
         })),
-      ],
-      [videos, tweets],
-    ),
+      ];
+    }, [videos, tweets, creators]),
+    engine.sourceMetadata,
   );
 
   const startNewChat = useCallback((): void => {
@@ -435,11 +478,6 @@ export function ChatWorkspace({
 
   const openThread = useCallback(
     async (id: number): Promise<void> => {
-      const saved = threadsRef.current.find((entry) => entry.id === id);
-      if (saved?.researchJobId) {
-        router.push("/x-dashboard");
-        return;
-      }
       const opened = await engine.openThread(id);
       if (!opened) {
         return;
@@ -492,6 +530,10 @@ export function ChatWorkspace({
 
   const videosById = useMemo(() => new Map(videos.map((video) => [video.id, video])), [videos]);
   const tweetsById = useMemo(() => new Map(tweets.map((tweet) => [tweet.id, tweet])), [tweets]);
+  const profileOfAccount = useMemo(
+    () => new Map(creators.map((creator) => [creator.id, creator.profileId])),
+    [creators],
+  );
 
   /**
    * The committed selection as typed references. Legacy video-only state
@@ -517,9 +559,10 @@ export function ChatWorkspace({
       .filter((source) => source.kind === "tweet")
       .map((source) => tweetsById.get(source.id))
       .filter((tweet): tweet is ChatWorkspaceTweet => tweet !== undefined);
+    // People, not accounts: one creator's YouTube and X sources count once.
     const creators = new Set([
-      ...knownVideos.map((video) => video.creatorName),
-      ...knownTweets.map((tweet) => tweet.authorName),
+      ...knownVideos.map((video) => profileOfAccount.get(video.creatorId) ?? -video.creatorId),
+      ...knownTweets.map((tweet) => profileOfAccount.get(tweet.creatorId) ?? -tweet.creatorId),
     ]);
     return {
       known: knownVideos,
@@ -533,10 +576,13 @@ export function ChatWorkspace({
       // Every video can ground a chat (its captions are read on the first
       // turn); posts need their complete text.
       sourceCount:
-        knownVideos.length + knownTweets.filter((tweet) => tweet.readyForAnalysis).length,
+        engine.threadId !== null
+          ? effectiveSources.length
+          : knownVideos.length + knownTweets.filter((tweet) => tweet.readyForAnalysis).length,
       creatorCount: creators.size,
+      allSourcesKnown: knownVideos.length + knownTweets.length === effectiveSources.length,
     };
-  }, [effectiveSources, videosById, tweetsById]);
+  }, [effectiveSources, videosById, tweetsById, profileOfAccount, engine.threadId]);
 
   const activeThread =
     engine.threadId === null
@@ -602,10 +648,19 @@ export function ChatWorkspace({
     prefetchTranscripts(videoIds);
   }, []);
 
+  // X research conversations (saved before that page folded into the X
+  // Dashboard) answer through a background analysis job, not this stream,
+  // so they open here to read but take no follow-ups.
+  const researchReadOnly = activeThread?.researchJobId !== undefined;
+  const canCompose = engine.canSend && !researchReadOnly;
+  // A stopped research run saved only the question; there is nothing to brief.
+  const researchUnanswered = researchReadOnly && engine.messages.at(-1)?.role === "user";
+
   const heading = activeThread?.title ?? (engine.threadId !== null ? "Conversation" : "New chat");
-  const subheading =
-    engine.threadId !== null
-      ? `${scopeDetails.sourceCount} ${scopeDetails.sourceCount === 1 ? "source" : "sources"} · ${scopeDetails.creatorCount} ${scopeDetails.creatorCount === 1 ? "creator" : "creators"}`
+  const subheading = researchReadOnly
+    ? "X research · read-only"
+    : engine.threadId !== null
+      ? `${effectiveSources.length} ${effectiveSources.length === 1 ? "source" : "sources"}${scopeDetails.allSourcesKnown ? ` · ${scopeDetails.creatorCount} ${scopeDetails.creatorCount === 1 ? "creator" : "creators"}` : ""}`
       : scopeDetails.sourceCount > 0
         ? `${scopeDetails.sourceCount} ${scopeDetails.sourceCount === 1 ? "source" : "sources"} selected · ready to chat`
         : "Pick sources to ground the answers";
@@ -682,9 +737,9 @@ export function ChatWorkspace({
                 <div className="flex size-14 items-center justify-center rounded-full border bg-muted/40">
                   <MessageSquareText aria-hidden="true" className="size-7 text-muted-foreground" />
                 </div>
-                <h3 className="text-xl font-semibold tracking-tight">
+                <h2 className="text-xl font-semibold tracking-tight">
                   What would you like to research?
-                </h3>
+                </h2>
                 <p className="max-w-md text-balance text-sm text-muted-foreground">
                   Every conversation is grounded in the videos and posts you pick — one video or a
                   whole selection, across your whole library. Past chats stay in the history on the
@@ -700,7 +755,7 @@ export function ChatWorkspace({
                 <div className="flex size-14 items-center justify-center rounded-full border bg-muted/40">
                   <MessageSquareText aria-hidden="true" className="size-7 text-muted-foreground" />
                 </div>
-                <h3 className="text-xl font-semibold tracking-tight">Nothing to chat about yet</h3>
+                <h2 className="text-xl font-semibold tracking-tight">Nothing to chat about yet</h2>
                 <p className="max-w-md text-balance text-sm text-muted-foreground">
                   Save a creator and refresh their feed first — then come back and pick their videos
                   or posts as sources.
@@ -722,11 +777,20 @@ export function ChatWorkspace({
               {engine.messages.map((message) => (
                 <MessageBubble
                   key={message.id}
-                  message={message}
+                  message={
+                    researchReadOnly
+                      ? { ...message, content: researchCitationsToChat(message.content) }
+                      : message
+                  }
                   sources={sourceIndex}
                   onRetry={engine.retryLast}
                 />
               ))}
+              {researchUnanswered ? (
+                <AlertNote tone="info" title="No answer saved" politeness="polite">
+                  This X research run stopped before it finished. Start a new chat to ask again.
+                </AlertNote>
+              ) : null}
               {engine.turnPhase === "working" ? (
                 <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
                   <ThinkingDots />
@@ -772,7 +836,12 @@ export function ChatWorkspace({
         <form onSubmit={engine.handleSubmit} className="flex flex-col gap-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
-              {engine.threadId !== null ? (
+              {researchReadOnly ? (
+                <span className="inline-flex min-w-0 items-center gap-1.5 rounded-md border bg-muted/50 px-2.5 py-1.5 text-xs text-muted-foreground">
+                  <BookOpenText aria-hidden="true" className="size-3.5 shrink-0" />
+                  <span className="truncate">X research conversation · read-only</span>
+                </span>
+              ) : engine.threadId !== null ? (
                 <span
                   className="inline-flex min-w-0 items-center gap-1.5 rounded-md border bg-muted/50 px-2.5 py-1.5 text-xs text-muted-foreground"
                   title="A conversation's sources are fixed — start a new chat to pick others"
@@ -797,32 +866,47 @@ export function ChatWorkspace({
                 </Button>
               )}
             </div>
-            <div
-              role="group"
-              aria-label="Chat mode"
-              className="flex shrink-0 items-center rounded-md bg-muted/70 p-0.5"
-            >
-              {CHAT_MODE_OPTIONS.map((option) => {
-                const selected = engine.mode === option.id;
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => engine.selectMode(option.id)}
-                    aria-pressed={selected}
-                    disabled={!engine.canSend}
-                    title={option.tagline}
-                    className={cn(
-                      "rounded-[5px] px-2.5 py-1 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none disabled:pointer-events-none disabled:opacity-50",
-                      selected
-                        ? "bg-background text-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {option.label}
-                  </button>
-                );
-              })}
+            <div className="flex min-w-0 items-center gap-2.5">
+              {modeModels ? (
+                <Link
+                  href="/settings"
+                  title={`${modeModels.provider} · ${modeModels.modes[engine.mode]} — change the model for each mode in Settings → AI`}
+                  className="min-w-0 truncate rounded-sm text-xs text-muted-foreground underline-offset-2 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {modeModels.modes[engine.mode]}
+                </Link>
+              ) : null}
+              <div
+                role="group"
+                aria-label="Chat mode"
+                className="flex shrink-0 items-center rounded-md bg-muted/70 p-0.5"
+              >
+                {CHAT_MODE_OPTIONS.map((option) => {
+                  const selected = engine.mode === option.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => engine.selectMode(option.id)}
+                      aria-pressed={selected}
+                      disabled={!canCompose}
+                      title={
+                        modeModels
+                          ? `${option.tagline} · ${modeModels.modes[option.id]}`
+                          : option.tagline
+                      }
+                      className={cn(
+                        "rounded-[5px] px-2.5 py-1 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none disabled:pointer-events-none disabled:opacity-50",
+                        selected
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
           <label htmlFor="chat-composer" className="sr-only">
@@ -833,11 +917,13 @@ export function ChatWorkspace({
               id="chat-composer"
               rows={3}
               value={engine.draft}
-              disabled={!engine.canSend}
+              disabled={!canCompose}
               placeholder={
-                engine.canSend
-                  ? "Ask a question…"
-                  : "Pick sources first — chats answer from what is said in them"
+                researchReadOnly
+                  ? "X research conversations can't take follow-ups — start a new chat to keep going"
+                  : engine.canSend
+                    ? "Ask a question…"
+                    : "Pick sources first — chats answer from what is said in them"
               }
               onChange={(event) => engine.setDraft(event.target.value)}
               onKeyDown={engine.handleComposerKeyDown}
@@ -858,7 +944,7 @@ export function ChatWorkspace({
               <Button
                 type="submit"
                 size="sm"
-                disabled={!engine.canSend || engine.draft.trim().length === 0}
+                disabled={!canCompose || engine.draft.trim().length === 0}
               >
                 <ArrowUp aria-hidden="true" />
                 Send
@@ -872,7 +958,11 @@ export function ChatWorkspace({
 
   return (
     // Use the full desktop viewport; mobile sits below the navigation header.
-    <div className="relative flex h-[calc(100dvh-6.5rem)] min-h-0 overflow-hidden md:h-dvh">
+    <main
+      id="main"
+      tabIndex={-1}
+      className="relative flex h-[calc(100dvh-6.5rem)] min-h-0 overflow-hidden md:h-dvh"
+    >
       {sidebarCollapsed ? null : (
         <div className="hidden w-72 shrink-0 overflow-hidden border-r bg-card md:flex">
           {sidebarList}
@@ -921,7 +1011,7 @@ export function ChatWorkspace({
             )}
           </Button>
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-sm font-semibold tracking-tight">{heading}</h2>
+            <h1 className="truncate text-sm font-semibold tracking-tight">{heading}</h1>
             <p className="truncate text-xs text-muted-foreground">
               {subheading}
               {engine.threadId !== null
@@ -956,7 +1046,7 @@ export function ChatWorkspace({
             variant="ghost"
             size="icon"
             onClick={() => setReportDialogOpen(true)}
-            disabled={!engine.canSend || generating}
+            disabled={!engine.canSend || generating || researchUnanswered}
             aria-label="Generate report"
             title="Generate report"
           >
@@ -970,7 +1060,15 @@ export function ChatWorkspace({
 
       <ChatSourcePicker
         open={sourcesOpen}
-        onClose={() => setSourcesOpen(false)}
+        onClose={() => {
+          setSourcesOpen(false);
+          if (pickerFocus !== null && engine.threadId === null) {
+            // Drop ?creators= so a reload doesn't reopen the picker.
+            syncUrl("");
+          }
+          setPickerFocus(null);
+        }}
+        initialFocusedCreator={pickerFocus}
         videos={videos}
         tweets={tweets}
         creators={creators}
@@ -979,6 +1077,7 @@ export function ChatWorkspace({
         onConfirm={(refs) => {
           applySources(refs);
           setSourcesOpen(false);
+          setPickerFocus(null);
           if (engine.threadId === null) {
             const hasTweet = refs.some((source) => source.kind === "tweet");
             syncUrl(
@@ -1020,6 +1119,6 @@ export function ChatWorkspace({
       </ConfirmDialog>
 
       {toastElement}
-    </div>
+    </main>
   );
 }

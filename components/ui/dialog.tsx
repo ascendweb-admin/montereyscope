@@ -27,7 +27,8 @@ interface AppDialogProps {
 /**
  * Lightweight modal built on the native <dialog> element so focus handling,
  * Escape-to-close, and the inert background come free without extra
- * dependencies. Backdrop clicks close the dialog. Focus is restored to the
+ * dependencies. Backdrop clicks close the dialog (the press and release must
+ * both land on the backdrop, so text selection drags never dismiss it). Focus is restored to the
  * element that opened it, including when the dialog unmounts.
  */
 export function AppDialog({
@@ -42,6 +43,10 @@ export function AppDialog({
 }: AppDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
+  // Whether the current press began on the backdrop itself. A drag that starts
+  // inside the panel (selecting text) and is released over the backdrop fires
+  // its click on the <dialog> — their common ancestor — and must not dismiss.
+  const pressStartedOnBackdropRef = useRef(false);
   const titleId = useId();
   const descriptionId = useId();
 
@@ -106,8 +111,13 @@ export function AppDialog({
         event.preventDefault();
         requestClose();
       }}
+      onPointerDown={(event) => {
+        pressStartedOnBackdropRef.current = event.target === dialogRef.current;
+      }}
       onClick={(event) => {
-        if (event.target === dialogRef.current) {
+        const startedOnBackdrop = pressStartedOnBackdropRef.current;
+        pressStartedOnBackdropRef.current = false;
+        if (startedOnBackdrop && event.target === dialogRef.current) {
           requestClose();
         }
       }}

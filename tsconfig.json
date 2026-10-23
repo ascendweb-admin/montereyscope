@@ -28,7 +28,9 @@
     "**/*.tsx",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
+    ".next-desktop/types/**/*.ts",
+    ".next-desktop/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "desktop/dist", "desktop/vendor"]
+  "exclude": ["node_modules", "desktop/dist", "desktop/vendor", "build", "tmp"]
 }

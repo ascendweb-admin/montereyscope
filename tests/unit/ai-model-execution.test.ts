@@ -63,6 +63,21 @@ function snapshotWith(provider: AiBackendId, models: CatalogModel[]): ModelCatal
 }
 
 describe("resolveCatalogExecution", () => {
+  it.each(ALL)("asks to connect %s before diagnosing an unavailable model", (provider) => {
+    const snapshot = {
+      ...snapshotWith(provider, []).providers[provider],
+      connected: false,
+    };
+    const result = resolveCatalogExecution(snapshot, {
+      model: "saved-model",
+      reasoningEffort: "high",
+    });
+    expect(result.problem?.code).toBe("provider_disconnected");
+    expect(result.problem?.message).toContain("Settings → AI providers");
+    expect(result.problem?.message).toContain("not connected");
+    expect(result.model).toBeUndefined();
+  });
+
   it("resolves bundled entries through the public-to-runtime mapping", () => {
     const snapshot = bundledCatalogSnapshot().providers.codex;
     expect(

@@ -11,12 +11,14 @@ import {
   listCategories,
   listCategoriesForCreator,
   listCreatorCategoryAssignments,
-  replaceCategoryCreators,
-  replaceCreatorCategories,
+  listProfileCategoryAssignments,
+  replaceCategoryProfiles,
+  replaceProfileCategories,
   updateCategory,
 } from "@/lib/categories/repository";
-import { createCategoryFromInput, setCreatorCategoryIds } from "@/lib/categories/service";
+import { createCategoryFromInput, setProfileCategoryIds } from "@/lib/categories/service";
 import { addCreator, getCreator } from "@/lib/creators/repository";
+import { mergeProfiles } from "@/lib/creators/profiles";
 import { saveResolvedCreator } from "@/lib/creators/service";
 import type { ScopeDatabase } from "@/lib/db/connection";
 import { ALL_MIGRATIONS } from "@/lib/db/migrations";
@@ -44,6 +46,13 @@ function creator(name: string, suffix: string): number {
   }).creator.id;
 }
 
+/** The person a saved account is filed under. */
+function profileOf(creatorId: number): number {
+  const record = getCreator(db, creatorId);
+  if (!record) throw new Error("Creator should exist");
+  return record.profileId;
+}
+
 beforeEach(() => {
   if (db) db.close();
   db = makeDb();
@@ -58,7 +67,7 @@ describe("creator categories", () => {
   it("creates, lists, and updates categories with creator counts", () => {
     const finance = createCategory(db, { name: "Finance", color: "emerald" });
     const creatorId = creator("A Channel", "a-channel");
-    replaceCreatorCategories(db, creatorId, [finance.id]);
+    replaceProfileCategories(db, profileOf(creatorId), [finance.id]);
 
     expect(listCategories(db)).toEqual([
       expect.objectContaining({ name: "Finance", color: "emerald", creatorCount: 1 }),
@@ -76,8 +85,8 @@ describe("creator categories", () => {
     const alpha = creator("Alpha", "alpha-channel");
     const beta = creator("Beta", "beta-channel");
 
-    replaceCreatorCategories(db, alpha, [technology.id, interviews.id]);
-    replaceCategoryCreators(db, interviews.id, [alpha, beta]);
+    replaceProfileCategories(db, profileOf(alpha), [technology.id, interviews.id]);
+    replaceCategoryProfiles(db, interviews.id, [profileOf(alpha), profileOf(beta)]);
 
     expect(listCategoriesForCreator(db, alpha).map((category) => category.name)).toEqual([
       "Interviews",
@@ -92,14 +101,14 @@ describe("creator categories", () => {
   it("deleting a category preserves creators while deleting a creator cleans membership", () => {
     const category = createCategory(db, { name: "Keep creator", color: "rose" });
     const creatorId = creator("Safe Creator", "safe-creator");
-    replaceCreatorCategories(db, creatorId, [category.id]);
+    replaceProfileCategories(db, profileOf(creatorId), [category.id]);
 
     expect(deleteCategory(db, category.id)).toBe(true);
     expect(getCreator(db, creatorId)?.displayName).toBe("Safe Creator");
     expect(listCategoriesForCreator(db, creatorId)).toEqual([]);
 
     const next = createCategory(db, { name: "Second", color: "slate" });
-    replaceCreatorCategories(db, creatorId, [next.id]);
+    replaceProfileCategories(db, profileOf(creatorId), [next.id]);
     db.prepare("DELETE FROM creators WHERE id = ?").run(creatorId);
     expect(listCategories(db)[0]?.creatorCount).toBe(0);
   });
@@ -112,11 +121,15 @@ describe("creator categories", () => {
     expect(duplicate).toMatchObject({ ok: false, error: { code: "duplicate_name" } });
 
     const creatorId = creator("Alpha", "alpha-category");
-    expect(setCreatorCategoryIds(db, creatorId, [999])).toMatchObject({
+    expect(setProfileCategoryIds(db, profileOf(creatorId), [999])).toMatchObject({
       ok: false,
       error: { code: "not_found" },
     });
-    expect(setCreatorCategoryIds(db, creatorId, ["bad"])).toMatchObject({
+    expect(setProfileCategoryIds(db, 9999, [])).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(setProfileCategoryIds(db, profileOf(creatorId), ["bad"])).toMatchObject({
       ok: false,
       error: { code: "invalid_input" },
     });
@@ -144,5 +157,25 @@ describe("creator categories", () => {
     expect(
       listCategoriesForCreator(db, duplicate.creator.id).map((category) => category.name),
     ).toEqual(["Interviews", "Markets"]);
+  });
+
+  it("files categories on the person, so every linked account shares them", () => {
+    const markets = createCategory(db, { name: "Markets", color: "emerald" });
+    const interviews = createCategory(db, { name: "Interviews", color: "violet" });
+    const channel = creator("Jane Doe", "janedoe");
+    const clips = creator("Jane Doe Clips", "janedoeclips");
+    replaceProfileCategories(db, profileOf(channel), [markets.id]);
+    replaceProfileCategories(db, profileOf(clips), [interviews.id]);
+
+    mergeProfiles(db, profileOf(channel), [profileOf(clips)]);
+
+    // Both accounts now carry the union, counted once for the one person.
+    expect(listCategoriesForCreator(db, clips).map((category) => category.name)).toEqual([
+      "Interviews",
+      "Markets",
+    ]);
+    expect(listCreatorCategoryAssignments(db).get(channel)).toHaveLength(2);
+    expect(listProfileCategoryAssignments(db).get(profileOf(channel))).toHaveLength(2);
+    expect(listCategories(db).map((category) => category.creatorCount)).toEqual([1, 1]);
   });
 });

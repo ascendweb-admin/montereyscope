@@ -24,10 +24,18 @@ import {
   X,
 } from "lucide-react";
 
+import {
+  CHAT_MODE_OPTIONS,
+  chatModeOption,
+  createModeStore,
+  type ChatModeId,
+} from "@/components/ai/chat-modes";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Spinner } from "@/components/ui/pending";
 import { InsightMarkdown } from "@/components/x-dashboard/insight-markdown";
 import { requestJson, useInsight } from "@/components/x-dashboard/use-dashboard-data";
+import type { ChatModeModels } from "@/lib/ai/chat-modes";
 import { formatRelativeTime } from "@/lib/format";
 import {
   INSIGHT_PRESETS,
@@ -41,6 +49,9 @@ import { cn } from "@/lib/utils";
 
 /** What the panel would analyze right now (the visible feed, or a selection). */
 export type DraftScope = Omit<InsightScope, "since" | "until">;
+
+/** The mode new analyses start in, remembered apart from AI Chat's. */
+const insightModeStore = createModeStore("scope.x-dashboard.insight-mode", "balanced");
 
 const PRESET_ICONS: Record<string, typeof Sparkles> = {
   brief: Sparkles,
@@ -115,7 +126,7 @@ function Composer({
         className="block max-h-44 min-h-14 w-full resize-none bg-transparent px-3.5 pt-3 pb-1 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
       />
       <div className="flex items-center gap-2 pr-2 pb-2 pl-3.5">
-        <div className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{hint}</div>
+        <div className="min-w-0 flex-1">{hint}</div>
         {running ? (
           <Button type="button" variant="secondary" size="sm" className="h-7 px-2.5" onClick={onStop}>
             <Square aria-hidden="true" className="!size-3" />
@@ -132,15 +143,49 @@ function Composer({
   );
 }
 
-/** "Using Codex · model · Change", shown inside the composer. */
-function ModelHint({ aiLabel }: { aiLabel: string }) {
+/** Quick / Balanced / Deep, plus the model that mode runs on (set in Settings → AI). */
+function ModePicker({
+  mode,
+  models,
+  disabled,
+  onChange,
+}: {
+  mode: ChatModeId;
+  models: ChatModeModels;
+  disabled?: boolean;
+  onChange: (mode: ChatModeId) => void;
+}) {
   return (
-    <>
-      {aiLabel} ·{" "}
-      <Link href="/settings" className="underline-offset-2 hover:text-foreground hover:underline">
-        Change
+    <div className="flex min-w-0 items-center gap-2">
+      <div role="group" aria-label="Analysis mode" className="flex shrink-0 items-center rounded-md bg-muted/70 p-0.5">
+        {CHAT_MODE_OPTIONS.map((option) => {
+          const selected = option.id === mode;
+          return (
+            <button
+              key={option.id}
+              type="button"
+              aria-pressed={selected}
+              disabled={disabled}
+              title={`${option.tagline} · ${models.modes[option.id]}`}
+              onClick={() => onChange(option.id)}
+              className={cn(
+                "rounded-[5px] px-2 py-0.5 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none",
+                selected ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+      <Link
+        href="/settings"
+        title={`${models.provider} · ${models.modes[mode]} — change the model for each mode in Settings → AI`}
+        className="min-w-0 truncate rounded-sm text-[11px] text-muted-foreground underline-offset-2 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {models.modes[mode]}
       </Link>
-    </>
+    </div>
   );
 }
 
@@ -148,10 +193,12 @@ function ModelHint({ aiLabel }: { aiLabel: string }) {
 function ScopeLine({
   scope,
   preview,
+  importing,
   onClearSelection,
 }: {
   scope: DraftScope;
   preview: { postCount: number; total: number; accounts: number } | null | "error";
+  importing: number;
   onClearSelection: () => void;
 }) {
   const selection = scope.tweetIds?.length ?? 0;
@@ -183,9 +230,16 @@ function ScopeLine({
           : preview === "error"
             ? "Couldn't count posts for this view."
             : preview.postCount === 0
-              ? "No posts with text here yet — widen the time range or sync first."
+              ? "No posts with text here yet — widen the time range or update first."
               : `${preview.postCount.toLocaleString()} post${preview.postCount === 1 ? "" : "s"} from ${preview.accounts} account${preview.accounts === 1 ? "" : "s"}${preview.total > preview.postCount ? ` (newest ${preview.postCount.toLocaleString()} of ${preview.total.toLocaleString()})` : ""}`}
       </p>
+      {importing && !selection && scope.period !== "24h" ? (
+        <p>
+          Older posts are still arriving for {importing === 1 ? "1 account" : `${importing} accounts`}, so
+          this may not include{" "}
+          {scope.period === "all" ? "their full history" : `all of the last ${PERIOD_LABELS[scope.period]}`} yet.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -229,7 +283,7 @@ function AnswerActions({
             Update report
           </Button>
           <Link
-            href="/reports"
+            href={`/reports?report=${detail.reportId}`}
             className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Check aria-hidden="true" className="size-3.5" />
@@ -254,7 +308,7 @@ function AnswerActions({
 
 function InsightView({
   detail,
-  aiLabel,
+  aiModels,
   wide,
   onFollowUp,
   onRetry,
@@ -263,15 +317,18 @@ function InsightView({
   busy,
 }: {
   detail: InsightDetail;
-  aiLabel: string;
+  aiModels: ChatModeModels;
   wide: boolean;
-  onFollowUp: (question: string) => Promise<boolean>;
+  onFollowUp: (question: string, mode: ChatModeId) => Promise<boolean>;
   onRetry: () => void;
   onStop: () => void;
   onSave: () => void;
   busy: boolean;
 }) {
   const [draft, setDraft] = useState("");
+  // Follow-ups start in the mode the analysis last ran in; a pick only lasts for this analysis.
+  const [modePick, setModePick] = useState<{ insightId: string; mode: ChatModeId } | null>(null);
+  const mode = modePick?.insightId === detail.id ? modePick.mode : detail.mode;
   const [now, setNow] = useState(() => Date.now());
   const running = detail.status === "running";
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -300,8 +357,8 @@ function InsightView({
             <p className="mt-0.5 text-xs text-muted-foreground">
               {detail.scope.tweetIds?.length
                 ? `${detail.postCount} selected post${detail.postCount === 1 ? "" : "s"}`
-                : `${detail.scope.label} · ${PERIOD_LABELS[detail.scope.period]} · ${detail.postCount.toLocaleString()} posts`}
-              {" · "}
+                : `${detail.scope.label} · ${PERIOD_LABELS[detail.scope.period]} · ${detail.postCount.toLocaleString()} post${detail.postCount === 1 ? "" : "s"}`}
+              {` · ${chatModeOption(detail.mode).label} · `}
               <span suppressHydrationWarning>{formatRelativeTime(detail.createdAt)}</span>
             </p>
           </div>
@@ -371,13 +428,20 @@ function InsightView({
             disabled={busy}
             running={running}
             onStop={onStop}
-            hint={<ModelHint aiLabel={aiLabel} />}
+            hint={
+              <ModePicker
+                mode={mode}
+                models={aiModels}
+                disabled={busy}
+                onChange={(next) => setModePick({ insightId: detail.id, mode: next })}
+              />
+            }
             value={draft}
             onChange={setDraft}
             onSubmit={() => {
               const question = draft.trim();
               setDraft("");
-              void onFollowUp(question).then((ok) => {
+              void onFollowUp(question, mode).then((ok) => {
                 if (!ok) setDraft(question);
               });
             }}
@@ -397,7 +461,7 @@ function HistoryList({
   insights: InsightSummary[];
   activeId: string | null;
   onOpen: (id: string) => void;
-  onDelete: (id: string) => void;
+  onDelete: (insight: InsightSummary) => void;
 }) {
   if (!insights.length)
     return (
@@ -433,7 +497,7 @@ function HistoryList({
               <span className="block truncate text-sm font-medium">{insight.title}</span>
               <span className="block truncate text-xs text-muted-foreground" suppressHydrationWarning>
                 {insight.status === "running" ? "Writing…" : formatRelativeTime(insight.createdAt)} ·{" "}
-                {insight.postCount.toLocaleString()} posts
+                {insight.postCount.toLocaleString()} post{insight.postCount === 1 ? "" : "s"}
               </span>
             </span>
           </button>
@@ -441,7 +505,7 @@ function HistoryList({
             type="button"
             aria-label={`Delete ${insight.title}`}
             title="Delete"
-            onClick={() => onDelete(insight.id)}
+            onClick={() => onDelete(insight)}
             className="absolute top-2 right-1.5 rounded-md p-1.5 text-muted-foreground opacity-0 outline-none transition-opacity group-hover/item:opacity-100 hover:bg-background hover:text-destructive focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
           >
             <Trash2 aria-hidden="true" className="size-3.5" />
@@ -454,7 +518,9 @@ function HistoryList({
 
 export function AnalyzePanel({
   scope,
-  aiLabel,
+  importing = 0,
+  revision = null,
+  aiModels,
   activeId,
   onActiveIdChange,
   onClearSelection,
@@ -465,7 +531,11 @@ export function AnalyzePanel({
   onWideChange,
 }: {
   scope: DraftScope;
-  aiLabel: string;
+  /** Accounts in scope whose older posts are still arriving; recent days are always complete. */
+  importing?: number;
+  /** Changes when posts in scope are saved, so the post count stays current. */
+  revision?: string | null;
+  aiModels: ChatModeModels;
   activeId: string | null;
   onActiveIdChange: (id: string | null) => void;
   onClearSelection: () => void;
@@ -484,7 +554,11 @@ export function AnalyzePanel({
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { insight, error: loadError, setInsight } = useInsight(activeId);
+  const [deleteTarget, setDeleteTarget] = useState<InsightSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [mode, setMode] = insightModeStore.useMode();
+  const { insight, error: loadError, setInsight, refresh } = useInsight(activeId);
   const scopeKey = JSON.stringify(scope);
 
   const loadHistory = useCallback(() => {
@@ -517,15 +591,19 @@ export function AnalyzePanel({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [scopeKey]);
+  }, [scopeKey, revision]);
 
-  async function start(input: { preset?: string; question?: string }, target: DraftScope = scope) {
+  async function start(
+    input: { preset?: string; question?: string },
+    target: DraftScope = scope,
+    runMode: ChatModeId = mode,
+  ) {
     if (busy) return false;
     setBusy(true);
     setError(null);
     try {
       const data = await requestJson<{ insight: InsightDetail }>("/api/x-dashboard/insights", {
-        body: { scope: target, ...input },
+        body: { scope: target, ...input, mode: runMode },
       });
       setInsight(data.insight);
       onActiveIdChange(data.insight.id);
@@ -550,6 +628,8 @@ export function AnalyzePanel({
         { body },
       );
       setInsight(data.insight);
+      // A follow-up restarts the run; poll again so its answer streams in.
+      if (data.insight.status === "running") refresh();
       return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -561,6 +641,24 @@ export function AnalyzePanel({
 
   const empty = preview !== null && preview !== "error" && preview.postCount === 0;
   const showInsight = view === "home" && activeId;
+
+  async function confirmDelete() {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await requestJson(`/api/x-dashboard/insights/${encodeURIComponent(deleteTarget.id)}`, {
+        method: "DELETE",
+      });
+      setInsights((current) => current.filter((item) => item.id !== deleteTarget.id));
+      if (deleteTarget.id === activeId) onActiveIdChange(null);
+      setDeleteTarget(null);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Couldn't delete the analysis.");
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   const column = cn("w-full", wide && "mx-auto max-w-3xl");
 
@@ -642,13 +740,9 @@ export function AnalyzePanel({
                 onActiveIdChange(id);
                 setView("home");
               }}
-              onDelete={(id) => {
-                void requestJson(`/api/x-dashboard/insights/${encodeURIComponent(id)}`, { method: "DELETE" })
-                  .then(() => {
-                    if (id === activeId) onActiveIdChange(null);
-                    loadHistory();
-                  })
-                  .catch((err: unknown) => setError(err instanceof Error ? err.message : "Couldn't delete."));
+              onDelete={(item) => {
+                setDeleteError(null);
+                setDeleteTarget(item);
               }}
             />
           </div>
@@ -657,20 +751,21 @@ export function AnalyzePanel({
         insight ? (
           <InsightView
             detail={insight}
-            aiLabel={aiLabel}
+            aiModels={aiModels}
             wide={wide}
             busy={busy}
             onStop={() => void act({ action: "stop" })}
             onSave={() => void act({ action: "save" })}
-            onFollowUp={(question) => act({ action: "ask", question })}
+            onFollowUp={(question, followUpMode) => act({ action: "ask", question, mode: followUpMode })}
             onRetry={() => {
               const lastQuestion = insight.messages.findLast((m) => m.role === "user");
               if (insight.messages.length > 2 && lastQuestion)
-                void act({ action: "ask", question: lastQuestion.content });
+                void act({ action: "ask", question: lastQuestion.content, mode: insight.mode });
               else
                 void start(
                   insight.preset ? { preset: insight.preset } : { question: lastQuestion?.content ?? "" },
                   insight.scope,
+                  insight.mode,
                 );
             }}
           />
@@ -684,7 +779,12 @@ export function AnalyzePanel({
           <div className="min-h-0 flex-1 overflow-x-clip overflow-y-auto overscroll-contain">
             <div className={cn(column, "space-y-5 px-3 pt-4 pb-4")}>
               <div className="px-2">
-                <ScopeLine scope={scope} preview={preview} onClearSelection={onClearSelection} />
+                <ScopeLine
+                  scope={scope}
+                  preview={preview}
+                  importing={importing}
+                  onClearSelection={onClearSelection}
+                />
               </div>
               <div>
                 <p className="mb-1 px-2 text-xs font-medium text-muted-foreground">Analyses</p>
@@ -762,7 +862,7 @@ export function AnalyzePanel({
                 placeholder="Ask anything about these posts…"
                 disabled={busy || empty}
                 autoFocus={Boolean(scope.tweetIds?.length)}
-                hint={<ModelHint aiLabel={aiLabel} />}
+                hint={<ModePicker mode={mode} models={aiModels} disabled={busy} onChange={setMode} />}
                 value={draftQuestion}
                 onChange={onDraftQuestionChange}
                 onSubmit={() => {
@@ -777,6 +877,26 @@ export function AnalyzePanel({
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onClose={() => setDeleteTarget(null)}
+        title="Delete analysis"
+        description="This permanently deletes the analysis and its follow-ups."
+        confirmLabel="Delete analysis"
+        destructive
+        busy={deleting}
+        busyLabel="Deleting…"
+        onConfirm={() => void confirmDelete()}
+      >
+        <p className="text-sm">
+          Delete <strong>{deleteTarget?.title}</strong>? Saved reports and source posts stay in Scope.
+        </p>
+        {deleteError ? (
+          <p role="alert" className="text-sm text-destructive">
+            {deleteError}
+          </p>
+        ) : null}
+      </ConfirmDialog>
     </section>
   );
 }

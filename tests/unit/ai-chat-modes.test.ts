@@ -56,6 +56,17 @@ describe("chat mode configuration", () => {
     }
   });
 
+  it("tells every mode how to read a Featuring line, without speaker labels", () => {
+    for (const mode of CHAT_MODES) {
+      const instruction = buildSystemInstruction(mode.id).replace(/\s+/g, " ");
+      expect(instruction).toContain(
+        "Featuring line naming someone who appears on another person's",
+      );
+      expect(instruction).toContain("captions carry no speaker labels");
+      expect(instruction).toContain("never attribute a statement to the featured person");
+    }
+  });
+
   it("keeps the exported SYSTEM_INSTRUCTION as the deep seed", () => {
     expect(SYSTEM_INSTRUCTION).toBe(buildSystemInstruction("deep"));
     expect(SYSTEM_INSTRUCTION).toContain("deep-research mode");

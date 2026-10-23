@@ -27,8 +27,18 @@ interface FeedTabsProps {
   creatorName?: string;
   /** Rendered on the tab row's far side (e.g. the selection-mode toggle). */
   headerAction?: ReactNode;
+  /** Optional filter beside the single-list count. */
+  headerFilter?: ReactNode;
+  /** Empty state for a filtered list, instead of the channel refresh guidance. */
+  emptyState?: ReactNode;
   /** When present, every card renders a selection checkbox bound to it. */
   selection?: FeedTabsSelection;
+  /**
+   * With no livestreams, show one plain list with a count instead of the
+   * Videos / Livestreams switcher (a list that can never hold a livestream,
+   * such as a person's Other videos).
+   */
+  singleList?: boolean;
 }
 
 const TAB_ORDER: readonly FeedTabKey[] = ["videos", "livestreams"];
@@ -48,7 +58,10 @@ export function FeedTabs({
   hasEverRefreshed,
   creatorName,
   headerAction,
+  headerFilter,
+  emptyState,
   selection,
+  singleList = false,
 }: FeedTabsProps) {
   const baseId = useId();
   const [activeTab, setActiveTab] = useState<FeedTabKey>("videos");
@@ -62,6 +75,7 @@ export function FeedTabs({
   const activeItems = items[activeTab];
   const shownItems = activeItems.slice(0, visibleCount);
   const hiddenCount = activeItems.length - shownItems.length;
+  const plainList = singleList && livestreams.length === 0;
 
   const selectTab = (tab: FeedTabKey): void => {
     setActiveTab(tab);
@@ -92,54 +106,63 @@ export function FeedTabs({
   return (
     <div>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div
-          role="tablist"
-          aria-label="Feed sections"
-          className="flex w-full gap-1 rounded-lg border bg-muted/50 p-1 sm:w-fit"
-        >
-          {TAB_ORDER.map((tab) => {
-            const selected = tab === activeTab;
-            return (
-              <button
-                key={tab}
-                ref={(node) => {
-                  tabRefs.current[tab] = node;
-                }}
-                role="tab"
-                id={`${baseId}-tab-${tab}`}
-                aria-selected={selected}
-                aria-controls={`${baseId}-panel-${tab}`}
-                tabIndex={selected ? 0 : -1}
-                onClick={() => selectTab(tab)}
-                onKeyDown={handleTabKeyDown}
-                className={cn(
-                  "flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring sm:flex-none motion-reduce:transition-none",
-                  selected
-                    ? "bg-card text-card-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {tab === "videos" ? (
-                  <ListVideo aria-hidden="true" className="size-4" />
-                ) : (
-                  <Radio aria-hidden="true" className="size-4" />
-                )}
-                {tab === "videos" ? "Videos" : "Livestreams"}
-                <span className="rounded-full bg-muted px-1.5 text-xs text-muted-foreground">
-                  {items[tab].length}
-                </span>
-              </button>
-            );
-          })}
-        </div>
+        {plainList ? (
+          <div className="flex flex-wrap items-center gap-3">
+            {headerFilter}
+            <p aria-live="polite" className="text-sm text-muted-foreground">
+              {videos.length} {videos.length === 1 ? "video" : "videos"}
+            </p>
+          </div>
+        ) : (
+          <div
+            role="tablist"
+            aria-label="Feed sections"
+            className="flex w-full gap-1 rounded-lg border bg-muted/50 p-1 sm:w-fit"
+          >
+            {TAB_ORDER.map((tab) => {
+              const selected = tab === activeTab;
+              return (
+                <button
+                  key={tab}
+                  ref={(node) => {
+                    tabRefs.current[tab] = node;
+                  }}
+                  role="tab"
+                  id={`${baseId}-tab-${tab}`}
+                  aria-selected={selected}
+                  aria-controls={`${baseId}-panel-${tab}`}
+                  tabIndex={selected ? 0 : -1}
+                  onClick={() => selectTab(tab)}
+                  onKeyDown={handleTabKeyDown}
+                  className={cn(
+                    "flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring sm:flex-none motion-reduce:transition-none",
+                    selected
+                      ? "bg-card text-card-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {tab === "videos" ? (
+                    <ListVideo aria-hidden="true" className="size-4" />
+                  ) : (
+                    <Radio aria-hidden="true" className="size-4" />
+                  )}
+                  {tab === "videos" ? "Videos" : "Livestreams"}
+                  <span className="rounded-full bg-muted px-1.5 text-xs text-muted-foreground">
+                    {items[tab].length}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
         {headerAction ? <div className="shrink-0">{headerAction}</div> : null}
       </div>
 
       <div
-        role="tabpanel"
+        role={plainList ? undefined : "tabpanel"}
         id={`${baseId}-panel-${activeTab}`}
-        aria-labelledby={`${baseId}-tab-${activeTab}`}
-        tabIndex={0}
+        aria-labelledby={plainList ? undefined : `${baseId}-tab-${activeTab}`}
+        tabIndex={plainList ? undefined : 0}
         className="mt-5 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {activeItems.length > 0 ? (
@@ -178,11 +201,13 @@ export function FeedTabs({
             ) : null}
           </>
         ) : (
-          <EmptyTabState
-            tab={activeTab}
-            hasEverRefreshed={hasEverRefreshed}
-            creatorName={creatorName}
-          />
+          (emptyState ?? (
+            <EmptyTabState
+              tab={activeTab}
+              hasEverRefreshed={hasEverRefreshed}
+              creatorName={creatorName}
+            />
+          ))
         )}
       </div>
     </div>

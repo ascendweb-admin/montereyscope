@@ -1,6 +1,6 @@
 "use client";
 
-import { Info, Sparkles, TriangleAlert } from "lucide-react";
+import { Info, Sparkles, Trash2, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -29,10 +29,16 @@ export interface ScopeSelectionBarProps {
   fetchBusy?: boolean;
   /** Opens the shared report options for the same selection, when provided. */
   onReport?: () => void;
+  /** Takes the selection out of the list it came from, when provided. */
+  onRemove?: () => void;
+  /** Label for the remove action (e.g. "Remove"). */
+  removeLabel?: string;
   /** Disables the chat/report actions — the selection cannot ground a chat. */
   chatDisabled?: boolean;
   /** Shown while `chatDisabled`, explaining what is missing. */
   disabledHint?: string | null;
+  /** What the selection holds and how it is read, e.g. "7.5 h · Full transcripts in Deep". */
+  detail?: string | null;
   /** One-off status note: validation refusals, skipped lists. */
   note?: ScopeSelectionNote | null;
   className?: string;
@@ -40,7 +46,7 @@ export interface ScopeSelectionBarProps {
 
 /**
  * The floating action bar for AI scope selection (stage 5), shared by the
- * channel feed and the AI Research page. Shows the live count plus the
+ * channel feed. Shows the live count plus the
  * primary "Chat about selection" action; the chat side stays honestly
  * disabled while nothing selected can ground a conversation.
  */
@@ -56,8 +62,11 @@ export function ScopeSelectionBar({
   fetchDisabled = false,
   fetchBusy = false,
   onReport,
+  onRemove,
+  removeLabel = "Remove",
   chatDisabled = false,
   disabledHint = null,
+  detail = null,
   note = null,
   className,
 }: ScopeSelectionBarProps) {
@@ -68,6 +77,9 @@ export function ScopeSelectionBar({
           {count === 0
             ? "Nothing selected"
             : `${count} ${count === 1 ? noun : `${noun}s`} selected`}
+          {detail && count > 0 ? (
+            <span className="font-normal text-muted-foreground"> · {detail}</span>
+          ) : null}
           {skippedCount > 0 ? (
             <span className="font-normal text-muted-foreground">
               {" "}
@@ -93,6 +105,12 @@ export function ScopeSelectionBar({
           {onReport ? (
             <Button variant="outline" size="sm" onClick={onReport} disabled={chatDisabled}>
               Generate report
+            </Button>
+          ) : null}
+          {onRemove ? (
+            <Button variant="outline" size="sm" onClick={onRemove}>
+              <Trash2 aria-hidden="true" />
+              {removeLabel}
             </Button>
           ) : null}
           <Button size="sm" onClick={onChat} disabled={chatDisabled}>

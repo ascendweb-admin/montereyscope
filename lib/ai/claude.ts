@@ -78,8 +78,9 @@ export const CLAUDE_REPORT_TOOLS = ["Read", "Grep", "Glob", "Write"] as const;
  */
 export const CLAUDE_REPORT_WRITE_RULE = "Edit(./**)";
 
-/** Transcript inputs and the materialization manifest stay untouched. */
-export const CLAUDE_REPORT_PROTECTED_RULES = "Edit(transcripts/**),Edit(manifest.json)";
+/** Source inputs (transcripts, posts, digests) and the manifest stay untouched. */
+export const CLAUDE_REPORT_PROTECTED_RULES =
+  "Edit(transcripts/**),Edit(tweets/**),Edit(digests/**),Edit(manifest.json)";
 
 /** How long a SIGTERM'd claude gets to exit before escalating to SIGKILL. */
 const KILL_GRACE_MS = 5_000;

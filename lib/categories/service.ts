@@ -1,11 +1,11 @@
 import {
   categoriesExist,
   createCategory,
-  creatorsExist,
   deleteCategory,
   getCategory,
-  replaceCategoryCreators,
-  replaceCreatorCategories,
+  profilesExistForCategories,
+  replaceCategoryProfiles,
+  replaceProfileCategories,
   updateCategory,
 } from "./repository";
 import { isCategoryColor, type CategoryColor, type CategorySummary } from "./model";
@@ -116,19 +116,20 @@ export function deleteCategoryById(
     : { ok: false, error: { code: "not_found", message: "That category was already deleted." } };
 }
 
-export function setCreatorCategoryIds(
+/** Replaces a person's (creator profile's) categories. */
+export function setProfileCategoryIds(
   db: ScopeDatabase,
-  creatorId: unknown,
+  profileId: unknown,
   categoryIdsValue: unknown,
 ): { ok: true } | { ok: false; error: CategoryServiceError } {
   const ids = normalizeIds(categoryIdsValue);
-  if (!Number.isInteger(creatorId) || Number(creatorId) < 1 || ids === null) {
+  if (!Number.isInteger(profileId) || Number(profileId) < 1 || ids === null) {
     return {
       ok: false,
       error: { code: "invalid_input", message: "That category selection is invalid." },
     };
   }
-  if (!creatorsExist(db, [Number(creatorId)])) {
+  if (!profilesExistForCategories(db, [Number(profileId)])) {
     return {
       ok: false,
       error: { code: "not_found", message: "That creator is no longer in your library." },
@@ -140,16 +141,17 @@ export function setCreatorCategoryIds(
       error: { code: "not_found", message: "One of those categories no longer exists." },
     };
   }
-  replaceCreatorCategories(db, Number(creatorId), ids);
+  replaceProfileCategories(db, Number(profileId), ids);
   return { ok: true };
 }
 
-export function setCategoryCreatorIds(
+/** Replaces the people (creator profiles) filed under a category. */
+export function setCategoryProfileIds(
   db: ScopeDatabase,
   categoryId: unknown,
-  creatorIdsValue: unknown,
+  profileIdsValue: unknown,
 ): { ok: true } | { ok: false; error: CategoryServiceError } {
-  const ids = normalizeIds(creatorIdsValue);
+  const ids = normalizeIds(profileIdsValue);
   if (!Number.isInteger(categoryId) || Number(categoryId) < 1 || ids === null) {
     return {
       ok: false,
@@ -159,13 +161,13 @@ export function setCategoryCreatorIds(
   if (!getCategory(db, Number(categoryId))) {
     return { ok: false, error: { code: "not_found", message: "That category no longer exists." } };
   }
-  if (!creatorsExist(db, ids)) {
+  if (!profilesExistForCategories(db, ids)) {
     return {
       ok: false,
       error: { code: "not_found", message: "One of those creators is no longer in your library." },
     };
   }
-  replaceCategoryCreators(db, Number(categoryId), ids);
+  replaceCategoryProfiles(db, Number(categoryId), ids);
   return { ok: true };
 }
 

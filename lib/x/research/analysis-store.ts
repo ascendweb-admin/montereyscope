@@ -49,7 +49,12 @@ export function jobRecord(db: ScopeDatabase, id: string): JobRow {
   if (!row) throw new ResearchInputError("This research job does not exist.", 404);
   return row;
 }
-export function readJob(db: ScopeDatabase, id: string): AnalysisJob {
+/** Execution needs aggregate progress, but not the expensive per-creator breakdown. */
+export type AnalysisJobCore = Omit<AnalysisJob, "progress"> & {
+  progress: Omit<AnalysisJob["progress"], "creators">;
+};
+
+export function readJobCore(db: ScopeDatabase, id: string): AnalysisJobCore {
   const row = jobRecord(db, id),
     scope = getCorpusScope(db, row.scope_id);
   const counts = db
@@ -65,14 +70,6 @@ export function readJob(db: ScopeDatabase, id: string): AnalysisJob {
     COALESCE(SUM(status IN ('pending','running','failed')),0) AS unfinishedBatches FROM x_analysis_batches WHERE job_id = ?`,
     )
     .get(id) as { completedBatches: number; unfinishedBatches: number };
-  const creators = db
-    .prepare(
-      `SELECT m.creator_id AS id, COUNT(DISTINCT p.tweet_id) AS total, COUNT(DISTINCT r.tweet_id) AS reviewed
-    FROM x_research_scope_posts p JOIN x_research_scope_memberships m ON m.scope_id = p.scope_id AND m.tweet_id = p.tweet_id
-    LEFT JOIN x_analysis_post_results r ON r.tweet_id = p.tweet_id AND r.job_id = @job
-    WHERE p.scope_id = @scope AND p.exclusion IS NULL GROUP BY m.creator_id ORDER BY m.creator_id`,
-    )
-    .all({ job: id, scope: scope.id }) as AnalysisJob["progress"]["creators"];
   return {
     id,
     scopeId: scope.id,
@@ -85,10 +82,23 @@ export function readJob(db: ScopeDatabase, id: string): AnalysisJob {
       ...counts,
       ...batches,
       unfinished: scope.summary.eligible - counts.reviewed,
-      creators,
     },
   };
 }
+/** Public job responses always include the full creator-level progress. */
+export function readJob(db: ScopeDatabase, id: string): AnalysisJob {
+  const job = readJobCore(db, id);
+  const creators = db
+    .prepare(
+      `SELECT m.creator_id AS id, COUNT(DISTINCT p.tweet_id) AS total, COUNT(DISTINCT r.tweet_id) AS reviewed
+    FROM x_research_scope_posts p JOIN x_research_scope_memberships m ON m.scope_id = p.scope_id AND m.tweet_id = p.tweet_id
+    LEFT JOIN x_analysis_post_results r ON r.tweet_id = p.tweet_id AND r.job_id = @job
+    WHERE p.scope_id = @scope AND p.exclusion IS NULL GROUP BY m.creator_id ORDER BY m.creator_id`,
+    )
+    .all({ job: id, scope: job.scopeId }) as AnalysisJob["progress"]["creators"];
+  return { ...job, progress: { ...job.progress, creators } };
+}
+
 export function saveState(
   db: ScopeDatabase,
   id: string,
@@ -247,7 +257,7 @@ export function analysisPostResults(
 ) {
   if (!Number.isSafeInteger(page) || page < 1 || page > 1000000)
     throw new ResearchInputError("Choose a valid result page.");
-  const job = readJob(db, id);
+  const job = jobRecord(db, id);
   const condition =
     mode === "related"
       ? "AND r.disposition IN ('relevant','uncertain')"
@@ -256,7 +266,7 @@ export function analysisPostResults(
         : "";
   const query = `FROM x_research_scope_posts p LEFT JOIN x_analysis_post_results r ON r.tweet_id = p.tweet_id AND r.job_id = @job WHERE p.scope_id = @scope ${condition}`;
   return db.transaction(() => {
-    const params = { job: id, scope: job.scopeId };
+    const params = { job: id, scope: job.scope_id };
     const total = (db.prepare(`SELECT COUNT(*) AS n ${query}`).get(params) as { n: number }).n;
     const resolvedPage = Math.min(page, Math.max(1, Math.ceil(total / 30)));
     const rows = db
@@ -272,7 +282,7 @@ export function analysisPostResults(
       page: resolvedPage,
       pageSize: 30,
       posts: rows.map((r) => ({
-        post: getCorpusPost(db, job.scopeId, r.tweet_id),
+        post: getCorpusPost(db, job.scope_id, r.tweet_id),
         analysis: r.result_json ? (JSON.parse(r.result_json) as PostResult) : null,
       })),
     };

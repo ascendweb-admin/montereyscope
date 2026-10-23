@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { Check, ChevronDown, CloudDownload, Inbox, Search, SearchX, UsersRound, WifiOff, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { ActionMenu } from "@/components/ui/action-menu";
 import { Spinner } from "@/components/ui/pending";
 import { CreatorAvatar } from "@/components/x-dashboard/avatars";
 import { PostCard, PostSkeleton } from "@/components/x-dashboard/post-card";
@@ -45,39 +46,24 @@ const chip =
   "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border bg-background px-3 text-xs font-medium outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none";
 
 function ShowMenu({ value, onChange }: { value: ShowFilter; onChange: (value: ShowFilter) => void }) {
-  const [open, setOpen] = useState(false);
-  const ref = useDismiss(open, () => setOpen(false));
   return (
-    <div ref={ref} className="relative">
-      <button type="button" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((v) => !v)} className={chip}>
-        {SHOW_LABELS[value]}
-        <ChevronDown aria-hidden="true" className="size-3 opacity-60" />
-      </button>
-      {open ? (
-        <ul role="listbox" aria-label="Show" className="absolute top-full left-0 z-30 mt-1.5 w-60 rounded-xl border bg-popover p-1 shadow-lg">
-          {SHOW_FILTERS.map((option) => (
-            <li key={option} role="none">
-              <button
-                type="button"
-                role="option"
-                aria-selected={option === value}
-                onClick={() => {
-                  onChange(option);
-                  setOpen(false);
-                }}
-                className="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left outline-none hover:bg-accent focus-visible:bg-accent"
-              >
-                <Check aria-hidden="true" className={cn("mt-0.5 size-3.5 shrink-0", option !== value && "invisible")} />
-                <span>
-                  <span className="block text-sm font-medium">{SHOW_LABELS[option]}</span>
-                  <span className="block text-xs text-muted-foreground">{SHOW_HINTS[option]}</span>
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
+    <ActionMenu
+      label={SHOW_LABELS[value]}
+      align="start"
+      size="sm"
+      variant="ghost"
+      triggerClassName={chip}
+      menuClassName="w-60"
+      icon={<>{SHOW_LABELS[value]}<ChevronDown aria-hidden="true" className="size-3 opacity-60" /></>}
+      items={SHOW_FILTERS.map((option) => ({
+        id: option,
+        label: SHOW_LABELS[option],
+        hint: SHOW_HINTS[option],
+        checked: option === value,
+        icon: <Check aria-hidden="true" className={cn(option !== value && "invisible")} />,
+        onSelect: () => onChange(option),
+      }))}
+    />
   );
 }
 
@@ -91,13 +77,24 @@ function AccountFilter({
   onChange: (value: number[] | null) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useDismiss(open, () => setOpen(false));
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menuId = useId();
+  const close = () => { setOpen(false); trigger.current?.focus(); };
+  const ref = useDismiss(open, close);
+  useEffect(() => {
+    if (open) ref.current?.querySelector<HTMLButtonElement>("[role=checkbox]")?.focus();
+  }, [open, ref]);
   const active = value?.length ? creators.filter((c) => value.includes(c.id)) : [];
   if (creators.length < 2) return null;
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative" onBlur={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+    }}>
       <button
+        ref={trigger}
         type="button"
+        aria-label={`Filter accounts: ${active.length ? active.map(c => c.displayName).join(", ") : "All accounts"}`}
+        aria-controls={open ? menuId : undefined}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
@@ -122,7 +119,7 @@ function AccountFilter({
         </button>
       ) : null}
       {open ? (
-        <div role="dialog" aria-label="Filter accounts" className="absolute top-full left-0 z-30 mt-1.5 w-72 rounded-xl border bg-popover p-1 shadow-lg">
+        <div id={menuId} role="dialog" aria-label="Filter accounts" className="absolute top-full left-0 z-30 mt-1.5 w-72 rounded-xl border bg-popover p-1 shadow-lg">
           <ul className="max-h-80 overflow-y-auto">
             {creators.map((creator) => {
               const checked = Boolean(value?.includes(creator.id));
@@ -153,7 +150,7 @@ function AccountFilter({
             <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => onChange(null)}>
               Show all
             </button>
-            <button type="button" className="text-xs font-medium hover:underline" onClick={() => setOpen(false)}>
+            <button type="button" className="text-xs font-medium hover:underline" onClick={close}>
               Done
             </button>
           </div>
@@ -293,7 +290,7 @@ function EmptyState({ icon, title, children }: { icon: ReactNode; title: string;
   return (
     <div className="flex flex-col items-center px-6 py-20 text-center">
       <span className="flex size-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground">{icon}</span>
-      <h3 className="mt-4 text-base font-semibold">{title}</h3>
+      <h2 className="mt-4 text-base font-semibold">{title}</h2>
       <div className="mt-1.5 max-w-sm text-sm text-balance text-muted-foreground">{children}</div>
     </div>
   );
@@ -307,6 +304,7 @@ export function FeedList({
   initialLoading,
   stale,
   error,
+  invalidQuery = false,
   terms,
   selection,
   syncing,
@@ -325,6 +323,7 @@ export function FeedList({
   onClearQuery,
   onEditList,
   onSync,
+  historyIncomplete = false,
 }: {
   posts: ResearchPost[];
   total: number;
@@ -333,6 +332,8 @@ export function FeedList({
   initialLoading: boolean;
   stale: boolean;
   error: string | null;
+  /** The error is about the search text, so only a different search helps. */
+  invalidQuery?: boolean;
   terms: string[];
   selection: string[];
   syncing: boolean;
@@ -351,6 +352,8 @@ export function FeedList({
   onClearQuery: () => void;
   onEditList: (() => void) | null;
   onSync: () => void;
+  /** Older posts for this timeframe are still being imported. */
+  historyIncomplete?: boolean;
 }) {
   const sentinel = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -379,16 +382,28 @@ export function FeedList({
         ) : null}
       </EmptyState>
     );
-  if (error && !posts.length)
+  if (error)
     return (
-      <EmptyState icon={<SearchX className="size-6" />} title="Couldn't load posts">
-        {error}
-        <div className="mt-4">
-          <Button size="sm" variant="outline" onClick={onRetry}>
-            Try again
-          </Button>
-        </div>
-      </EmptyState>
+      <div role="alert">
+        <EmptyState
+          icon={<SearchX className="size-6" />}
+          title={invalidQuery ? "Check your search" : "Couldn't load posts"}
+        >
+          {error}
+          <div className="mt-4 flex justify-center gap-2">
+            {invalidQuery ? null : (
+              <Button size="sm" variant="outline" onClick={onRetry}>
+                Try again
+              </Button>
+            )}
+            {query ? (
+              <Button size="sm" variant="ghost" onClick={onClearQuery}>
+                Clear search
+              </Button>
+            ) : null}
+          </div>
+        </EmptyState>
+      </div>
     );
   if (initialLoading)
     return (
@@ -418,22 +433,22 @@ export function FeedList({
     if (syncing)
       return (
         <EmptyState icon={<Spinner className="size-6" />} title="Fetching posts from X…">
-          New posts appear here as they arrive. The first sync of an account can take a minute or two.
+          New posts appear here as they arrive. This can take a minute or two.
         </EmptyState>
       );
     if (neverSynced)
       return xConnected ? (
         <EmptyState icon={<CloudDownload className="size-6" />} title="No posts yet">
-          Sync to bring in the latest posts from these accounts.
+          Get the latest posts from these accounts.
           <div className="mt-4">
             <Button size="sm" onClick={onSync}>
-              Sync now
+              Get posts
             </Button>
           </div>
         </EmptyState>
       ) : (
         <EmptyState icon={<WifiOff className="size-6" />} title="Connect X to start">
-          Scope reads posts through your own X account. Connect it once and posts sync automatically.
+          Scope reads posts through your own X account. Connect it once and posts update automatically.
           <div className="mt-4">
             <Link href="/settings" className="inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90">
               Connect X in Settings
@@ -443,7 +458,7 @@ export function FeedList({
       );
     return (
       <EmptyState icon={<Inbox className="size-6" />} title={period === "24h" ? "Nothing in the last 24 hours" : `Nothing in the last ${PERIOD_LABELS[period].toLowerCase()}`}>
-        These accounts haven&apos;t posted in this time range, or their posts aren&apos;t synced yet.
+        These accounts haven&apos;t posted in this time range, or their posts haven&apos;t arrived yet.
         {period !== "all" ? (
           <div className="mt-4 flex justify-center gap-2">
             <Button size="sm" variant="outline" onClick={() => onPeriod(period === "24h" ? "7d" : period === "7d" ? "30d" : "all")}>
@@ -471,9 +486,9 @@ export function FeedList({
       ) : null}
       {groups.map((group) => (
         <section key={group.label} aria-label={group.label}>
-          <h3 className="sticky top-[var(--feed-header-height,0px)] z-[5] border-b bg-background/90 px-5 py-1.5 text-xs font-semibold text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-background/75">
+          <h2 className="sticky top-[var(--feed-header-height,0px)] z-[5] border-b bg-background/90 px-5 py-1.5 text-xs font-semibold text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-background/75">
             {group.label}
-          </h3>
+          </h2>
           <div className="divide-y border-b">
             {group.posts.map((post) => (
               <PostCard
@@ -499,6 +514,11 @@ export function FeedList({
               Load more
             </button>
           )
+        ) : historyIncomplete ? (
+          <span className="inline-flex items-center gap-2">
+            <Spinner className="size-3" />
+            Older posts are still being added. They appear here as they arrive.
+          </span>
         ) : (
           <span>
             {period === "all" ? "That's everything saved so far." : (

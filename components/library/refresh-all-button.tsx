@@ -1,34 +1,35 @@
 "use client";
 
-import { useState } from "react";
-import {
-  runBackgroundTask,
-  updateTask,
-  useBackgroundTask,
-} from "@/components/background/task-store";
+import { useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 
-import { refreshCreatorContentAction } from "@/components/background/operations";
+import {
+  alreadyRefreshing,
+  refreshCreators,
+  REFRESH_ALL_TASK,
+  targetsInScope,
+  useRefreshRun,
+  type RefreshFailure,
+  type RefreshRunTask,
+  type RefreshScope,
+  type RefreshTarget,
+} from "@/components/background/creator-refresh";
+import {
+  effectiveScope,
+  platformsIn,
+  refreshLabel,
+  RefreshScopeMenu,
+} from "@/components/library/refresh-scope-menu";
 import { AlertNote } from "@/components/ui/alert-note";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/pending";
 import { YtDlpSetupNote } from "@/components/ui/yt-dlp-setup-note";
 import { useToast } from "@/components/ui/toast";
 
-export interface RefreshAllCreator {
-  id: number;
-  displayName: string;
-}
-
-interface RefreshAllFailure {
-  id: number;
-  displayName: string;
-  message: string;
-  errorCode: string | null;
-}
+export type RefreshAllCreator = RefreshTarget;
 
 interface RefreshAllResult {
-  failures: RefreshAllFailure[];
+  failures: readonly RefreshFailure[];
   refreshedCount: number;
   total: number;
 }
@@ -40,83 +41,93 @@ interface RefreshAllButtonProps {
    * (e.g. the feed) can re-render their server data.
    */
   onRefreshed?: () => void;
+  /**
+   * Background-task identity. The library-wide run uses the defaults; a
+   * creator page refreshing one person's accounts passes its own so the two
+   * never read as the same job.
+   */
+  task?: RefreshAllTask;
+  /** Noun for progress and results: "creator" library-wide, "account" on a creator page. */
+  noun?: "creator" | "account";
+  /**
+   * Offers a menu beside the button to refresh one platform alone, and lets
+   * the button follow the platform in view (`scope`): "Refresh X".
+   */
+  platformMenu?: boolean;
+  /** The platform filter the button follows when `platformMenu` is on. */
+  scope?: RefreshScope;
+  /** How many people the accounts belong to, for the menu's "13 creators". */
+  peopleCount?: number;
 }
+
+export type RefreshAllTask = RefreshRunTask;
 
 /**
  * Library-wide "Refresh all" action. Refreshes every saved creator's cached
  * feed sequentially through the same per-creator server action the channel
  * page uses, so the one-refresh-at-a-time guard per creator still applies.
- * Progress is shown in the button; per-creator failures are collected and
- * reported together, leaving the previously cached feeds untouched.
+ * The run lives in the shared refresh store (components/background/
+ * creator-refresh.ts), so a run started from a source picker shows its
+ * progress here too. Progress is shown in the button; per-creator failures
+ * are collected and reported together, leaving the previously cached feeds
+ * untouched.
+ *
+ * With `platformMenu` it is the same split control as the source pickers'
+ * "Refresh all": the menu refreshes one platform alone, and a platform asked
+ * for while another refreshes joins that run instead of waiting for it.
  */
-export function RefreshAllButton({ creators, onRefreshed }: RefreshAllButtonProps) {
-  const [localPending, setPending] = useState(false);
-  const task = useBackgroundTask("refresh-all");
-  const pending = localPending || task?.status === "running";
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+export function RefreshAllButton({
+  creators,
+  onRefreshed,
+  task: taskIdentity = REFRESH_ALL_TASK,
+  noun = "creator",
+  platformMenu = false,
+  scope = "all",
+  peopleCount,
+}: RefreshAllButtonProps) {
+  const run = useRefreshRun(taskIdentity.key);
+  const effective = platformMenu ? effectiveScope(creators, scope) : "all";
+  const inScope = targetsInScope(creators, effective);
+  // The button is where the Library sees a run's progress, whatever it
+  // covers; more platforms join it from the menu.
+  const pending = run?.status === "running";
+  const progress = run?.status === "running" ? { done: run.done, total: run.targets.length } : null;
   const [failure, setFailure] = useState<RefreshAllResult | null>(null);
   const { showToast, toastElement } = useToast();
+  // A run asked for more while this button already waits on it reports once.
+  const awaiting = useRef(false);
 
-  const runRefresh = async (
-    targets: ReadonlyArray<{ id: number; displayName: string }>,
-  ): Promise<void> => {
-    if (pending || targets.length === 0) {
+  const runRefresh = async (targets: readonly RefreshTarget[]): Promise<void> => {
+    if (targets.length === 0 || alreadyRefreshing(run, targets)) {
       return;
     }
-    setPending(true);
     setFailure(null);
-    setProgress({ done: 0, total: targets.length });
+    const outcome = refreshCreators(taskIdentity, targets, noun);
+    if (awaiting.current) {
+      return;
+    }
+    awaiting.current = true;
+    const { run: finished } = await outcome.finally(() => {
+      awaiting.current = false;
+    });
+    if (!finished) {
+      return;
+    }
 
-    let refreshedCount = 0;
-    let videoCount = 0;
-    let livestreamCount = 0;
-    let tweetCount = 0;
-    const failures: RefreshAllFailure[] = [];
-
-    await runBackgroundTask(
-      { key: "refresh-all", label: "Updating all creators", href: "/" },
-      async () => {
-        for (const [index, creator] of targets.entries()) {
-          updateTask({
-            key: "refresh-all",
-            label: `Updating creators ${index + 1} of ${targets.length}`,
-            href: "/",
-            status: "running",
-          });
-          setProgress({ done: index, total: targets.length });
-          const outcome = await refreshCreatorContentAction(creator.id);
-          if (outcome.ok) {
-            refreshedCount += 1;
-            if (outcome.status === "refreshed") {
-              videoCount += outcome.addedVideos ?? 0;
-              livestreamCount += outcome.addedLivestreams ?? 0;
-              tweetCount += outcome.addedTweets ?? 0;
-            }
-          } else {
-            failures.push({
-              id: creator.id,
-              displayName: creator.displayName,
-              message: outcome.message ?? "The feed could not be updated right now.",
-              errorCode: outcome.errorCode ?? null,
-            });
-          }
-        }
-
-        return {
-          ok: failures.length === 0,
-          message: failures.length
-            ? `${failures.length} creator updates failed. Retry from the Library.`
-            : undefined,
-        };
-      },
-    );
-    setProgress(null);
-    setPending(false);
-
-    if (refreshedCount > 0) {
+    if (finished.refreshedCount > 0) {
       onRefreshed?.();
     }
-    if (failures.length === 0) {
+    if (finished.status === "stopped") {
+      showToast(
+        `Stopped after ${finished.done} of ${finished.targets.length} ${
+          finished.targets.length === 1 ? noun : `${noun}s`
+        }.`,
+        "info",
+      );
+      return;
+    }
+    if (finished.failures.length === 0) {
+      const { refreshedCount, videoCount, livestreamCount, tweetCount } = finished;
       const parts = [
         videoCount > 0 ? `${videoCount} ${videoCount === 1 ? "video" : "videos"}` : null,
         livestreamCount > 0
@@ -125,14 +136,18 @@ export function RefreshAllButton({ creators, onRefreshed }: RefreshAllButtonProp
         tweetCount > 0 ? `${tweetCount} ${tweetCount === 1 ? "post" : "posts"}` : null,
       ].filter((part): part is string => part !== null);
       showToast(
-        `Updated ${refreshedCount} ${refreshedCount === 1 ? "creator" : "creators"}${
+        `Updated ${refreshedCount} ${refreshedCount === 1 ? noun : `${noun}s`}${
           parts.length > 0 ? `: ${parts.join(" · ")}` : ""
         }.`,
         "success",
       );
       return;
     }
-    setFailure({ failures, refreshedCount, total: targets.length });
+    setFailure({
+      failures: finished.failures,
+      refreshedCount: finished.refreshedCount,
+      total: finished.targets.length,
+    });
   };
 
   const names = failure ? failure.failures.map((failed) => failed.displayName).join(", ") : "";
@@ -150,7 +165,7 @@ export function RefreshAllButton({ creators, onRefreshed }: RefreshAllButtonProp
         title={
           failure.refreshedCount > 0
             ? `Refreshed ${failure.refreshedCount} of ${failure.total} ${
-                failure.total === 1 ? "creator" : "creators"
+                failure.total === 1 ? noun : `${noun}s`
               }.`
             : "No feed was updated."
         }
@@ -159,7 +174,7 @@ export function RefreshAllButton({ creators, onRefreshed }: RefreshAllButtonProp
             variant="outline"
             size="sm"
             onClick={() => void runRefresh(failure.failures)}
-            disabled={pending}
+            disabled={alreadyRefreshing(run, failure.failures)}
           >
             Try again
           </Button>
@@ -170,36 +185,62 @@ export function RefreshAllButton({ creators, onRefreshed }: RefreshAllButtonProp
     )
   ) : null;
 
+  const content = pending ? (
+    <>
+      <Spinner />
+      {progress
+        ? `Refreshing ${Math.min(progress.done + 1, progress.total)} of ${progress.total}…`
+        : "Refreshing…"}
+    </>
+  ) : (
+    <>
+      <RefreshCw aria-hidden="true" />
+      {refreshLabel(effective)}
+    </>
+  );
+  const withMenu = platformMenu && platformsIn(creators).length > 1;
+
   // `contents` lets the button, live region, and failure note participate in
   // the parent toolbar's flex layout: the button lines up with the status
   // text while the note wraps onto its own full-width row.
   return (
     <div className="contents">
-      <Button
-        variant="outline"
-        onClick={() => void runRefresh(creators)}
-        disabled={pending}
-        aria-busy={pending}
-      >
-        {pending ? (
-          <>
-            <Spinner />
-            {progress
-              ? `Refreshing ${Math.min(progress.done + 1, progress.total)} of ${progress.total}…`
-              : task?.label + "…"}
-          </>
-        ) : (
-          <>
-            <RefreshCw aria-hidden="true" />
-            Refresh all
-          </>
-        )}
-      </Button>
+      {withMenu ? (
+        // One control: the action, and beside it the choice of what it covers.
+        <div className="flex h-9 shrink-0 items-center rounded-md border border-input shadow-sm">
+          <Button
+            variant="ghost"
+            onClick={() => void runRefresh(inScope)}
+            disabled={pending}
+            aria-busy={pending}
+            className="h-[34px] rounded-r-none pr-3 focus-visible:ring-offset-0"
+          >
+            {content}
+          </Button>
+          <span aria-hidden="true" className="h-4 w-px shrink-0 bg-border" />
+          <RefreshScopeMenu
+            targets={creators}
+            run={run}
+            peopleCount={peopleCount}
+            onRefresh={(choice) => void runRefresh(targetsInScope(creators, choice))}
+            triggerClassName="h-[34px] w-8 rounded-l-none px-0 shadow-none focus-visible:ring-offset-0"
+          />
+        </div>
+      ) : (
+        <Button
+          variant="outline"
+          onClick={() => void runRefresh(inScope)}
+          disabled={pending}
+          aria-busy={pending}
+        >
+          {content}
+        </Button>
+      )}
 
       {/* Announced to screen readers while the requests are in flight. */}
       <span role="status" aria-live="polite" className="sr-only">
         {pending && progress
-          ? `Refreshing all creators: ${Math.min(progress.done + 1, progress.total)} of ${progress.total}…`
+          ? `Refreshing all ${noun}s: ${Math.min(progress.done + 1, progress.total)} of ${progress.total}…`
           : ""}
       </span>
 

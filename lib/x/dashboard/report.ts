@@ -3,8 +3,17 @@
  * conversation rendered from Markdown, citations linked to an appendix of
  * the cited posts. No model call; the saved text is exactly what was shown.
  */
+import { encodeSourceRefs, type SourceRef } from "@/lib/content/model";
 import type { ScopeDatabase } from "@/lib/db/connection";
-import { createReport, getReport, type AiReport } from "@/lib/ai/reports";
+import {
+  createReport,
+  getReport,
+  getReportSources,
+  publicReportFor,
+  readReportSourceSnapshot,
+  type AiReport,
+  type ReportSourceSnapshot,
+} from "@/lib/ai/reports";
 import { ResearchInputError } from "@/lib/x/research/input";
 import type { InsightEngine } from "./insights";
 import { markdownPreview, parseInline, parseMarkdown, type Block, type Inline } from "./markdown";
@@ -60,7 +69,10 @@ function blocks(list: Block[], detail: InsightDetail): string {
           return "<hr>";
         case "table":
           return `<div class="table"><table><thead><tr>${block.header
-            .map((cell, i) => `<th style="text-align:${block.align[i]}">${inline(parseInline(cell), detail)}</th>`)
+            .map(
+              (cell, i) =>
+                `<th style="text-align:${block.align[i]}">${inline(parseInline(cell), detail)}</th>`,
+            )
             .join("")}</tr></thead><tbody>${block.rows
             .map(
               (row) =>
@@ -98,7 +110,7 @@ export function insightHtml(detail: InsightDetail): string {
     )
     .join("");
   const scope = detail.scope;
-  const meta = `${escape(scope.label)} · ${escape(PERIOD_LABELS[scope.period])} · ${detail.postCount} posts${scope.query ? ` · “${escape(scope.query)}”` : ""} · ${escape(detail.model)}`;
+  const meta = `${escape(scope.label)} · ${escape(PERIOD_LABELS[scope.period])} · ${detail.postCount} ${detail.postCount === 1 ? "post" : "posts"}${scope.query ? ` · “${escape(scope.query)}”` : ""} · ${escape(detail.model)}`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(detail.title)}</title><style>
 :root{color-scheme:light dark;--fg:#16181c;--muted:#5b6470;--line:#e3e6ea;--bg:#fff;--chip:#eef1f4}
 @media (prefers-color-scheme:dark){:root{--fg:#e7e9ea;--muted:#8b98a5;--line:#2f3336;--bg:#0f1114;--chip:#1d2125}}
@@ -110,33 +122,91 @@ blockquote{border-left:3px solid var(--line);margin:12px 0;padding:2px 14px;colo
 .table{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0}th,td{border-bottom:1px solid var(--line);padding:8px 10px;vertical-align:top}th{font-weight:600}
 code{background:var(--chip);border-radius:4px;padding:1px 4px;font-size:.9em}pre{background:var(--chip);padding:12px;border-radius:8px;overflow-x:auto}
 .sources{border-top:1px solid var(--line);margin-top:40px;padding-top:12px}.sources ol{padding-left:20px}.sources li{margin:14px 0}.sources p{white-space:pre-wrap;margin:4px 0}.muted{color:var(--muted);font-size:14px}
-</style></head><body><h1>${escape(detail.title)}</h1><p class="meta">${meta}</p>${turns}${sources ? `<div class="sources"><h2>Sources</h2><ol>${sources}</ol></div>` : ""}</body></html>`;
+</style></head><body><main><h1>${escape(detail.title)}</h1><p class="meta">${meta}</p>${turns}${sources ? `<div class="sources"><h2>Sources</h2><ol>${sources}</ol></div>` : ""}</main></body></html>`;
 }
 
 export function saveInsightReport(db: ScopeDatabase, engine: InsightEngine, id: string): AiReport {
   const detail = engine.detail(id);
-  if (detail.status === "running") throw new ResearchInputError("Wait for the answer to finish.", 409);
+  if (detail.status === "running")
+    throw new ResearchInputError("Wait for the answer to finish.", 409);
   if (!detail.messages.some((m) => m.role === "assistant" && m.status === "complete"))
     throw new ResearchInputError("There's no finished answer to save yet.", 409);
-  if (detail.reportId !== null && getReport(db, detail.reportId)) {
+  const refs: SourceRef[] = (
+    db.prepare("SELECT tweet_id AS id FROM x_insight_posts WHERE insight_id = ?").all(id) as Array<{
+      id: string;
+    }>
+  ).map((row) => ({ kind: "tweet", id: row.id }));
+  const previous = detail.reportId === null ? null : getReport(db, detail.reportId);
+  const sources = new Map(
+    (previous ? publicReportFor(db, previous).sources : []).map((source) => [source.id, source]),
+  );
+  for (const source of getReportSources(db, refs)) sources.set(source.id, source);
+  const creatorName = db.prepare(
+    `SELECT COALESCE(p.display_name, c.display_name) AS name FROM creators c
+     LEFT JOIN creator_profiles p ON p.id = c.profile_id WHERE c.id = ?`,
+  );
+  for (const source of engine.sourcePosts(id)) {
+    const previousSource = sources.get(source.id);
+    const creator = creatorName.get(source.creatorId) as { name: string } | undefined;
+    sources.set(source.id, {
+      kind: "tweet",
+      id: source.id,
+      title: source.text.replace(/\s+/g, " ").trim().slice(0, 180),
+      creatorId: source.creatorId,
+      creatorName: previousSource?.creatorName ?? creator?.name ?? source.authorName,
+      thumbnailUrl: previousSource?.thumbnailUrl ?? null,
+      publishedAt: source.publishedAt,
+      url: source.url,
+      durationSeconds: null,
+    });
+  }
+  const savedSnapshot = previous
+    ? (db
+        .prepare("SELECT source_snapshot AS snapshot FROM ai_reports WHERE id = ?")
+        .get(previous.id) as { snapshot: string | null })
+    : null;
+  const citedPosts = {
+    ...Object.fromEntries(
+      (readReportSourceSnapshot(savedSnapshot?.snapshot ?? null)?.citedPosts ?? []).map((post) => [
+        post.id,
+        post,
+      ]),
+    ),
+    ...detail.sources,
+  };
+  const document = insightHtml({ ...detail, sources: citedPosts });
+  const snapshot: ReportSourceSnapshot = {
+    version: 1,
+    origin: "x-dashboard",
+    scopeLabel: detail.scope.label,
+    sourceCount: detail.postCount,
+    citedPosts: Object.values(citedPosts),
+    sources: refs.flatMap((ref) => (sources.has(ref.id) ? [sources.get(ref.id)!] : [])),
+  };
+  if (previous) {
     // Re-saving refreshes the brief with any follow-ups asked since.
-    db.prepare("UPDATE ai_reports SET research_html = ?, completed_at = ? WHERE id = ?").run(
-      insightHtml(detail),
+    db.prepare(
+      "UPDATE ai_reports SET research_html = ?, completed_at = ?, selected_sources = ?, source_snapshot = ? WHERE id = ?",
+    ).run(
+      document,
       new Date().toISOString(),
+      encodeSourceRefs(refs),
+      JSON.stringify(snapshot),
       detail.reportId,
     );
-    return getReport(db, detail.reportId)!;
+    return getReport(db, previous.id)!;
   }
   const answer = detail.messages.find((m) => m.role === "assistant" && m.status === "complete")!;
   return db.transaction(() => {
-    const report = createReport(db, [], { profile: "brief" });
+    const report = createReport(db, refs, { profile: "brief" });
     db.prepare(
-      `UPDATE ai_reports SET research_html = ?, title = ?, dek = ?, status = 'done', completed_at = ? WHERE id = ?`,
+      `UPDATE ai_reports SET research_html = ?, title = ?, dek = ?, status = 'done', completed_at = ?, source_snapshot = ? WHERE id = ?`,
     ).run(
-      insightHtml(detail),
+      document,
       detail.title,
       markdownPreview(answer.content),
       new Date().toISOString(),
+      JSON.stringify(snapshot),
       report.id,
     );
     db.prepare("UPDATE x_insights SET report_id = ? WHERE id = ?").run(report.id, id);

@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RefreshContentOutcome } from "@/app/actions/feeds";
+import { refreshCreators, REFRESH_ALL_TASK } from "@/components/background/creator-refresh";
 import { refreshCreatorContentAction } from "@/components/background/operations";
 import { dismissTask, getTasks } from "@/components/background/task-store";
 import { RefreshAllButton } from "@/components/library/refresh-all-button";
@@ -12,8 +13,8 @@ vi.mock("@/components/background/operations", () => ({ refreshCreatorContentActi
 const refreshAction = vi.mocked(refreshCreatorContentAction);
 
 const creators = [
-  { id: 1, displayName: "Alpha" },
-  { id: 2, displayName: "Beta" },
+  { id: 1, displayName: "Alpha", platform: "youtube" as const },
+  { id: 2, displayName: "Beta", platform: "youtube" as const },
 ];
 
 function success(overrides: Record<string, unknown> = {}) {
@@ -115,6 +116,28 @@ describe("RefreshAllButton", () => {
     expect(refreshAction).toHaveBeenLastCalledWith(1);
   });
 
+  it("shows a run started elsewhere, such as a source picker, and joins it", async () => {
+    let finishFirst!: (result: RefreshContentOutcome) => void;
+    refreshAction
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(success());
+    const run = refreshCreators(REFRESH_ALL_TASK, creators);
+
+    render(<RefreshAllButton creators={creators} />);
+    const button = screen.getByRole("button", { name: "Refreshing 1 of 2…" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+
+    finishFirst(success());
+    await run;
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh all" })).toBeTruthy());
+    expect(refreshAction).toHaveBeenCalledTimes(2);
+  });
+
   it("points at setup guidance when every refresh fails from missing yt-dlp", async () => {
     refreshAction.mockResolvedValue({
       ok: false,
@@ -127,5 +150,97 @@ describe("RefreshAllButton", () => {
 
     await waitFor(() => expect(screen.getByText("Local tool missing.")).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+});
+
+describe("RefreshAllButton — per platform", () => {
+  const mixed = [
+    { id: 1, displayName: "Alpha", platform: "youtube" as const, updatedAt: null },
+    { id: 2, displayName: "Beta", platform: "youtube" as const, updatedAt: null },
+    {
+      id: 3,
+      displayName: "Gamma",
+      platform: "rumble" as const,
+      updatedAt: new Date(Date.now() - 5 * 86_400_000).toISOString(),
+    },
+  ];
+
+  it("refreshes one platform from the menu, saying how stale each one is", async () => {
+    refreshAction.mockResolvedValue(success());
+    render(<RefreshAllButton creators={mixed} platformMenu peopleCount={3} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose what to refresh" }));
+    expect(screen.getByRole("menuitem", { name: /^All platforms/ }).textContent).toContain(
+      "3 creators · some never updated",
+    );
+    const rumble = screen.getByRole("menuitem", { name: /^Rumble/ });
+    expect(rumble.textContent).toContain("1 account · updated 5d ago");
+
+    fireEvent.click(rumble);
+    await waitFor(() => expect(screen.getByText(/^Updated 1 creator/)).toBeTruthy());
+    expect(refreshAction).toHaveBeenCalledTimes(1);
+    expect(refreshAction).toHaveBeenCalledWith(3);
+  });
+
+  it("follows the platform in view", async () => {
+    refreshAction.mockResolvedValue(success());
+    render(<RefreshAllButton creators={mixed} platformMenu scope="rumble" />);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Rumble" }));
+    await waitFor(() => expect(refreshAction).toHaveBeenCalledWith(3));
+    expect(refreshAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the progress of a platform picked from the menu, whatever it follows", async () => {
+    let finish!: (outcome: RefreshContentOutcome) => void;
+    refreshAction.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<RefreshAllButton creators={mixed} platformMenu scope="youtube" />);
+    fireEvent.click(screen.getByRole("button", { name: "Choose what to refresh" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Rumble/ }));
+    await waitFor(() => expect(refreshAction).toHaveBeenCalledWith(3));
+    const button = screen.getByRole("button", { name: "Refreshing 1 of 1…" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+
+    finish(success());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Refresh YouTube" })).toBeTruthy(),
+    );
+  });
+
+  it("adds a platform to a run that is going, and reports the run once", async () => {
+    const pending: Array<(outcome: RefreshContentOutcome) => void> = [];
+    refreshAction.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          pending.push(resolve);
+        }),
+    );
+    render(<RefreshAllButton creators={mixed} platformMenu scope="youtube" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh YouTube" }));
+    await waitFor(() => expect(refreshAction).toHaveBeenCalledTimes(2));
+    // YouTube is going: its button is busy, but Rumble can still join.
+    expect(
+      (screen.getByRole("button", { name: /^Refreshing/ }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Choose what to refresh" }));
+    expect((screen.getByRole("menuitem", { name: /^YouTube/ }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Rumble/ }));
+    // Rumble shares the video lane's two slots: it starts as soon as one frees.
+    expect(refreshAction).toHaveBeenCalledTimes(2);
+    pending.shift()?.(success({ addedVideos: 1, addedLivestreams: 0 }));
+    await waitFor(() => expect(refreshAction).toHaveBeenLastCalledWith(3));
+
+    for (const resolve of pending.splice(0)) {
+      resolve(success({ addedVideos: 1, addedLivestreams: 0 }));
+    }
+    // One run, one report, after both platforms.
+    expect(await screen.findByText("Updated 3 creators: 3 videos.")).toBeTruthy();
   });
 });

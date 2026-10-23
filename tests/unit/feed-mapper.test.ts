@@ -8,6 +8,7 @@ import {
   mergeFeedResults,
   parseChannelFeedPayload,
   pickThumbnailUrl,
+  stableThumbnailUrl,
   videoIdFromWatchUrl,
 } from "@/lib/videos/mapper";
 import videosTabFixture from "../fixtures/channel-videos-tab.fixture.json";
@@ -230,6 +231,47 @@ describe("field-level normalizers", () => {
     ).toBe("https://i.ytimg.com/vi/x/big.jpg");
     expect(pickThumbnailUrl(undefined)).toBeNull();
     expect(pickThumbnailUrl([{ width: 10 }])).toBeNull();
+  });
+
+  it("pins A/B test thumbnail variants to the video's stable image", () => {
+    // Shape yt-dlp returns for a video running YouTube's "Test & Compare".
+    expect(
+      pickThumbnailUrl([
+        {
+          url: "https://i.ytimg.com/vi/hiI0Vk4NgeY/hq720_custom_2.jpg?sqp=COzH3tYG-oaymwEcCOgCEMoBSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLA",
+          width: 360,
+          height: 202,
+        },
+        {
+          url: "https://i.ytimg.com/vi/hiI0Vk4NgeY/hq720_custom_2.jpg?sqp=COzH3tYG-oaymwEcCNAFEJQDSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLB",
+          width: 720,
+          height: 404,
+        },
+      ]),
+    ).toBe("https://i.ytimg.com/vi/hiI0Vk4NgeY/hq720.jpg");
+  });
+
+  it.each([
+    [
+      "https://i.ytimg.com/vi/NE006pkiAnk/hq720_custom_1.jpg?sqp=abc&rs=def",
+      "https://i.ytimg.com/vi/NE006pkiAnk/hq720.jpg",
+    ],
+    [
+      "https://i9.ytimg.com/vi_webp/NE006pkiAnk/mqdefault_custom_3.webp",
+      "https://i.ytimg.com/vi_webp/NE006pkiAnk/mqdefault.webp",
+    ],
+    // Ordinary thumbnails keep their signed query string untouched.
+    [
+      "https://i.ytimg.com/vi/DbWL6Zs2j_g/hq720.jpg?sqp=-oaymwEc&rs=AOn4CLC",
+      "https://i.ytimg.com/vi/DbWL6Zs2j_g/hq720.jpg?sqp=-oaymwEc&rs=AOn4CLC",
+    ],
+    [
+      "https://yt3.googleusercontent.com/abc_custom_1.jpg",
+      "https://yt3.googleusercontent.com/abc_custom_1.jpg",
+    ],
+    ["not a url", "not a url"],
+  ])("stableThumbnailUrl(%j) → %j", (input, expected) => {
+    expect(stableThumbnailUrl(input)).toBe(expected);
   });
 
   it("extracts video IDs from watch URLs", () => {

@@ -343,7 +343,7 @@ export function getCachedCreatorFeed(db: ScopeDatabase, creatorId: number): Crea
   };
 }
 
-// Re-exported for the AI Research page (stage 5) alongside the other reads.
+// Re-exported for the chat source picker alongside the other reads.
 export { listAllVideosWithCreator } from "./repository";
 export type { VideoWithCreator } from "./repository";
 

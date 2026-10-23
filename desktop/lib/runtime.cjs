@@ -1,5 +1,6 @@
 "use strict";
 
+const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
@@ -8,12 +9,12 @@ const path = require("node:path");
 const LOOPBACK_HOST = "127.0.0.1";
 const DESKTOP_AUTH_HEADER = "x-scope-desktop-token";
 
-function allocateLoopbackPort(host = LOOPBACK_HOST) {
+function reserveLoopbackPort(port, host) {
   return new Promise((resolve, reject) => {
     const reservation = net.createServer();
     reservation.unref();
     reservation.once("error", reject);
-    reservation.listen(0, host, () => {
+    reservation.listen(port, host, () => {
       const address = reservation.address();
       if (!address || typeof address === "string") {
         reservation.close();
@@ -29,6 +30,41 @@ function allocateLoopbackPort(host = LOOPBACK_HOST) {
       });
     });
   });
+}
+
+function allocateLoopbackPort(host = LOOPBACK_HOST) {
+  return reserveLoopbackPort(0, host);
+}
+
+/**
+ * The backend port for this launch, reusing the previous launch's port when
+ * it is free. Browser storage (the theme and every other saved choice) is
+ * keyed by origin, so a new port would open the window with none of them.
+ * When another program holds the saved port, this launch uses a fresh one
+ * but keeps the saved port, so the next launch finds the stored choices again.
+ */
+async function reserveAppPort(portFile, host = LOOPBACK_HOST) {
+  let saved = null;
+  try {
+    const value = Number(fs.readFileSync(portFile, "utf8").trim());
+    if (Number.isInteger(value) && value >= 1_024 && value <= 65_535) saved = value;
+  } catch {
+    // First launch, or an unreadable file: pick a port and remember it.
+  }
+  if (saved !== null) {
+    try {
+      return await reserveLoopbackPort(saved, host);
+    } catch {
+      return allocateLoopbackPort(host);
+    }
+  }
+  const port = await allocateLoopbackPort(host);
+  try {
+    fs.writeFileSync(portFile, `${port}\n`, "utf8");
+  } catch {
+    // Not remembered; the next launch picks a new port as before.
+  }
+  return port;
 }
 
 function desktopUserDataPath({
@@ -159,6 +195,11 @@ function backendEnvironment({
   env.HOSTNAME = LOOPBACK_HOST;
   env.PORT = String(port);
   env.NODE_ENV = development ? "development" : "production";
+  if (development) {
+    // Next locks its output directory as well as its listening port. Keep
+    // the desktop backend separate from an ordinary `npm run dev` server.
+    env.SCOPE_NEXT_DIST_DIR = baseEnv.SCOPE_NEXT_DIST_DIR?.trim() || ".next-desktop";
+  }
   env.NEXT_TELEMETRY_DISABLED = "1";
   // Provider probes must never install a provider. Mise shims are kept off
   // the desktop PATH; these guards cover shims inherited from a user shell
@@ -283,5 +324,6 @@ module.exports = {
   isInternalUrl,
   isSafeExternalUrl,
   requestHealth,
+  reserveAppPort,
   waitForBackend,
 };

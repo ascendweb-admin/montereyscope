@@ -8,14 +8,41 @@ import type { ChatSource } from "@/components/ai/citation";
 import { ScopeSelectionBar, type ScopeSelectionNote } from "@/components/ai/scope-selection-bar";
 import { FeedTabs } from "@/components/channel/feed-tabs";
 import type { VideoCardModel } from "@/components/channel/video-card";
+import { PlatformFilter } from "@/components/library/platform-filter";
+import { AlertNote } from "@/components/ui/alert-note";
 import { Button } from "@/components/ui/button";
-import { formatScopeCapMessage, MAX_SCOPE_VIDEOS, planChatScope } from "@/lib/ai/scope-selection";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { PLATFORM_LABELS } from "@/lib/creators/labels";
+import type { CreatorPlatform } from "@/lib/creators/repository";
+import {
+  estimateScopeLoad,
+  formatVideoHours,
+  planChatScope,
+  scopeAdditionProblem,
+  scopeReading,
+  SCOPE_READING_COPY,
+} from "@/lib/ai/scope-selection";
 
 interface SelectableFeedProps {
   videos: VideoCardModel[];
   livestreams: VideoCardModel[];
   hasEverRefreshed: boolean;
   creatorName?: string;
+  /**
+   * The account's platform and avatar, for the answers' citation previews. A
+   * card's own `platform` wins, for feeds that mix channels.
+   */
+  platform?: "youtube" | "rumble";
+  creatorAvatarUrl?: string | null;
+  /** One plain list instead of the Videos / Livestreams switcher (see FeedTabs). */
+  singleList?: boolean;
+  /** Filter a single list by the platform hosting each video. */
+  showPlatformFilter?: boolean;
+  /**
+   * Adds a Remove action to the selection bar, behind a confirmation. Resolves
+   * once the videos are gone, or rejects with a message to show.
+   */
+  onRemove?: (videoIds: string[]) => Promise<void>;
 }
 
 /**
@@ -30,11 +57,24 @@ export function SelectableFeed({
   livestreams,
   hasEverRefreshed,
   creatorName,
+  platform,
+  creatorAvatarUrl,
+  singleList,
+  showPlatformFilter = false,
+  onRemove,
 }: SelectableFeedProps) {
   const [selecting, setSelecting] = useState(false);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [chatOpen, setChatOpen] = useState(false);
   const [note, setNote] = useState<ScopeSelectionNote | null>(null);
+  const [platformFilter, setPlatformFilter] = useState<CreatorPlatform | "all">("all");
+  const filteredVideos =
+    platformFilter === "all"
+      ? videos
+      : videos.filter((video) => (video.platform ?? platform) === platformFilter);
 
   // The scope follows the feed order (videos, then livestreams), not click
   // order, so the same selection always produces the same conversation key.
@@ -53,18 +93,41 @@ export function SelectableFeed({
     () =>
       [...videos, ...livestreams].map((video) => ({
         id: video.videoId,
+        platform: video.platform ?? platform,
         title: video.title,
+        creator: creatorName,
+        // A card for an appearance names the channel that hosts it.
+        ...(video.hostName ? { channelName: video.hostName } : {}),
+        creatorAvatarUrl,
+        publishedAt: video.publishedAt,
+        durationSeconds: video.durationSeconds,
         thumbnailUrl: video.thumbnailUrl,
       })),
+    [videos, livestreams, platform, creatorName, creatorAvatarUrl],
+  );
+  const hasVideos = filteredVideos.length + livestreams.length > 0;
+  const durationById = useMemo(
+    () =>
+      new Map([...videos, ...livestreams].map((video) => [video.videoId, video.durationSeconds])),
     [videos, livestreams],
   );
-  const hasVideos = videos.length + livestreams.length > 0;
+  // What the selection holds: a three-hour stream weighs more than a clip.
+  const load = useMemo(
+    () =>
+      estimateScopeLoad(
+        [...selectedIds].map((id) => ({ kind: "video", durationSeconds: durationById.get(id) })),
+      ),
+    [selectedIds, durationById],
+  );
 
   const toggleVideo = (videoId: string): void => {
-    // The analysis cap is enforced at selection time: the 26th tick is
-    // refused with a note instead of silently breaking a later chat.
-    if (!selectedIds.has(videoId) && selectedIds.size >= MAX_SCOPE_VIDEOS) {
-      setNote({ tone: "danger", message: formatScopeCapMessage(selectedIds.size + 1) });
+    // The analysis limits are enforced at selection time: a tick past them
+    // is refused with a note instead of silently breaking a later chat.
+    const problem = selectedIds.has(videoId)
+      ? null
+      : scopeAdditionProblem(load, { kind: "video", durationSeconds: durationById.get(videoId) });
+    if (problem !== null) {
+      setNote({ tone: "danger", message: problem });
       return;
     }
     setSelectedIds((prev) => {
@@ -89,6 +152,12 @@ export function SelectableFeed({
     clearSelection();
   };
 
+  const changePlatform = (value: CreatorPlatform | "all"): void => {
+    setPlatformFilter(value);
+    exitSelection();
+    setChatOpen(false);
+  };
+
   const openChat = (): void => {
     if (plan.videoIds.length === 0) {
       return;
@@ -109,6 +178,36 @@ export function SelectableFeed({
     }
   }
 
+  // The scope follows the feed order, like the chat plan above.
+  const selectedInOrder = (): string[] =>
+    [...videos, ...livestreams].filter((v) => selectedIds.has(v.videoId)).map((v) => v.videoId);
+
+  const closeRemoveDialog = (): void => {
+    setConfirmingRemove(false);
+    setRemoveError(null);
+  };
+
+  const confirmRemove = async (): Promise<void> => {
+    if (!onRemove || removing) {
+      return;
+    }
+    setRemoving(true);
+    setRemoveError(null);
+    try {
+      await onRemove(selectedInOrder());
+      setConfirmingRemove(false);
+      clearSelection();
+    } catch (error) {
+      setRemoveError(
+        error instanceof Error && error.message
+          ? error.message
+          : "The videos could not be removed. Please try again.",
+      );
+    } finally {
+      setRemoving(false);
+    }
+  };
+
   const description = creatorName
     ? `${plan.videoIds.length} ${plan.videoIds.length === 1 ? "video" : "videos"} from ${creatorName}`
     : undefined;
@@ -116,10 +215,31 @@ export function SelectableFeed({
   return (
     <div>
       <FeedTabs
-        videos={videos}
+        videos={filteredVideos}
         livestreams={livestreams}
         hasEverRefreshed={hasEverRefreshed}
         creatorName={creatorName}
+        singleList={singleList}
+        headerFilter={
+          showPlatformFilter ? (
+            <PlatformFilter value={platformFilter} content="videos" onChange={changePlatform} />
+          ) : undefined
+        }
+        emptyState={
+          platformFilter !== "all" ? (
+            <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed px-6 py-12 text-center">
+              <h3 className="text-base font-semibold">
+                No videos from {PLATFORM_LABELS[platformFilter]}
+              </h3>
+              <p className="max-w-md text-balance text-sm text-muted-foreground">
+                Try another platform or show all platforms to see the other videos.
+              </p>
+              <Button variant="outline" size="sm" onClick={() => changePlatform("all")}>
+                Show all platforms
+              </Button>
+            </div>
+          ) : undefined
+        }
         headerAction={
           hasVideos ? (
             <Button
@@ -141,11 +261,29 @@ export function SelectableFeed({
             className="pointer-events-auto"
             count={selectedIds.size}
             skippedCount={0}
+            detail={`${formatVideoHours(load.videoSeconds)} · ${SCOPE_READING_COPY[scopeReading(load)].label}`}
             onChat={openChat}
             onClear={clearSelection}
+            onRemove={onRemove ? () => setConfirmingRemove(true) : undefined}
             note={note}
           />
         </div>
+      ) : null}
+
+      {onRemove ? (
+        <ConfirmDialog
+          open={confirmingRemove}
+          onClose={closeRemoveDialog}
+          title={`Remove ${selectedIds.size} ${selectedIds.size === 1 ? "video" : "videos"} from Other videos?`}
+          description="Their transcripts are deleted if nothing else uses them."
+          confirmLabel="Remove"
+          busyLabel="Removing…"
+          destructive
+          busy={removing}
+          onConfirm={() => void confirmRemove()}
+        >
+          {removeError ? <AlertNote tone="danger">{removeError}</AlertNote> : null}
+        </ConfirmDialog>
       ) : null}
 
       <ChatPanel

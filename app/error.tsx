@@ -5,7 +5,7 @@ import { useEffect } from "react";
 import { TriangleAlert } from "lucide-react";
 
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 
 /**
  * Route-segment error boundary. Catches rendering failures anywhere below
@@ -25,7 +25,11 @@ export default function RouteError({
   }, [error]);
 
   return (
-    <main id="main" className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 md:px-8 md:py-10">
+    <main
+      id="main"
+      tabIndex={-1}
+      className="outline-none mx-auto w-full max-w-5xl flex-1 px-4 py-8 md:px-8 md:py-10"
+    >
       <Card className="border-dashed">
         <CardHeader className="items-center gap-3 pb-2 text-center">
           <span
@@ -34,7 +38,9 @@ export default function RouteError({
           >
             <TriangleAlert className="size-7 text-muted-foreground" />
           </span>
-          <CardTitle className="text-xl">Something went wrong on this page</CardTitle>
+          <h1 className="text-xl font-semibold leading-none tracking-tight">
+            Something went wrong on this page
+          </h1>
           <CardDescription className="max-w-md text-balance">
             scope hit an unexpected problem rendering this view. Your saved creators and cached data
             are untouched. Try again, or head back to your library.

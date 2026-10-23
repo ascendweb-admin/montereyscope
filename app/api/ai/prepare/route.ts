@@ -10,6 +10,7 @@
  */
 import { MAX_SCOPE_VIDEOS } from "@/lib/ai";
 import { getDb } from "@/lib/db/connection";
+import { readJsonObject } from "@/lib/http/request-json";
 import { prefetchTranscripts } from "@/lib/transcripts/prepare";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +19,7 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   let body: { videoIds?: unknown };
   try {
-    body = (await request.json()) as { videoIds?: unknown };
+    body = (await readJsonObject(request)) as { videoIds?: unknown };
   } catch {
     return Response.json(
       { error: { code: "invalid_body", message: "Request body must be JSON." } },

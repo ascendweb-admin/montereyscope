@@ -13,6 +13,7 @@ import {
   REPORT_TITLE_MAX_LENGTH,
 } from "@/lib/ai/reports";
 import { getDb } from "@/lib/db/connection";
+import { readJsonObject } from "@/lib/http/request-json";
 
 // Report status changes in the background; always read at request time.
 export const dynamic = "force-dynamic";
@@ -63,7 +64,7 @@ export async function PATCH(request: Request, ctx: RouteParams) {
 
   let body: { title?: unknown };
   try {
-    body = (await request.json()) as { title?: unknown };
+    body = (await readJsonObject(request)) as { title?: unknown };
   } catch {
     return jsonError(400, "invalid_body", "Request body must be JSON.");
   }

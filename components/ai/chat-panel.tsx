@@ -183,7 +183,7 @@ export function ChatPanel({
   const panelRef = useRef<HTMLElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
 
-  const sourceIndex = useChatSourceIndex(sources);
+  const sourceIndex = useChatSourceIndex(sources, engine.sourceMetadata);
   const { generating } = engine;
 
   /**

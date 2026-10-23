@@ -1,7 +1,10 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const http = require("node:http");
+const net = require("node:net");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -13,6 +16,7 @@ const {
   executablePath,
   isInternalUrl,
   isSafeExternalUrl,
+  reserveAppPort,
   waitForBackend,
 } = require("../lib/runtime.cjs");
 
@@ -138,6 +142,27 @@ test("backend environment isolates writable data and pins loopback", () => {
   assert.equal(env.MISE_NOT_FOUND_AUTO_INSTALL, "false");
 });
 
+test("desktop development uses its own Next output directory while allowing an explicit override", () => {
+  const options = {
+    dataRoot: path.resolve("private", "scope", "data"),
+    token: "a".repeat(64),
+    port: 41_234,
+    development: true,
+  };
+  for (const baseEnv of [{}, { SCOPE_NEXT_DIST_DIR: " " }]) {
+    assert.equal(backendEnvironment({ ...options, baseEnv }).SCOPE_NEXT_DIST_DIR, ".next-desktop");
+  }
+  assert.equal(
+    backendEnvironment({ ...options, baseEnv: { SCOPE_NEXT_DIST_DIR: ".next-custom" } })
+      .SCOPE_NEXT_DIST_DIR,
+    ".next-custom",
+  );
+  assert.equal(
+    backendEnvironment({ ...options, baseEnv: {}, development: false }).SCOPE_NEXT_DIST_DIR,
+    undefined,
+  );
+});
+
 test("URL guards distinguish the private app origin from external pages", () => {
   const origin = "http://127.0.0.1:41234";
   assert.equal(isInternalUrl(`${origin}/reports`, origin), true);
@@ -146,6 +171,38 @@ test("URL guards distinguish the private app origin from external pages", () => 
   assert.equal(isSafeExternalUrl("https://youtube.com/watch?v=1"), true);
   assert.equal(isSafeExternalUrl("javascript:alert(1)"), false);
   assert.equal(isSafeExternalUrl("file:///etc/passwd"), false);
+});
+
+test("the app port is remembered so browser storage keeps its origin", async (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "scope-app-port-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const portFile = path.join(root, "backend-port");
+
+  const first = await reserveAppPort(portFile);
+  assert.equal(fs.readFileSync(portFile, "utf8"), `${first}\n`);
+  assert.equal(await reserveAppPort(portFile), first);
+
+  fs.writeFileSync(portFile, "not a port\n");
+  const replaced = await reserveAppPort(portFile);
+  assert.equal(fs.readFileSync(portFile, "utf8"), `${replaced}\n`);
+});
+
+test("a taken app port falls back for one launch without forgetting it", async (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "scope-app-port-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const portFile = path.join(root, "backend-port");
+  const saved = await reserveAppPort(portFile);
+
+  const holder = net.createServer();
+  await new Promise((resolve, reject) => {
+    holder.once("error", reject);
+    holder.listen(saved, "127.0.0.1", resolve);
+  });
+  context.after(() => new Promise((resolve) => holder.close(resolve)));
+
+  const fallback = await reserveAppPort(portFile);
+  assert.notEqual(fallback, saved);
+  assert.equal(fs.readFileSync(portFile, "utf8"), `${saved}\n`);
 });
 
 test("health polling authenticates and waits for the Scope database", async (context) => {

@@ -6,7 +6,7 @@ import { Check, FolderPlus, Pencil, Search, Settings2, Trash2 } from "lucide-rea
 import {
   createCategoryAction,
   deleteCategoryAction,
-  setCategoryCreatorsAction,
+  setCategoryProfilesAction,
   updateCategoryAction,
 } from "@/app/actions/categories";
 import { CategoryFormFields } from "@/components/categories/category-form-fields";
@@ -21,7 +21,9 @@ import {
 } from "@/lib/categories";
 import { cn } from "@/lib/utils";
 
+/** A person (creator profile) that can be filed under a category. */
 interface ManagerCreator {
+  /** The creator profile id. */
   id: number;
   displayName: string;
   handle: string | null;
@@ -118,7 +120,7 @@ export function ManageCategoriesDialog({
       return;
     }
     const saved = categoryOutcome.category;
-    const memberOutcome = await setCategoryCreatorsAction(saved.id, [...creatorIds]);
+    const memberOutcome = await setCategoryProfilesAction(saved.id, [...creatorIds]);
     setPending(false);
     if (!memberOutcome.ok) {
       setError(memberOutcome.message ?? "The creator selection could not be saved.");
@@ -202,7 +204,7 @@ export function ManageCategoriesDialog({
         onClose={() => setOpen(false)}
         busy={pending}
         title="Manage categories"
-        description="Build reusable creator groups for your library and AI research."
+        description="Build reusable creator groups for your library and AI chat."
         className="max-w-4xl"
       >
         <div className="grid min-h-[31rem] gap-5 md:grid-cols-[14rem_1fr]">

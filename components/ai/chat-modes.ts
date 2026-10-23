@@ -4,9 +4,9 @@
  * never import it — so the panel renders from this copy instead; a unit test
  * pins the two sides together field for field.
  *
- * Also hosts the tiny external store around localStorage that remembers the
+ * Also hosts the tiny external stores around localStorage that remember the
  * selected mode across visits (same pattern as the theme setting), so the
- * panel syncs without setState-in-effect.
+ * panels sync without setState-in-effect.
  */
 import { useSyncExternalStore } from "react";
 
@@ -62,50 +62,68 @@ export const CHAT_MODE_STORAGE_KEY = "localtube.chat-mode";
 // External store around localStorage (server snapshot is always the default)
 // ---------------------------------------------------------------------------
 
-const listeners = new Set<() => void>();
+/**
+ * A remembered mode choice under one localStorage key. AI Chat and the X
+ * Dashboard each keep their own, so picking Deep for chat leaves insights alone.
+ */
+export function createModeStore(storageKey: string, fallback: ChatModeId) {
+  const listeners = new Set<() => void>();
 
-function subscribe(callback: () => void): () => void {
-  listeners.add(callback);
-  const onStorage = (event: StorageEvent): void => {
-    if (event.key === CHAT_MODE_STORAGE_KEY || event.key === null) {
-      callback();
+  function subscribe(callback: () => void): () => void {
+    listeners.add(callback);
+    const onStorage = (event: StorageEvent): void => {
+      if (event.key === storageKey || event.key === null) {
+        callback();
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      listeners.delete(callback);
+      window.removeEventListener("storage", onStorage);
+    };
+  }
+
+  function getSnapshot(): ChatModeId {
+    try {
+      const stored = window.localStorage.getItem(storageKey);
+      if (isChatModeId(stored)) {
+        return stored;
+      }
+    } catch {
+      // Private-mode storage failures just mean the default.
     }
-  };
-  window.addEventListener("storage", onStorage);
-  return () => {
-    listeners.delete(callback);
-    window.removeEventListener("storage", onStorage);
-  };
-}
+    return fallback;
+  }
 
-function getSnapshot(): ChatModeId {
-  try {
-    const stored = window.localStorage.getItem(CHAT_MODE_STORAGE_KEY);
-    if (isChatModeId(stored)) {
-      return stored;
+  const getServerSnapshot = (): ChatModeId => fallback;
+
+  /** Applies a mode selection and remembers it across visits. */
+  function select(next: ChatModeId): void {
+    try {
+      window.localStorage.setItem(storageKey, next);
+    } catch {
+      // The choice still applies for this session even if it cannot persist.
     }
-  } catch {
-    // Private-mode storage failures just mean the default.
+    for (const listener of listeners) {
+      listener();
+    }
   }
-  return DEFAULT_CHAT_MODE;
+
+  /** The remembered mode plus its setter. */
+  function useMode(): readonly [ChatModeId, (next: ChatModeId) => void] {
+    const mode = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+    return [mode, select] as const;
+  }
+
+  return { select, useMode };
 }
 
-const getServerSnapshot = (): ChatModeId => DEFAULT_CHAT_MODE;
+const chatModeStore = createModeStore(CHAT_MODE_STORAGE_KEY, DEFAULT_CHAT_MODE);
 
-/** Applies a mode selection and remembers it across visits. */
-export function selectChatMode(next: ChatModeId): void {
-  try {
-    window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, next);
-  } catch {
-    // The choice still applies for this session even if it cannot persist.
-  }
-  for (const listener of listeners) {
-    listener();
-  }
-}
+/** Applies a chat mode selection and remembers it across visits. */
+export const selectChatMode = chatModeStore.select;
 
 /** The remembered chat mode plus its setter, for the panel's switcher. */
 export function useChatMode(): readonly [ChatModeId, (next: ChatModeId) => void] {
-  const mode = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
-  return [mode, selectChatMode] as const;
+  return chatModeStore.useMode();
 }

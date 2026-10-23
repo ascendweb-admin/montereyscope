@@ -4,9 +4,15 @@ import {
   CodexAbortedError,
   CodexBinaryNotFoundError,
   CodexNotAuthenticatedError,
+  CodexOutputTruncatedError,
   CodexQuotaExceededError,
 } from "@/lib/ai/codex";
-import { runOpencode, type OpenCodeRunOptions } from "@/lib/ai/opencode";
+import {
+  OPENCODE_AGENT_CONFIG,
+  OPENCODE_OUTPUT_TOKEN_MAX,
+  runOpencode,
+  type OpenCodeRunOptions,
+} from "@/lib/ai/opencode";
 import type {
   CodexChildProcess,
   CodexExitStatus,
@@ -23,6 +29,7 @@ import type {
 const SESSION_ID = "ses_f972bd039ffeuagY7F24bvfLFF";
 const WORK_DIR = "/tmp/localtube-work";
 const PROMPT = "Summarize the transcripts in this directory.";
+const BASE_ARGS = ["run", "--format", "json", "--dir", WORK_DIR, "--agent", "scope-read"];
 
 function stepStart(sessionId: string = SESSION_ID): string {
   return JSON.stringify({
@@ -49,19 +56,22 @@ function textLine(text: string, partId = "prt_text_0"): string {
   });
 }
 
-function stepFinish(tokens?: {
-  input: number;
-  output: number;
-  reasoning: number;
-  cache: { write: number; read: number };
-}): string {
+function stepFinish(
+  tokens?: {
+    input: number;
+    output: number;
+    reasoning: number;
+    cache: { write: number; read: number };
+  },
+  reason = "stop",
+): string {
   return JSON.stringify({
     type: "step_finish",
     timestamp: 1788465134684,
     sessionID: SESSION_ID,
     part: {
       id: "prt_finish",
-      reason: "stop",
+      reason,
       messageID: "msg_0",
       sessionID: SESSION_ID,
       type: "step-finish",
@@ -247,6 +257,7 @@ function runWith(
     workDir: WORK_DIR,
     spawner: fake.spawner,
     command: "/usr/bin/opencode",
+    sessionDirectory: async () => WORK_DIR,
     ...overrides,
   });
   return { run, child: fake.child, requests: fake.requests };
@@ -261,7 +272,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("runOpencode arguments", () => {
-  it("spawns opencode run --format json with no model flags and the prompt on stdin", async () => {
+  it("spawns opencode run --format json in the job dir with no model flags and the prompt on stdin", async () => {
     const { run, child, requests } = runWith({
       lines: [stepStart(), textLine("OK"), stepFinish()],
     });
@@ -270,8 +281,9 @@ describe("runOpencode arguments", () => {
     expect(error).toBeUndefined();
     expect(requests).toHaveLength(1);
     expect(requests[0].command).toBe("/usr/bin/opencode");
-    expect(requests[0].args).toEqual(["run", "--format", "json"]);
+    expect(requests[0].args).toEqual(BASE_ARGS);
     expect(requests[0].cwd).toBe(WORK_DIR);
+    expect(requests[0].env?.PWD).toBe(WORK_DIR);
     expect(child.stdinWrites).toEqual([PROMPT]);
     expect(child.stdinEnded).toBe(true);
   });
@@ -283,7 +295,49 @@ describe("runOpencode arguments", () => {
     );
     await drainEvents(run);
     await run.completed;
-    expect(requests[0].args).toEqual(["run", "--format", "json", "--session", SESSION_ID]);
+    expect(requests[0].args).toEqual([...BASE_ARGS, "--session", SESSION_ID]);
+  });
+
+  it("resumes a session in the directory it was created in", async () => {
+    const lookedUp: string[] = [];
+    const { run, child, requests } = runWith(
+      { lines: [textLine("again"), stepFinish()] },
+      {
+        resumeSessionId: SESSION_ID,
+        sessionDirectory: async (id) => {
+          lookedUp.push(id);
+          return "/home/someone";
+        },
+      },
+    );
+    const { error } = await drainEvents(run);
+    await run.completed;
+    expect(error).toBeUndefined();
+    expect(lookedUp).toEqual([SESSION_ID]);
+    expect(requests[0].args).toEqual([
+      "run",
+      "--format",
+      "json",
+      "--dir",
+      "/home/someone",
+      "--agent",
+      "scope-read",
+      "--session",
+      SESSION_ID,
+    ]);
+    expect(requests[0].env?.PWD).toBe("/home/someone");
+    expect(child.stdinWrites).toEqual([PROMPT]);
+    expect(child.stdinEnded).toBe(true);
+  });
+
+  it("falls back to the job directory when the session lookup fails", async () => {
+    const { run, requests } = runWith(
+      { lines: [textLine("again"), stepFinish()] },
+      { resumeSessionId: SESSION_ID, sessionDirectory: () => Promise.reject(new Error("boom")) },
+    );
+    await drainEvents(run);
+    await run.completed;
+    expect(requests[0].args).toEqual([...BASE_ARGS, "--session", SESSION_ID]);
   });
 
   it("passes a provider-qualified model and its reasoning variant", async () => {
@@ -294,9 +348,7 @@ describe("runOpencode arguments", () => {
     await drainEvents(run);
     await run.completed;
     expect(requests[0].args).toEqual([
-      "run",
-      "--format",
-      "json",
+      ...BASE_ARGS,
       "--model",
       "opencode-go/deepseek-v4-pro",
       "--variant",
@@ -311,7 +363,36 @@ describe("runOpencode arguments", () => {
     );
     await drainEvents(run);
     await run.completed;
-    expect(requests[0].args).toEqual(["run", "--format", "json", "--model", "opencode-go/glm-5.1"]);
+    expect(requests[0].args).toEqual([...BASE_ARGS, "--model", "opencode-go/glm-5.1"]);
+  });
+
+  it("injects scope's agents and a raised output ceiling through the environment", async () => {
+    const { run, requests } = runWith({ lines: [textLine("ok"), stepFinish()] });
+    await drainEvents(run);
+    await run.completed;
+    const env = requests[0].env ?? {};
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT)).toEqual(OPENCODE_AGENT_CONFIG);
+    expect(env.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX).toBe(String(OPENCODE_OUTPUT_TOKEN_MAX));
+  });
+
+  it("keeps read-only runs to read tools and lets report runs edit only outside the inputs", async () => {
+    const { run, requests } = runWith(
+      { lines: [textLine("ok"), stepFinish()] },
+      { sandbox: "workspace-write" },
+    );
+    await drainEvents(run);
+    await run.completed;
+    expect(requests[0].args).toContain("scope-report");
+
+    const read = OPENCODE_AGENT_CONFIG.agent["scope-read"].permission;
+    expect(read["*"]).toBe("deny");
+    expect(read).not.toHaveProperty("edit");
+    expect(read).not.toHaveProperty("bash");
+    expect(read.external_directory).toBe("deny");
+    const write = OPENCODE_AGENT_CONFIG.agent["scope-report"].permission;
+    expect(write["*"]).toBe("deny");
+    expect(write.edit["*/transcripts/*"]).toBe("deny");
+    expect(write.edit["manifest.json"]).toBe("deny");
   });
 });
 
@@ -425,6 +506,27 @@ describe("runOpencode failures", () => {
     expect((error as Error).message).toContain("model nope/missing does not exist");
   });
 
+  it("fails as output_truncated when reasoning fills the output limit before any answer", async () => {
+    const { run } = runWith({
+      lines: [
+        stepStart(),
+        stepFinish({ input: 61768, output: 0, reasoning: 32000, cache: { write: 0, read: 0 } }, "length"),
+      ],
+    });
+    const { error } = await drainEvents(run);
+    expect(error).toBeInstanceOf(CodexOutputTruncatedError);
+    expect((error as Error).message).toContain("32000 reasoning tokens");
+  });
+
+  it("fails as output_truncated when the answer itself is cut off", async () => {
+    const { run } = runWith({
+      lines: [stepStart(), textLine("## TL;DR\n- partial"), stepFinish(undefined, "length")],
+    });
+    const { events, error } = await drainEvents(run);
+    expect(error).toBeInstanceOf(CodexOutputTruncatedError);
+    expect(events.some((event) => event.type === "text_delta")).toBe(true);
+  });
+
   it("maps spawn failure to binary_not_found", async () => {
     const { run } = runWith({
       spawnError: Object.assign(new Error("spawn opencode ENOENT"), { code: "ENOENT" }),
@@ -443,6 +545,24 @@ describe("runOpencode failures", () => {
     const iterator = run.events[Symbol.asyncIterator]();
     await iterator.next();
     controller.abort();
+    await drainEvents(run);
+    await expect(run.completed).rejects.toBeInstanceOf(CodexAbortedError);
+    expect(child.killCalls).toContain("SIGTERM");
+  });
+
+  it("kills a resumed run aborted while its session directory is still being looked up", async () => {
+    const controller = new AbortController();
+    let release: (directory: string) => void = () => {};
+    const { run, child } = runWith(
+      { lines: [stepStart()], stayOpen: true },
+      {
+        signal: controller.signal,
+        resumeSessionId: SESSION_ID,
+        sessionDirectory: () => new Promise((resolve) => (release = resolve)),
+      },
+    );
+    controller.abort();
+    release(WORK_DIR);
     await drainEvents(run);
     await expect(run.completed).rejects.toBeInstanceOf(CodexAbortedError);
     expect(child.killCalls).toContain("SIGTERM");

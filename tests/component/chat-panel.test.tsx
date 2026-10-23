@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatPanel, type ChatPanelProps } from "@/components/ai/chat-panel";
 import { Markdown } from "@/components/ai/markdown";
+import type { ChatSource } from "@/components/ai/citation";
 
 /**
  * Chat panel behavior tests (stage 4). fetch is mocked at the boundary: the
@@ -479,6 +480,63 @@ describe("ChatPanel — thread history", () => {
     expect(screen.getByText("First answer")).toBeTruthy();
   });
 
+  it("renders archived citations when reopening a conversation without cached source metadata", async () => {
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === "/api/ai/chat/threads/7")
+        return jsonResponse({
+          ...THREAD_SEVEN,
+          sourceMetadata: [
+            {
+              id: SCOPE[0],
+              title: "Archived source",
+              creator: "Saved creator",
+              platform: "rumble",
+            },
+          ],
+          messages: [
+            {
+              id: 3,
+              role: "assistant",
+              content: `A finding from \`transcripts/${SCOPE[0]}.txt\`.`,
+            },
+          ],
+        });
+      return threadListBody(THREADS);
+    });
+    renderPanel({ sources: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Conversation history" }));
+    fireEvent.click(await screen.findByRole("button", { name: /First question\?/ }));
+    expect(
+      await screen.findByLabelText("Rumble video transcript — Archived source by Saved creator"),
+    ).toBeTruthy();
+    expect(screen.getByRole("log").textContent).not.toContain("transcripts/");
+  });
+
+  it("uses streamed source metadata for new answers without cached source props", async () => {
+    const stream = controlledSse();
+    fetchMock.mockImplementation(async (input) =>
+      String(input) === "/api/ai/chat" ? stream.response : threadListBody([]),
+    );
+    renderPanel({ sources: [] });
+    await sendMessage("A question");
+    stream.push([
+      {
+        type: "thread",
+        threadId: 7,
+        created: true,
+        sourceMetadata: [
+          { id: SCOPE[0], title: "Saved source", creator: "Saved creator", platform: "youtube" },
+        ],
+      },
+      { type: "message", text: `A finding from \`transcripts/${SCOPE[0]}.txt\`.` },
+      { type: "done", threadId: 7, assistantMessageId: 2, sessionId: null },
+    ]);
+    stream.close();
+    expect(
+      await screen.findByLabelText("YouTube video transcript — Saved source by Saved creator"),
+    ).toBeTruthy();
+  });
+
   it("shows a helpful empty state when this scope has no threads", async () => {
     routeThreadRequests([]);
     renderPanel();
@@ -855,9 +913,48 @@ describe("ChatPanel — designed failure states (stage 7)", () => {
       expect(postBodies()).toEqual([
         { videoIds: SCOPE, message: "Summarize this", mode: "deep" },
         // The retry continues the thread the first turn created.
-        { threadId: 7, message: "Summarize this", mode: "deep" },
+        { threadId: 7, message: "Summarize this", mode: "deep", retryMessageId: 1 },
       ]),
     );
+    // The warning stays attached to the old partial text, but another turn
+    // must not leave an action that could resend a later question.
+    expect(screen.queryByRole("button", { name: "Ask again" })).toBeNull();
+    expect(screen.getByText("Stopped here — this answer may be incomplete.")).toBeTruthy();
+  });
+
+  it("does not relabel a completed answer when the next turn fails before producing text", async () => {
+    const first = controlledSse(),
+      second = controlledSse();
+    let calls = 0;
+    routeThreadRequests();
+    fetchMock.mockImplementation(async (input) =>
+      String(input) === "/api/ai/chat"
+        ? calls++ === 0
+          ? first.response
+          : second.response
+        : threadListBody([]),
+    );
+    renderPanel();
+    await sendMessage("First question");
+    first.push([
+      { type: "thread", threadId: 7, created: true },
+      { type: "user_message", id: 1, content: "First question", createdAt: "x" },
+      { type: "message", text: "The first answer finished successfully." },
+      { type: "done", threadId: 7, assistantMessageId: 2, sessionId: "session-7" },
+    ]);
+    first.close();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Stop" })).toBeNull());
+    await sendMessage("Second question");
+    second.push([
+      { type: "thread", threadId: 7, created: false },
+      { type: "user_message", id: 3, content: "Second question", createdAt: "x" },
+      { type: "error", code: "codex_quota_exceeded", message: "Usage limit reached." },
+    ]);
+    second.close();
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByText("The first answer finished successfully.")).toBeTruthy();
+    expect(screen.queryByText("Stopped here — this answer may be incomplete.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Ask again" })).toBeNull();
   });
 
   it("settles on the authoritative message when it is shorter than the streamed text", async () => {
@@ -892,6 +989,64 @@ describe("ChatPanel — designed failure states (stage 7)", () => {
     await waitFor(() => expect(screen.getByText("The full answer")).toBeTruthy());
     expect(screen.queryByText("The full answer arrives here")).toBeNull();
     await waitFor(() => expect(screen.queryByRole("button", { name: "Stop" })).toBeNull());
+  });
+
+  it.each(["", "A different follow-up draft"])(
+    "consumes the restored retry question and preserves a different draft (%s)",
+    async (differentDraft) => {
+      let attempts = 0;
+      routeThreadRequests([], () => {
+        if (attempts++ === 0) {
+          return {
+            ok: false,
+            status: 422,
+            json: async () => ({
+              error: { code: "no_ready_sources", message: "Captions unavailable." },
+            }),
+          } as Response;
+        }
+        return sseResponse([
+          { type: "thread", threadId: 7, created: true },
+          { type: "user_message", id: 1, content: "Retry this question", createdAt: "x" },
+          { type: "message", text: "Recovered answer" },
+          { type: "done", threadId: 7, assistantMessageId: 2, sessionId: null },
+        ]);
+      });
+      renderPanel();
+      await sendMessage("Retry this question");
+      await screen.findByRole("alert");
+      const composer = screen.getByLabelText("Your message") as HTMLTextAreaElement;
+      expect(composer.value).toBe("Retry this question");
+      if (differentDraft) fireEvent.change(composer, { target: { value: differentDraft } });
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      await screen.findByText("Recovered answer");
+      expect(composer.value).toBe(differentDraft);
+      expect(within(screen.getByRole("log")).getAllByText("Retry this question")).toHaveLength(1);
+      expect(postBodies()).toHaveLength(2);
+    },
+  );
+
+  it("restores the question again if the retry also fails", async () => {
+    routeThreadRequests(
+      [],
+      () =>
+        ({
+          ok: false,
+          status: 422,
+          json: async () => ({
+            error: { code: "no_ready_sources", message: "Captions unavailable." },
+          }),
+        }) as Response,
+    );
+    renderPanel();
+    await sendMessage("Retry this question");
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(postBodies()).toHaveLength(2));
+    await screen.findByRole("alert");
+    expect((screen.getByLabelText("Your message") as HTMLTextAreaElement).value).toBe(
+      "Retry this question",
+    );
   });
 
   it("pairs the failure alert with a friendly heading and a Try again action", async () => {
@@ -930,9 +1085,10 @@ describe("ChatPanel — designed failure states (stage 7)", () => {
     await waitFor(() =>
       expect(postBodies()).toEqual([
         { videoIds: SCOPE, message: "Hello?", mode: "deep" },
-        { threadId: 7, message: "Hello?", mode: "deep" },
+        { threadId: 7, message: "Hello?", mode: "deep", retryMessageId: 1 },
       ]),
     );
+    expect(within(screen.getByRole("log")).getAllByText("Hello?")).toHaveLength(1);
   });
 
   it("renders server notices as a quiet scope disclosure", async () => {
@@ -1089,13 +1245,16 @@ describe("Markdown", () => {
 });
 
 describe("Markdown — source citations", () => {
-  const SOURCES = new Map([
+  const SOURCES = new Map<string, ChatSource>([
     [
       "abc123XYZ_-",
       {
         id: "abc123XYZ_-",
+        platform: "youtube",
         title: "Deep Dive on Things",
         creator: "Nova Labs",
+        publishedAt: "2026-08-12T10:00:00Z",
+        durationSeconds: 754,
         thumbnailUrl: "https://img.example/deep.jpg",
       },
     ],
@@ -1108,13 +1267,13 @@ describe("Markdown — source citations", () => {
     );
     const chip = container.querySelector("span[aria-label]");
     expect(chip?.getAttribute("aria-label")).toBe(
-      "Video transcript — Deep Dive on Things by Nova Labs",
+      "YouTube video transcript — Deep Dive on Things by Nova Labs",
     );
     // The pill stays small: the channel rides on it, the full title only in
     // the hover card.
     expect(chip?.textContent).toBe("Nova Labs");
     // Hovering (after the open delay) reveals the full citation: thumbnail,
-    // full title, creator.
+    // platform, duration, full title, creator, and publish date.
     fireEvent.mouseEnter(chip!);
     const card = await waitFor(() => {
       const preview = container.querySelector("span[aria-hidden='true']");
@@ -1122,7 +1281,10 @@ describe("Markdown — source citations", () => {
       return preview;
     });
     expect(card?.textContent).toContain("Deep Dive on Things");
-    expect(card?.textContent).toContain("Nova Labs · Video transcript");
+    expect(card?.textContent).toContain("Nova Labs");
+    expect(card?.textContent).toContain("YouTube video");
+    expect(card?.textContent).toContain("12:34");
+    expect(card?.textContent).toContain("Aug 12, 2026");
     expect(card?.querySelector("img")?.getAttribute("src")).toBe("https://img.example/deep.jpg");
     fireEvent.mouseLeave(chip!);
     expect(container.querySelector("span[aria-hidden='true']")).toBeNull();
@@ -1145,6 +1307,27 @@ describe("Markdown — source citations", () => {
     expect(container.textContent).not.toContain("(");
     expect(container.textContent?.trimEnd().endsWith(".")).toBe(true);
     expect(container.textContent).not.toContain("transcripts/");
+  });
+
+  it("absorbs the square brackets of a post bundle's citation id", () => {
+    const { container } = render(
+      <Markdown text={"Kraken listed it [transcripts/abc123XYZ_-.txt]."} sources={SOURCES} />,
+    );
+    expect(container.querySelector("span[aria-label]")?.textContent).toBe("Nova Labs");
+    expect(container.textContent).not.toContain("[");
+    expect(container.textContent).not.toContain("]");
+    expect(container.textContent?.trimEnd().endsWith(".")).toBe(true);
+  });
+
+  it("tidies away a post bundle file named instead of a post", () => {
+    const { container } = render(
+      <Markdown
+        text={"He is bullish on BTC tweets/blknoiz06-2.txt and `tweets/blknoiz06.txt`."}
+        sources={SOURCES}
+      />,
+    );
+    expect(container.textContent).not.toContain("tweets/");
+    expect(container.textContent?.trimEnd()).toBe("He is bullish on BTC and.");
   });
 
   it("keeps an unbalanced parenthesis as prose", () => {

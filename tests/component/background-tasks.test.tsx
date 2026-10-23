@@ -30,11 +30,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function streamResponse() {
+function streamResponse(signal?: AbortSignal | null) {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   const body = new ReadableStream<Uint8Array>({
     start(c) {
       controller = c;
+      signal?.addEventListener("abort", () => c.error(new DOMException("Aborted", "AbortError")));
     },
   });
   return {
@@ -93,6 +94,38 @@ describe("background work across page lifetimes", () => {
       stream.close();
     });
     await waitFor(() => expect(screen.getByText("Idle")).toBeTruthy());
+  });
+
+  it("reports Stop before the first answer as stopped and resets that outcome for the next turn", async () => {
+    let stream!: ReturnType<typeof streamResponse>;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, init?: RequestInit) => {
+        stream = streamResponse(init?.signal);
+        return stream.response;
+      }),
+    );
+    render(
+      <BackgroundChatProvider>
+        <Chat />
+      </BackgroundChatProvider>,
+    );
+    fireEvent.click(screen.getByText("Send question"));
+    await waitFor(() => expect(stream).toBeDefined());
+    await act(async () => {
+      stream.push({ type: "thread", threadId: 9735, created: true });
+    });
+    fireEvent.click(screen.getByText("Stop answer"));
+    await waitFor(() => expect(screen.getByText("Idle")).toBeTruthy());
+    expect(getTasks().find((task) => task.href === "/chat?thread=9735")?.status).toBe("stopped");
+    fireEvent.click(screen.getByText("Send question"));
+    await waitFor(() => expect(screen.getByText("Generating")).toBeTruthy());
+    await act(async () => {
+      stream.push({ type: "done", threadId: 9735 });
+      stream.close();
+    });
+    await waitFor(() => expect(screen.getByText("Idle")).toBeTruthy());
+    expect(getTasks().find((task) => task.href === "/chat?thread=9735")?.status).toBe("done");
   });
 
   it("starts another conversation while the previous answer keeps running", async () => {

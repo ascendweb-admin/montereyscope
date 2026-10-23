@@ -318,7 +318,7 @@ export function ModelPicker({
           </div>
 
           {filtered.length === 0 ? (
-            <div className="flex flex-col items-center gap-1.5 px-4 py-8 text-center">
+            <div role="status" className="flex flex-col items-center gap-1.5 px-4 py-8 text-center">
               <SearchX aria-hidden="true" className="size-5 text-muted-foreground" />
               <p className="text-sm font-medium">No models found</p>
               <p className="text-xs text-muted-foreground">
@@ -329,64 +329,61 @@ export function ModelPicker({
                 )}
               </p>
             </div>
-          ) : (
-            <ul
-              ref={listRef}
-              id={listboxId}
-              role="listbox"
-              aria-label={label}
-              className="max-h-80 overflow-y-auto overscroll-contain p-1.5"
-            >
-              {groups.map((section) => (
-                <Fragment key={`${section.label}-${section.entries[0]?.model.id}`}>
-                  <li
-                    role="presentation"
-                    className="px-2 pb-1 pt-2.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
-                  >
-                    {section.label}
-                  </li>
-                  {section.entries.map(({ model, index }) => {
-                    const isSelected = model.id === value;
-                    const usable = model.usable !== false;
-                    return (
-                      <li
-                        key={model.id}
-                        id={optionId(index)}
-                        role="option"
-                        aria-selected={isSelected}
-                        aria-disabled={!usable || undefined}
-                        data-active={index === activeSafeIndex || undefined}
-                        onClick={() => select(model)}
-                        onPointerMove={() => setActiveIndex(index)}
-                        className={cn(
-                          "flex items-center gap-2 rounded-md px-2 py-1.5 outline-none",
-                          usable ? "cursor-pointer" : "cursor-not-allowed opacity-60",
-                          index === activeSafeIndex && "bg-accent",
-                        )}
-                      >
-                        <span className="min-w-0 flex-1">
-                          <span className="flex min-w-0 items-center gap-1.5">
-                            <span className="truncate text-sm font-medium">{model.label}</span>
-                            {model.isNew ? (
-                              <span className="shrink-0 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-primary">
-                                New
-                              </span>
-                            ) : null}
-                          </span>
-                          <span className="block truncate text-xs text-muted-foreground">
-                            {!usable && model.note ? model.note : model.description}
-                          </span>
+          ) : null}
+          <ul
+            ref={listRef}
+            id={listboxId}
+            role="listbox"
+            aria-label={label}
+            className="max-h-80 overflow-y-auto overscroll-contain p-1.5"
+          >
+            {groups.map((section) => (
+              <Fragment key={`${section.label}-${section.entries[0]?.model.id}`}>
+                <li
+                  role="presentation"
+                  className="px-2 pb-1 pt-2.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
+                >
+                  {section.label}
+                </li>
+                {section.entries.map(({ model, index }) => {
+                  const isSelected = model.id === value;
+                  const usable = model.usable !== false;
+                  return (
+                    <li
+                      key={model.id}
+                      id={optionId(index)}
+                      role="option"
+                      aria-selected={isSelected}
+                      aria-disabled={!usable || undefined}
+                      data-active={index === activeSafeIndex || undefined}
+                      onClick={() => select(model)}
+                      onPointerMove={() => setActiveIndex(index)}
+                      className={cn(
+                        "flex items-center gap-2 rounded-md px-2 py-1.5 outline-none",
+                        usable ? "cursor-pointer" : "cursor-not-allowed opacity-60",
+                        index === activeSafeIndex && "bg-accent",
+                      )}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="truncate text-sm font-medium">{model.label}</span>
+                          {model.isNew ? (
+                            <span className="shrink-0 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-primary">
+                              New
+                            </span>
+                          ) : null}
                         </span>
-                        {isSelected ? (
-                          <Check aria-hidden="true" className="size-4 shrink-0" />
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                </Fragment>
-              ))}
-            </ul>
-          )}
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {!usable && model.note ? model.note : model.description}
+                        </span>
+                      </span>
+                      {isSelected ? <Check aria-hidden="true" className="size-4 shrink-0" /> : null}
+                    </li>
+                  );
+                })}
+              </Fragment>
+            ))}
+          </ul>
         </div>
       ) : null}
     </div>

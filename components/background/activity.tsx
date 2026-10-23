@@ -196,7 +196,7 @@ export function BackgroundActivity() {
                   key,
                   label: report.title ? `Report: ${report.title}` : `Report #${report.id}`,
                   status: report.status,
-                  href: "/reports",
+                  href: `/reports?report=${report.id}`,
                   message: report.error ?? undefined,
                 });
               }
@@ -266,6 +266,11 @@ export function BackgroundActivity() {
           <Activity aria-hidden="true" />
         )}
         <span className="text-foreground">Activity</span>
+        {notification && !active && !open ? (
+          <span aria-hidden="true" className="text-xs md:hidden">
+            {statusLabels[notification.status]}
+          </span>
+        ) : null}
         {active ? (
           <span className="ml-auto min-w-5 rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-blue-600 dark:text-blue-400">
             {active}
@@ -391,37 +396,41 @@ export function BackgroundActivity() {
       )}
 
       {notification && !open && (
-        <div
-          role="status"
-          className="fixed bottom-5 right-5 flex w-80 max-w-[calc(100vw-2.5rem)] items-start gap-3 rounded-xl border bg-popover p-4 text-popover-foreground shadow-lg"
-        >
-          <span
-            className={cn(
-              "mt-0.5",
-              notification.status === "failed" ? "text-destructive" : "text-muted-foreground",
-            )}
-          >
-            <TaskIcon status={notification.status} />
+        <div role="status">
+          <span className="sr-only md:hidden">
+            {notification.label}. {statusLabels[notification.status]}.
           </span>
-          <Link
-            href={notification.href}
-            className="min-w-0 flex-1 rounded-sm text-sm outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={() => setNotification(null)}
-          >
-            <span className="block font-medium [overflow-wrap:anywhere]">{notification.label}</span>
-            <span className="mt-1 block text-xs text-muted-foreground">
-              {statusLabels[notification.status]}
+          <div className="hidden items-start gap-3 rounded-xl border bg-popover p-4 text-popover-foreground shadow-lg md:absolute md:bottom-14 md:left-0 md:flex md:w-full">
+            <span
+              className={cn(
+                "mt-0.5",
+                notification.status === "failed" ? "text-destructive" : "text-muted-foreground",
+              )}
+            >
+              <TaskIcon status={notification.status} />
             </span>
-          </Link>
-          <Button
-            size="icon"
-            variant="ghost"
-            className="-mr-1 -mt-1 size-7 text-muted-foreground"
-            aria-label="Dismiss notification"
-            onClick={() => setNotification(null)}
-          >
-            <X />
-          </Button>
+            <Link
+              href={notification.href}
+              className="min-w-0 flex-1 rounded-sm text-sm outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => setNotification(null)}
+            >
+              <span className="block font-medium [overflow-wrap:anywhere]">
+                {notification.label}
+              </span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                {statusLabels[notification.status]}
+              </span>
+            </Link>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="-mr-1 -mt-1 size-7 text-muted-foreground"
+              aria-label="Dismiss notification"
+              onClick={() => setNotification(null)}
+            >
+              <X />
+            </Button>
+          </div>
         </div>
       )}
     </div>

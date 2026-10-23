@@ -21,7 +21,7 @@ export async function GET(_request: Request, context: Context) {
   }
 }
 
-/** POST — {action: "ask", question} | {action: "stop"} | {action: "save"}. */
+/** POST — {action: "ask", question, mode?} | {action: "stop"} | {action: "save"}. */
 export async function POST(request: Request, context: Context) {
   const body = await readXMutation(request);
   if (!body.ok) return body.response;
@@ -30,7 +30,9 @@ export async function POST(request: Request, context: Context) {
     const engine = getInsightEngine();
     switch (body.value.action) {
       case "ask":
-        return Response.json({ insight: await engine.followUp(id, body.value.question) });
+        return Response.json({
+          insight: await engine.followUp(id, body.value.question, body.value.mode),
+        });
       case "stop":
         return Response.json({ insight: engine.cancel(id) });
       case "save": {

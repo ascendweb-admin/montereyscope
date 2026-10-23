@@ -9,7 +9,10 @@ import { NavLinks } from "@/components/layout/nav-link";
  */
 export function AppSidebar({ activity }: { activity: ReactNode }) {
   return (
-    <aside className="contents md:sticky md:top-0 md:z-20 md:flex md:h-dvh md:w-60 md:shrink-0 md:flex-col md:border-r md:bg-card">
+    <aside
+      aria-label="Application sidebar"
+      className="contents md:sticky md:top-0 md:z-20 md:flex md:h-dvh md:w-60 md:shrink-0 md:flex-col md:border-r md:bg-card"
+    >
       <div className="hidden px-4 py-5 md:block">
         <Brand />
       </div>

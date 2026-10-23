@@ -36,6 +36,7 @@ import { bundledCatalogModels } from "@/lib/ai/models/bundled";
 import { getDefaultAiChatModeSettings } from "@/lib/ai/model-catalog";
 import { saveTranscript } from "@/lib/transcripts/repository";
 import { setTranscriptResolverForTests } from "@/lib/transcripts/prepare";
+import { setDigestGeneratorForTests } from "@/lib/ai/digests";
 
 const { runCodexMock, runOpencodeMock, runClaudeMock } = vi.hoisted(() => ({
   runCodexMock: vi.fn(),
@@ -254,6 +255,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setTranscriptResolverForTests(null);
+  setDigestGeneratorForTests(null);
   setModelCatalogForTests(null);
   closeDatabase();
   delete process.env.LOCALTUBE_DB_PATH;
@@ -693,6 +695,55 @@ describe("POST /api/ai/chat — existing thread", () => {
     const body = (await response.json()) as { error: { code: string } };
     expect(body.error.code).toBe("thread_not_found");
     expect(runCodexMock).not.toHaveBeenCalled();
+  });
+
+  it("retries an unanswered message without duplicating history and rejects a stale retry", async () => {
+    seedFeed();
+    runCodexMock.mockImplementation(() =>
+      scriptRun({ failure: new CodexNonZeroExitError("codex exited with 1: boom") }),
+    );
+    const failed = parseSse(
+      await (
+        await postChat({
+          videoIds: [VIDEO_WITH_TRANSCRIPT],
+          message: "Please retry this",
+        })
+      ).text(),
+    );
+    const threadId = failed.find((event) => event.event === "thread")!.data?.threadId as number;
+    const retryMessageId = failed.find((event) => event.event === "user_message")!.data
+      ?.id as number;
+    const payload = { threadId, message: "Please retry this", retryMessageId };
+    const readRoles = () =>
+      getDb().prepare("SELECT role FROM ai_messages WHERE thread_id = ? ORDER BY id").all(threadId);
+
+    // Repeated failures keep pointing to the same persisted question.
+    await (await postChat(payload)).text();
+    expect(readRoles()).toEqual([{ role: "system" }, { role: "user" }]);
+    const changed = parseSse(
+      await (await postChat({ ...payload, message: "Different question" })).text(),
+    );
+    expect(changed.at(-1)?.data?.code).toBe("retry_unavailable");
+
+    runCodexMock.mockImplementation(() => scriptRun(scriptSuccessfulTurn("Recovered")));
+    const retried = parseSse(await (await postChat(payload)).text());
+    expect(retried.at(-1)?.event).toBe("done");
+    expect(readRoles()).toEqual([{ role: "system" }, { role: "user" }, { role: "assistant" }]);
+    const calls = runCodexMock.mock.calls.length;
+    const stale = parseSse(await (await postChat(payload)).text());
+    expect(stale.at(-1)?.data?.code).toBe("retry_unavailable");
+    expect(runCodexMock).toHaveBeenCalledTimes(calls);
+    expect(readRoles()).toHaveLength(3);
+  });
+
+  it.each([
+    { message: "Retry", retryMessageId: 1, videoIds: [VIDEO_WITH_TRANSCRIPT] },
+    { message: "Retry", threadId: 1, retryMessageId: -1 },
+    { message: "Retry", threadId: 1, retryMessageId: "invalid" },
+  ])("rejects malformed retry input %j", async (payload) => {
+    const response = await postChat(payload);
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.code).toBe("invalid_retry");
   });
 
   it("re-seeds a thread whose first turn never produced a session", async () => {
@@ -1154,6 +1205,91 @@ describe("POST /api/ai/chat — scope guardrails", () => {
     runCodexMock.mockImplementation(() => scriptRun(scriptSuccessfulTurn("Answer")));
     const ok = await postChat({ videoIds: atCap, message: "At the cap" });
     expect(ok.status).toBe(200);
+  });
+
+  it("summarizes the longest videos first when the selection is too big for one pass", async () => {
+    seedFeed();
+    const db = getDb();
+    const creator = db.prepare<[], { id: number }>("SELECT id FROM creators LIMIT 1").get()!;
+    for (const [id, hours] of [
+      ["longstream01", 5],
+      ["longstream02", 4],
+    ] as const) {
+      db.prepare(
+        "INSERT INTO videos (id, creator_id, title, url, duration_seconds) VALUES (?, ?, ?, ?, ?)",
+      ).run(id, creator.id, `Stream ${id}`, `https://www.youtube.com/watch?v=${id}`, hours * 3_600);
+      db.prepare(
+        "INSERT INTO transcripts (video_id, language, source, plain_text) VALUES (?, 'en', 'automatic', ?)",
+      ).run(id, `Long stream talk for ${id}.`);
+    }
+    const generate = vi.fn(async () => ({
+      text: "## Part 1\n- Topics: markets",
+      backend: "codex",
+      model: "gpt-6-luna",
+    }));
+    setDigestGeneratorForTests(generate);
+    runCodexMock.mockImplementation(() => scriptRun(scriptSuccessfulTurn("Grounded answer")));
+
+    const response = await postChat({
+      videoIds: ["longstream01", "longstream02", VIDEO_WITH_TRANSCRIPT],
+      message: "Summarize these streams.",
+      mode: "balanced",
+    });
+    const parsed = parseSse(await response.text());
+
+    // ~10 hours: both streams are summarized before the answer starts.
+    const summaries = parsed.filter(
+      (entry) => entry.event === "status" && entry.data?.step === "summaries",
+    );
+    expect(summaries.at(0)?.data).toMatchObject({ phase: "preparing", done: 0, total: 2 });
+    expect(summaries.at(-1)?.data).toMatchObject({ done: 2, total: 2 });
+    expect(generate).toHaveBeenCalledTimes(2);
+    const notice = parsed.find((entry) => entry.event === "notice");
+    expect(String(notice?.data?.message)).toContain("Scope summarized the 2 longest videos first");
+    expect(parsed.at(-1)?.event).toBe("done");
+
+    const options = runCodexMock.mock.calls[0][0] as CodexRunOptions;
+    expect(existsSync(path.join(options.workDir, "digests", "longstream01.txt"))).toBe(true);
+    expect(existsSync(path.join(options.workDir, "digests", "longstream02.txt"))).toBe(true);
+    expect(options.prompt).toContain("Scope note on coverage");
+    expect(options.prompt).toContain("Read every digest in full first");
+    // The persisted seed records the same note.
+    const seed = db
+      .prepare<[], { content: string }>("SELECT content FROM ai_messages WHERE role = 'system'")
+      .get();
+    expect(seed?.content).toContain("Scope note on coverage");
+  });
+
+  it("reads a selection Deep can hold in full without summarizing it", async () => {
+    seedFeed();
+    const db = getDb();
+    const creator = db.prepare<[], { id: number }>("SELECT id FROM creators LIMIT 1").get()!;
+    db.prepare(
+      "INSERT INTO videos (id, creator_id, title, url, duration_seconds) VALUES (?, ?, ?, ?, ?)",
+    ).run(
+      "longstream01",
+      creator.id,
+      "Stream",
+      "https://www.youtube.com/watch?v=longstream01",
+      8 * 3_600,
+    );
+    db.prepare(
+      "INSERT INTO transcripts (video_id, language, source, plain_text) VALUES (?, 'en', 'automatic', ?)",
+    ).run("longstream01", "Long stream talk.");
+    const generate = vi.fn();
+    setDigestGeneratorForTests(generate);
+    runCodexMock.mockImplementation(() => scriptRun(scriptSuccessfulTurn("Grounded answer")));
+
+    const response = await postChat({
+      videoIds: ["longstream01"],
+      message: "Summarize this stream.",
+      mode: "deep",
+    });
+    const parsed = parseSse(await response.text());
+    expect(parsed.some((entry) => entry.data?.step === "summaries")).toBe(false);
+    expect(generate).not.toHaveBeenCalled();
+    const options = runCodexMock.mock.calls[0][0] as CodexRunOptions;
+    expect(options.prompt).not.toContain("digests/ holds");
   });
 
   it("discloses byte-budget truncation as a notice event before the answer", async () => {

@@ -7,6 +7,7 @@ import { ArrowUp, Check, Menu, Pencil, Sparkles, WifiOff, X } from "lucide-react
 import { TweetDetailDialog } from "@/components/channel/tweet-card";
 import { AddCreatorDialog } from "@/components/library/add-creator-dialog";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/pending";
 import { XLogo } from "@/components/ui/platform-logos";
 import { AnalyzePanel, type DraftScope } from "@/components/x-dashboard/analyze-panel";
 import { AvatarStack } from "@/components/x-dashboard/avatars";
@@ -15,10 +16,12 @@ import { ListEditor } from "@/components/x-dashboard/list-editor";
 import { ListRail } from "@/components/x-dashboard/list-rail";
 import { SyncStatus } from "@/components/x-dashboard/sync-status";
 import { requestJson, useDashboardStatus, useFeed } from "@/components/x-dashboard/use-dashboard-data";
+import type { ChatModeModels } from "@/lib/ai/chat-modes";
 import type { CreatorSummary } from "@/lib/creators/service";
 import {
   isPeriod,
   isShowFilter,
+  PERIOD_LABELS,
   scopeKey,
   type DashboardCreator,
   type DashboardList,
@@ -27,6 +30,7 @@ import {
   type SyncSnapshot,
   type UnreadCounts,
 } from "@/lib/x/dashboard/model";
+import { stillImporting } from "@/lib/x/dashboard/sync-copy";
 import type { ResearchPost } from "@/lib/x/research/model";
 import { cn } from "@/lib/utils";
 
@@ -164,7 +168,7 @@ export function XDashboard({
   xConnected,
   xHandle,
   autoSyncMinutes,
-  aiLabel,
+  aiModels,
   initialInsightId,
   initialListId,
 }: {
@@ -175,7 +179,7 @@ export function XDashboard({
   xConnected: boolean;
   xHandle: string | null;
   autoSyncMinutes: number;
-  aiLabel: string;
+  aiModels: ChatModeModels;
   initialInsightId: string | null;
   initialListId: number | null;
 }) {
@@ -195,6 +199,7 @@ export function XDashboard({
   const [railOpen, setRailOpen] = useState(false);
   const [detail, setDetail] = useState<ResearchPost | null>(null);
   const [syncRequested, setSyncRequested] = useState(false);
+  const syncRequestedAt = useRef(0);
   const [newPosts, setNewPosts] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
@@ -232,67 +237,46 @@ export function XDashboard({
   );
 
   const feed = useFeed({ creatorIds: feedIds, period, show, query });
-  const status = useDashboardStatus(scopeIds, initialUnread);
+  const status = useDashboardStatus(scopeIds, period, initialUnread);
   const { sync, setSync, setUnread, refresh: refreshStatus } = status;
   const syncing = sync?.state === "syncing" || sync?.state === "waiting";
+  const { coverage } = status;
   const terms = useMemo(
     () => (query.match(/"[^"]+"|\S+/g) ?? []).filter((t) => !t.startsWith("-")).map((t) => t.replace(/"/g, "")),
     [query],
   );
 
-  // Opening a scope syncs it when stale and marks it read after a moment.
+  // Opening a scope marks it read after a moment. Polling its status tells the server it is on
+  // screen, which checks its accounts right away when they are due.
   const scopeIdsKey = scopeIds.join(",");
   useEffect(() => {
     if (!scopeIdsKey) return;
-    let cancelled = false;
-    void requestJson<{ started: boolean; sync: SyncSnapshot }>("/api/x-dashboard/sync", {
-      body: {
-        creatorIds: scopeIdsKey.split(",").map(Number),
-        listId,
-        label: activeList?.name ?? "All accounts",
-        ifStale: true,
-      },
-    })
-      .then((data) => {
-        if (!cancelled && data.started) setSync(data.sync);
-      })
-      .catch(() => {});
     const seen = setTimeout(() => {
       void requestJson("/api/x-dashboard/seen", { body: { listId } }).catch(() => {});
       setUnread((current) => ({ ...current, [scopeKey(listId)]: 0 }));
     }, 1500);
-    return () => {
-      cancelled = true;
-      clearTimeout(seen);
-    };
-    // Runs once per scope; the list name and status setters are stable enough here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeIdsKey, listId]);
+    return () => clearTimeout(seen);
+  }, [scopeIdsKey, listId, setUnread]);
 
-  // When a sync finishes with new posts, refresh in place or offer them.
-  const previous = useRef<{ key: string; sync: SyncSnapshot } | null>(null);
+  // Posts arrive account by account: whenever any are saved, show them. At the top of the feed
+  // they slide in; further down, a button offers them without moving what is being read.
+  const seenRevision = useRef<{ key: string; revision: string } | null>(null);
+  const { revision } = status;
+  const { refreshInPlace } = feed;
   useEffect(() => {
-    // Only compare snapshots of the same scope: switching lists is not a sync finishing.
-    const before = previous.current?.key === scopeIdsKey ? previous.current.sync : null;
-    previous.current = sync ? { key: scopeIdsKey, sync } : null;
-    if (!sync || !before) return;
-    const wasBusy = before.state === "syncing" || before.state === "waiting";
-    const busy = sync.state === "syncing" || sync.state === "waiting";
-    if (wasBusy && !busy) {
-      setSyncRequested(false);
-      if (sync.newPosts > 0) {
-        const atTop = (scrollRef.current?.scrollTop ?? 0) < 120;
-        if (atTop || !feed.posts.length) feed.reload();
-        else setNewPosts(sync.newPosts);
-      }
-    }
-  }, [sync, feed, scopeIdsKey]);
-  // While the very first import runs, stream posts in as they arrive.
+    if (revision === null) return;
+    const before = seenRevision.current;
+    seenRevision.current = { key: scopeIdsKey, revision };
+    if (!before || before.key !== scopeIdsKey || before.revision === revision) return;
+    const atTop = (scrollRef.current?.scrollTop ?? 0) < 120;
+    void refreshInPlace(atTop).then((waiting) => {
+      if (!atTop) setNewPosts(waiting);
+    });
+  }, [revision, scopeIdsKey, refreshInPlace]);
+  // "Update now" spins until this scope's check has finished.
   useEffect(() => {
-    if (!syncing || feed.posts.length) return;
-    const timer = setInterval(feed.reload, 4000);
-    return () => clearInterval(timer);
-  }, [syncing, feed.posts.length, feed.reload]);
+    if (syncRequested && sync && !syncing && Date.now() - syncRequestedAt.current > 1500) setSyncRequested(false);
+  }, [sync, syncing, syncRequested]);
 
   // Day headers stick right below the (variable-height) feed header.
   useLayoutEffect(() => {
@@ -329,6 +313,7 @@ export function XDashboard({
   const syncNow = useCallback(() => {
     if (!scopeIds.length) return;
     setSyncRequested(true);
+    syncRequestedAt.current = Date.now();
     void requestJson<{ sync: SyncSnapshot }>("/api/x-dashboard/sync", {
       body: { creatorIds: scopeIds, listId, label: activeList?.name ?? "All accounts" },
     })
@@ -409,7 +394,9 @@ export function XDashboard({
   const panel = (
     <AnalyzePanel
       scope={draftScope}
-      aiLabel={aiLabel}
+      importing={sync ? stillImporting(sync.creators.filter((c) => feedIds.includes(c.creatorId))) : 0}
+      revision={status.revision}
+      aiModels={aiModels}
       activeId={insightId}
       onActiveIdChange={setActiveInsight}
       onClearSelection={() => setSelection([])}
@@ -423,7 +410,7 @@ export function XDashboard({
 
   return (
     <div data-viewport-shell className="relative flex h-[calc(100dvh-6.5rem)] min-h-0 overflow-hidden md:h-dvh">
-      <aside className="hidden w-64 shrink-0 border-r bg-card lg:block">{rail}</aside>
+      <aside aria-label="X account lists" className="hidden w-64 shrink-0 border-r bg-card lg:block">{rail}</aside>
       {railOpen ? (
         <>
           <button
@@ -432,7 +419,7 @@ export function XDashboard({
             onClick={() => setRailOpen(false)}
             className="absolute inset-0 z-30 bg-black/40 lg:hidden"
           />
-          <aside className="absolute inset-y-0 left-0 z-40 w-72 max-w-[85vw] border-r bg-card shadow-xl lg:hidden">{rail}</aside>
+          <aside aria-label="X account lists" className="absolute inset-y-0 left-0 z-40 w-72 max-w-[85vw] border-r bg-card shadow-xl lg:hidden">{rail}</aside>
         </>
       ) : null}
 
@@ -479,6 +466,7 @@ export function XDashboard({
                   onSync={syncNow}
                   onStop={stopSync}
                   syncing={syncRequested}
+                  checkEveryMs={status.checkEveryMs}
                 />
               </div>
               {!panelOpen || !isWide ? (
@@ -505,6 +493,22 @@ export function XDashboard({
               creatorFilter={creatorFilter}
               onCreatorFilter={setCreatorFilter}
             />
+            {xConnected && coverage && coverage.importing > 0 && coverage.covered < coverage.total ? (
+              <p
+                role="status"
+                className="flex items-center gap-2 border-t px-5 py-2 text-xs text-muted-foreground"
+              >
+                <Spinner className="size-3 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">
+                  Filling in the last {PERIOD_LABELS[period === "all" ? "90d" : period].toLowerCase()}
+                  {" · "}
+                  <span className="tabular-nums">
+                    {coverage.covered} of {coverage.total}
+                  </span>{" "}
+                  account{coverage.total === 1 ? "" : "s"} done
+                </span>
+              </p>
+            ) : null}
             {!xConnected ? (
               <p className="flex items-center gap-2 border-t bg-amber-500/[0.07] px-5 py-2 text-xs text-amber-800 dark:text-amber-300">
                 <WifiOff aria-hidden="true" className="size-3.5 shrink-0" />
@@ -541,6 +545,7 @@ export function XDashboard({
             initialLoading={feed.initialLoading}
             stale={feed.stale}
             error={feed.error}
+            invalidQuery={feed.invalidQuery}
             terms={terms}
             selection={selection}
             syncing={Boolean(syncing || syncRequested)}
@@ -562,6 +567,7 @@ export function XDashboard({
             onClearQuery={() => setQuery("")}
             onEditList={activeList ? () => setEditor({ list: activeList, members: activeList.creatorIds }) : null}
             onSync={syncNow}
+            historyIncomplete={Boolean(coverage && coverage.covered < coverage.total && coverage.importing > 0)}
           />
         </div>
 
@@ -597,10 +603,10 @@ export function XDashboard({
 
       {panelOpen && panelWide ? (
         // The reading view covers the feed (which stays mounted, scroll intact).
-        <aside className="absolute inset-y-0 right-0 left-0 z-40 lg:left-64 lg:border-l">{panel}</aside>
+        <aside aria-label="X analysis" className="absolute inset-y-0 right-0 left-0 z-40 lg:left-64 lg:border-l">{panel}</aside>
       ) : null}
       {panelOpen && !panelWide && isWide ? (
-        <aside className="w-[26rem] shrink-0 border-l">{panel}</aside>
+        <aside aria-label="X analysis" className="w-[26rem] shrink-0 border-l">{panel}</aside>
       ) : null}
       {panelOpen && !panelWide && !isWide ? (
         <>
@@ -610,7 +616,7 @@ export function XDashboard({
             onClick={() => openPanel(false)}
             className="absolute inset-0 z-30 bg-black/30 backdrop-blur-[1px]"
           />
-          <aside className="absolute inset-y-0 right-0 z-40 w-full max-w-[28rem] border-l shadow-2xl">{panel}</aside>
+          <aside aria-label="X analysis" className="absolute inset-y-0 right-0 z-40 w-full max-w-[28rem] border-l shadow-2xl">{panel}</aside>
         </>
       ) : null}
 
@@ -637,7 +643,15 @@ export function XDashboard({
         />
       ) : null}
 
-      <TweetDetailDialog tweet={detail?.tweet ?? null} open={detail !== null} onClose={() => setDetail(null)} />
+      <TweetDetailDialog
+        tweet={detail?.tweet ?? null}
+        open={detail !== null}
+        onClose={() => setDetail(null)}
+        onUpdated={(tweet) => {
+          setDetail((current) => current?.tweet.id === tweet.id && current.tweet.creatorId === tweet.creatorId ? { ...current, tweet } : current);
+          feed.reload();
+        }}
+      />
     </div>
   );
 }

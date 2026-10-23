@@ -5,6 +5,7 @@
  * safe to import from client components.
  */
 import type { CreatorPlatform } from "@/lib/creators/repository";
+import { looksLikeVideoLink } from "@/lib/videos/import/links";
 
 /** One channel or account returned by a platform search. */
 export interface CreatorSearchResult {
@@ -87,6 +88,9 @@ const LINK_HOST_PATTERN =
 
 /**
  * What the add dialog should do with the text in its one input:
+ * - `video`: a link to one YouTube or Rumble video. The link names its own
+ *   platform, so the selected tab does not matter. The dialog previews it and
+ *   offers to add it to a person or to follow its channel.
  * - `link`: resolve it directly (a URL, a bare host path, or an `@handle`
  *   on YouTube/X), exactly like the paste flow always did.
  * - `search`: look the text up by name on the selected platform.
@@ -95,10 +99,13 @@ const LINK_HOST_PATTERN =
 export function classifyCreatorInput(
   input: string,
   platform: CreatorPlatform,
-): "link" | "search" | "empty" {
+): "video" | "link" | "search" | "empty" {
   const trimmed = input.trim();
   if (trimmed.length === 0) {
     return "empty";
+  }
+  if (looksLikeVideoLink(expandCreatorLink(trimmed, platform))) {
+    return "video";
   }
   if (/^https?:\/\//i.test(trimmed) || LINK_HOST_PATTERN.test(trimmed)) {
     return "link";

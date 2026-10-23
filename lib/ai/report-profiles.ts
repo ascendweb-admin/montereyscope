@@ -101,10 +101,10 @@ export const REPORT_PROFILES: readonly ReportProfileConfig[] = [
     timeoutMs: 25 * MINUTE_MS,
     directive: [
       "Write a complete, rigorous brief that leaves nothing important behind: the reader should come",
-      "away holding everything they would need to know from these transcripts without ever opening",
-      "them. Read every source closely; cross-reference claims between videos; extract concrete",
+      "away holding everything they would need to know from these sources without ever opening",
+      "them. Read every source closely; cross-reference claims between sources; extract concrete",
       "technical detail — numbers, dates, names, mechanisms, and claims — always attributed to its",
-      "video. Note contradictions between sources explicitly. Depth beats brevity, but every section",
+      "source. Note contradictions between sources explicitly. Depth beats brevity, but every section",
       "must earn its length: no padding, no restating the same finding twice.",
       "",
       "Required sections, in this order:",
@@ -114,7 +114,7 @@ export const REPORT_PROFILES: readonly ReportProfileConfig[] = [
       "4. Notable quotes — exact quotes as pull-quotes, each attributed to its video.",
       "5. Points of tension — where sources disagree, conflict, or leave questions open.",
       "6. Actionable takeaways — concrete and numbered, each tied back to the evidence.",
-      "7. Source-by-source notes — one subsection per selected video, distilling what that transcript alone contributes to the picture.",
+      "7. Source-by-source notes — one subsection per selected video, and one per account for its posts, distilling what each alone contributes to the picture.",
     ].join("\n"),
   },
 ];

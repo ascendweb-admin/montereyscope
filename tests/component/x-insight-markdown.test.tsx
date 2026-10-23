@@ -42,8 +42,10 @@ it("shows other creators in a run as +N and lists every post in the card", () =>
   expect(within(card).getAllByRole("link", { name: /Open on X/ })).toHaveLength(3);
   // Portaled out of the answer, so it can never widen the panel's scroller.
   expect(card.parentElement).toBe(document.body);
+  expect(document.activeElement).toBe(within(card).getAllByRole("link")[0]);
   fireEvent.keyDown(document, { key: "Escape" });
   expect(screen.queryByRole("dialog")).toBeNull();
+  expect(document.activeElement).toBe(pill);
 });
 
 it("renders wide tables as cards with labels above values and one Sources row", () => {
@@ -62,4 +64,12 @@ it("renders wide tables as cards with labels above values and one Sources row", 
   const pills = screen.getAllByRole("button", { name: /^Sources:/ });
   expect(pills).toHaveLength(1);
   expect(pills[0].closest("p")?.textContent).toMatch(/^Sources/);
+});
+
+it("closes a pinned citation when keyboard focus leaves the document", () => {
+  render(<InsightMarkdown text="Evidence [post:1]" sources={sources} />);
+  fireEvent.click(screen.getByRole("button", { name: /^Sources:/ }));
+  const link = screen.getByRole("link", { name: /Open on X/ });
+  fireEvent.blur(link, { relatedTarget: null });
+  expect(screen.queryByRole("dialog")).toBeNull();
 });

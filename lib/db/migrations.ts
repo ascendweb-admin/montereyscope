@@ -707,6 +707,92 @@ export const X_ANALYSIS_MIGRATIONS: readonly Migration[] = [
   },
 ];
 
+/**
+ * Creator profiles: one person across platforms. A `creators` row stays what
+ * it always was — one platform account with its own feed, cursor, and cache —
+ * and every account now belongs to exactly one `creator_profiles` row, the
+ * person the library shows. Backfill gives each existing account its own
+ * profile under the same id, so nothing merges until the user links accounts
+ * and old `/channels/<id>` links keep resolving.
+ *
+ * Categories describe the person, so memberships move from accounts to
+ * profiles (the union of an account's categories carries over unchanged
+ * because ids match at backfill time) and the per-account table is dropped.
+ *
+ * Triggers keep the invariant without trusting every writer: an account
+ * inserted without a profile gets its own, and a profile left with no
+ * accounts — the last one removed or moved elsewhere — is deleted along with
+ * its category memberships. `avatar_creator_id` names the account whose
+ * avatar represents the person; it is resolved at read time (falling back to
+ * the first account with an avatar), so it needs no foreign key.
+ */
+export const CREATOR_PROFILE_MIGRATIONS: readonly Migration[] = [
+  {
+    id: "024",
+    name: "creator_profiles",
+    sql: `
+      CREATE TABLE creator_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        display_name TEXT NOT NULL CHECK (length(trim(display_name)) > 0),
+        avatar_creator_id INTEGER,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+
+      INSERT INTO creator_profiles (id, display_name, avatar_creator_id, created_at, updated_at)
+        SELECT id, COALESCE(NULLIF(trim(display_name), ''), 'Creator'), id, created_at, updated_at
+        FROM creators;
+
+      ALTER TABLE creators ADD COLUMN profile_id INTEGER REFERENCES creator_profiles (id);
+
+      UPDATE creators SET profile_id = id;
+
+      CREATE INDEX idx_creators_profile ON creators (profile_id);
+
+      CREATE TABLE profile_categories (
+        profile_id INTEGER NOT NULL REFERENCES creator_profiles (id) ON DELETE CASCADE,
+        category_id INTEGER NOT NULL REFERENCES categories (id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        PRIMARY KEY (profile_id, category_id)
+      );
+
+      CREATE INDEX idx_profile_categories_category
+        ON profile_categories (category_id, profile_id);
+
+      INSERT INTO profile_categories (profile_id, category_id, created_at)
+        SELECT c.profile_id, cc.category_id, MIN(cc.created_at)
+        FROM creator_categories cc
+        JOIN creators c ON c.id = cc.creator_id
+        GROUP BY c.profile_id, cc.category_id;
+
+      DROP TABLE creator_categories;
+
+      CREATE TRIGGER creators_default_profile AFTER INSERT ON creators
+      WHEN NEW.profile_id IS NULL
+      BEGIN
+        INSERT INTO creator_profiles (display_name, avatar_creator_id)
+          VALUES (COALESCE(NULLIF(trim(NEW.display_name), ''), 'Creator'), NEW.id);
+        UPDATE creators SET profile_id = last_insert_rowid() WHERE id = NEW.id;
+      END;
+
+      CREATE TRIGGER creators_prune_profile_on_delete AFTER DELETE ON creators
+      WHEN OLD.profile_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM creators WHERE profile_id = OLD.profile_id)
+      BEGIN
+        DELETE FROM creator_profiles WHERE id = OLD.profile_id;
+      END;
+
+      CREATE TRIGGER creators_prune_profile_on_move AFTER UPDATE OF profile_id ON creators
+      WHEN OLD.profile_id IS NOT NULL
+        AND OLD.profile_id IS NOT NEW.profile_id
+        AND NOT EXISTS (SELECT 1 FROM creators WHERE profile_id = OLD.profile_id)
+      BEGIN
+        DELETE FROM creator_profiles WHERE id = OLD.profile_id;
+      END;
+    `,
+  },
+];
+
 /** Every migration the app ships, applied in id order on first connection. */
 export const ALL_MIGRATIONS: readonly Migration[] = [
   ...INITIAL_MIGRATIONS,
@@ -741,7 +827,8 @@ export const ALL_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_x_research_turn_thread ON x_research_turns(thread_id);
       ALTER TABLE ai_reports ADD COLUMN research_html TEXT;
     `,
-  },  {
+  },
+  {
     id: "022",
     name: "x_dashboard_seen_and_insights",
     sql: `
@@ -785,6 +872,162 @@ export const ALL_MIGRATIONS: readonly Migration[] = [
         tweet_id TEXT NOT NULL,
         PRIMARY KEY (insight_id, tweet_id)
       );
+    `,
+  },
+  {
+    id: "023",
+    name: "x_insight_modes",
+    sql: `
+      -- The chat mode (quick/balanced/deep) whose model and effort an insight's latest run used.
+      ALTER TABLE x_insights ADD COLUMN mode TEXT NOT NULL DEFAULT 'balanced'
+        CHECK (mode IN ('quick', 'balanced', 'deep'));
+    `,
+  },
+  ...CREATOR_PROFILE_MIGRATIONS,
+  {
+    id: "025",
+    name: "x_retrieval_tasks_by_creator",
+    sql: `
+      -- Sync status and scheduling read each creator's latest tasks.
+      CREATE INDEX idx_x_retrieval_tasks_creator ON x_retrieval_tasks(creator_id);
+    `,
+  },
+  {
+    id: "026",
+    name: "ai_report_reading_index",
+    sql: `
+      -- What the Reports page knows about a finished document without opening
+      -- it: its section outline and length, read once per document revision.
+      -- The fingerprint names the revision (see lib/ai/report-index.ts), so a
+      -- re-saved brief or a renamed report is re-read on the next listing.
+      CREATE TABLE ai_report_index (
+        report_id INTEGER PRIMARY KEY REFERENCES ai_reports(id) ON DELETE CASCADE,
+        fingerprint TEXT NOT NULL,
+        word_count INTEGER NOT NULL,
+        outline_json TEXT NOT NULL CHECK (json_valid(outline_json)),
+        indexed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      -- Full-text search over each document's headline, standfirst, and body
+      -- text; the rowid is the report id.
+      CREATE VIRTUAL TABLE ai_report_text USING fts5(
+        title, dek, body,
+        tokenize="unicode61 remove_diacritics 2"
+      );
+      CREATE TRIGGER ai_report_text_delete AFTER DELETE ON ai_reports BEGIN
+        DELETE FROM ai_report_text WHERE rowid = old.id;
+      END;
+    `,
+  },
+  {
+    id: "027",
+    name: "stable_ab_test_thumbnails",
+    sql: `
+      -- YouTube serves "Test & Compare" thumbnail variants at
+      -- /vi/<id>/hq720_custom_<n>.jpg?sqp=…, which rotate during the test and
+      -- 404 once it ends. Pin stored variants to the stable /vi/<id>/hq720.jpg
+      -- (the same rewrite stableThumbnailUrl in lib/videos/mapper.ts applies
+      -- to newly fetched entries).
+      UPDATE videos
+      SET thumbnail_url = 'https://i.ytimg.com/vi/' || id || '/' || substr(
+            thumbnail_url,
+            instr(thumbnail_url, '/vi/' || id || '/') + length(id) + 5,
+            instr(thumbnail_url, '_custom_')
+              - (instr(thumbnail_url, '/vi/' || id || '/') + length(id) + 5)
+          ) || '.jpg'
+      WHERE thumbnail_url LIKE 'https://%ytimg.com/vi/' || id || '/%!_custom!_%.jpg%' ESCAPE '!'
+        AND instr(thumbnail_url, '_custom_') > instr(thumbnail_url, '/vi/' || id || '/');
+    `,
+  },
+  {
+    id: "028",
+    name: "video_digests",
+    sql: `
+      -- Scope's summary of one video's complete transcript, written before an
+      -- analysis too big to read in one pass (see lib/ai/digests.ts). Keyed by
+      -- the transcript's hash and the digest prompt's version: a changed
+      -- transcript or prompt writes a fresh digest, anything else reuses it.
+      CREATE TABLE video_digests (
+        video_id TEXT PRIMARY KEY REFERENCES videos (id) ON DELETE CASCADE,
+        transcript_sha256 TEXT NOT NULL,
+        prompt_version INTEGER NOT NULL,
+        backend TEXT NOT NULL,
+        model TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+    `,
+  },
+  {
+    id: "029",
+    name: "x_analysis_checkpoint_lookup_indexes",
+    sql: `
+      -- These lookups run once per post/batch. Include their ordering keys
+      -- so SQLite does not scan the whole job to avoid a temporary sort.
+      CREATE INDEX idx_x_segments_post_order
+        ON x_analysis_segments(job_id, post_id, active, unit_id);
+      CREATE INDEX idx_x_batches_next
+        ON x_analysis_batches(job_id, status, ordinal, batch_key);
+    `,
+  },
+  {
+    id: "030",
+    name: "saved_report_source_snapshot",
+    sql: `
+      -- A saved brief must not depend on the analysis or evictable feed cache.
+      ALTER TABLE ai_reports ADD COLUMN source_snapshot TEXT
+        CHECK(source_snapshot IS NULL OR json_valid(source_snapshot));
+    `,
+  },
+  {
+    id: "031",
+    name: "x_insight_frozen_post_snapshots",
+    sql: `
+      -- Analyses outlive the evictable timeline cache. Preserve existing
+      -- evidence during upgrade while it is still available locally.
+      ALTER TABLE x_insight_posts ADD COLUMN source_snapshot TEXT
+        CHECK(source_snapshot IS NULL OR json_valid(source_snapshot));
+      UPDATE x_insight_posts AS p SET source_snapshot = (
+        SELECT json_object(
+          'tweet', json_object(
+            'id', t.id, 'authorName', t.author_name,
+            'authorHandle', t.author_handle, 'authorAvatarUrl', t.author_avatar_url,
+            'creatorId', ct.creator_id, 'text', t.text, 'url', t.url,
+            'publishedAt', t.published_at, 'inReplyToHandle', t.in_reply_to_handle,
+            'repostedByHandle', t.reposted_by_handle,
+            'quoted', CASE WHEN t.quoted_text IS NOT NULL THEN json_object(
+              'handle', t.quoted_handle, 'name', t.quoted_name,
+              'text', t.quoted_text, 'url', t.quoted_url
+            ) ELSE NULL END,
+            'media', json(COALESCE(t.media_json, '[]'))
+          ),
+          'eventAt', COALESCE(CASE WHEN ct.timeline_kind = 'repost'
+            THEN ct.timeline_at ELSE t.published_at END, t.fetched_at),
+          'postType', CASE WHEN ct.timeline_kind = 'repost' THEN 'repost'
+            WHEN ct.timeline_kind = 'reply' OR t.in_reply_to_tweet_id IS NOT NULL THEN 'reply'
+            WHEN t.quoted_tweet_id IS NOT NULL THEN 'quote' ELSE 'original' END
+        ) FROM creator_tweets ct JOIN tweets t ON t.id = ct.tweet_id
+        WHERE ct.tweet_id = p.tweet_id ORDER BY ct.creator_id LIMIT 1
+      );
+    `,
+  },
+  {
+    id: "032",
+    name: "other_videos",
+    sql: `
+      -- Existing accounts stay followed. A source-only host (followed = 0) is
+      -- created by a video import purely to satisfy videos.creator_id; it has
+      -- no library card and is deleted once none of its videos is attributed.
+      ALTER TABLE creators ADD COLUMN followed INTEGER NOT NULL DEFAULT 1
+        CHECK (followed IN (0, 1));
+
+      -- A video attributed to a person, whichever channel hosts it.
+      CREATE TABLE profile_videos (
+        profile_id INTEGER NOT NULL REFERENCES creator_profiles (id) ON DELETE CASCADE,
+        video_id   TEXT    NOT NULL REFERENCES videos (id) ON DELETE CASCADE,
+        added_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        PRIMARY KEY (profile_id, video_id)
+      );
+      CREATE INDEX idx_profile_videos_video ON profile_videos (video_id, added_at);
     `,
   },
 ];

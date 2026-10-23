@@ -1,8 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { SquarePlay } from "lucide-react";
+import { ArrowUpRight, FileText, SquarePlay } from "lucide-react";
 
-import { XLogo } from "@/components/ui/platform-logos";
+import { SearchAvatar } from "@/components/library/creator-search-results";
+import { RumbleLogo, XLogo, YouTubeLogo } from "@/components/ui/platform-logos";
+import { PLATFORM_LABELS } from "@/lib/creators/labels";
+import { formatDate, formatDuration, formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import type { ChatSource } from "@/lib/content/chat-source";
+export type { ChatSource } from "@/lib/content/chat-source";
 
 /**
  * Source citations for AI answers (chat): a compact pill naming the source a
@@ -10,20 +15,8 @@ import { cn } from "@/lib/utils";
  * attributions instead of raw file paths. The renderer upgrades the first
  * `transcripts/<videoId>.txt` or `tweets/<tweetId>.txt` mention per answer
  * into one of these; hovering (or focusing) the pill opens a preview card
- * with the thumbnail (when any), full title, and creator/author.
+ * with the thumbnail, platform, full title, creator, and publish date.
  */
-export interface ChatSource {
-  /** The video id or tweet id the source file is named after. */
-  id: string;
-  /** Defaults to "video" for pre-mixed-source callers. */
-  kind?: "video" | "tweet";
-  url?: string;
-  publishedAt?: string | null;
-  title: string;
-  creator?: string;
-  /** Stored remote preview image; absent or null renders a plain plate. */
-  thumbnailUrl?: string | null;
-}
 
 /**
  * Builds the source index the Markdown renderer resolves against. Video
@@ -43,12 +36,59 @@ export const CITATION_OPEN_DELAY_MS = 150;
 /** The citation pill's look, shared with the X Dashboard's post citations. */
 export const CITATION_PILL =
   "inline-flex max-w-[min(12rem,100%)] items-center gap-1 rounded-full border border-primary/25 bg-primary/[0.07] py-px pr-2 align-middle text-[0.85em] leading-5 font-medium whitespace-nowrap outline-none focus-visible:ring-2 focus-visible:ring-ring";
-/** Preview card geometry, kept in sync with the w-72 card below. */
-const CARD_WIDTH = 288;
+/** Preview card geometry, kept in sync with the w-80 card below. */
+const CARD_WIDTH = 320;
 const CARD_GAP = 8;
 const VIEWPORT_MARGIN = 8;
 /** Viewport room below the pill that still allows the card under it. */
-const CARD_MIN_BELOW = 240;
+const CARD_MIN_BELOW = 340;
+
+type SourcePlatform = "youtube" | "rumble" | "x";
+
+/** Faint brand wash behind a card that has no preview image. */
+const PLATFORM_PLATE: Record<SourcePlatform, string> = {
+  youtube: "bg-gradient-to-br from-[#FF0000]/20 via-muted to-muted",
+  rumble: "bg-gradient-to-br from-[#85C742]/25 via-muted to-muted",
+  x: "bg-gradient-to-br from-foreground/10 via-muted to-muted",
+};
+
+function platformOf(source: ChatSource): SourcePlatform | null {
+  return source.kind === "tweet" ? "x" : (source.platform ?? null);
+}
+
+/** "YouTube video", "X post", or plain "Video" when the platform is unknown. */
+function sourceTypeLabel(source: ChatSource): string {
+  if (source.kind === "tweet") {
+    return "X post";
+  }
+  return source.platform ? `${PLATFORM_LABELS[source.platform]} video` : "Video";
+}
+
+/** The hosting channel, when the creator is someone who appears on it instead of owning it. */
+function hostedOn(source: ChatSource): string | null {
+  return source.creator && source.channelName && source.channelName !== source.creator
+    ? source.channelName
+    : null;
+}
+
+function PlatformMark({
+  platform,
+  className,
+}: {
+  platform: SourcePlatform | null;
+  className?: string;
+}) {
+  if (platform === "x") {
+    return <XLogo aria-hidden="true" className={cn("text-foreground", className)} />;
+  }
+  if (platform === "rumble") {
+    return <RumbleLogo aria-hidden="true" className={className} />;
+  }
+  if (platform === "youtube") {
+    return <YouTubeLogo aria-hidden="true" className={className} />;
+  }
+  return <SquarePlay aria-hidden="true" className={cn("text-primary", className)} />;
+}
 
 interface CardPosition {
   left: number;
@@ -58,9 +98,9 @@ interface CardPosition {
 
 /**
  * One inline source citation, ChatGPT citation-style: a small pill with the
- * channel (or title, when no creator is known) that expands on hover into a
- * preview card — thumbnail, full title, creator — so the full citation is
- * always one glance away without ever shouting in the text flow.
+ * platform mark and channel (or title, when no creator is known) that
+ * expands on hover into a preview card, so the full citation is always one
+ * glance away without ever shouting in the text flow.
  */
 export function SourceCitation({ source, className }: { source: ChatSource; className?: string }) {
   const [card, setCard] = useState<CardPosition | null>(null);
@@ -103,9 +143,12 @@ export function SourceCitation({ source, className }: { source: ChatSource; clas
   useEffect(() => closeCard, []);
 
   const isTweet = source.kind === "tweet";
+  const platform = platformOf(source);
+  const typeLabel = isTweet ? "X post" : `${sourceTypeLabel(source)} transcript`;
+  const channelName = hostedOn(source);
   const label = source.creator
-    ? `${isTweet ? "X post" : "Video transcript"} — ${source.title} by ${source.creator}`
-    : `${isTweet ? "X post" : "Video transcript"} — ${source.title}`;
+    ? `${typeLabel} — ${source.title} by ${source.creator}${channelName ? ` on ${channelName}` : ""}`
+    : `${typeLabel} — ${source.title}`;
   const href = isTweet ? `https://x.com/i/status/${encodeURIComponent(source.id)}` : undefined;
   const published = source.publishedAt?.slice(0, 10) ?? "Publication date unknown";
   const Tag = isTweet ? "a" : "span";
@@ -134,11 +177,10 @@ export function SourceCitation({ source, className }: { source: ChatSource; clas
       }}
       className={cn(CITATION_PILL, "pl-1.5", className)}
     >
-      {isTweet ? (
-        <XLogo aria-hidden="true" className="size-2.5 shrink-0 text-foreground" />
-      ) : (
-        <SquarePlay aria-hidden="true" className="size-3 shrink-0 text-primary" />
-      )}
+      <PlatformMark
+        platform={platform}
+        className={cn("shrink-0", platform === "x" ? "size-2.5" : "size-3.5")}
+      />
       <span className="min-w-0 truncate text-foreground">{source.creator ?? source.title}</span>
       {isTweet ? <span className="text-muted-foreground"> · {published}</span> : null}
       {card ? <SourcePreviewCard source={source} position={card} /> : null}
@@ -147,45 +189,130 @@ export function SourceCitation({ source, className }: { source: ChatSource; clas
 }
 
 /**
- * The hover preview: thumbnail on top, full title, then the creator line.
- * Content is non-interactive and pointer-transparent — moving toward the
- * card (or anywhere off the pill) simply closes it.
+ * The hover preview: thumbnail with platform and duration badges, the full
+ * title, a creator byline with avatar and publish date, and a footer naming
+ * what was cited. Content is non-interactive and pointer-transparent —
+ * moving toward the card (or anywhere off the pill) simply closes it.
  */
 function SourcePreviewCard({ source, position }: { source: ChatSource; position: CardPosition }) {
   const isTweet = source.kind === "tweet";
+  const platform = platformOf(source);
+  const platformName = platform ? PLATFORM_LABELS[platform] : null;
+  const date = formatDate(source.publishedAt);
+  const relative = formatRelativeTime(source.publishedAt);
+  const dateLine = [date, relative].filter(Boolean).join(" · ");
+  const channelName = hostedOn(source);
+  const duration =
+    typeof source.durationSeconds === "number" && source.durationSeconds > 0
+      ? formatDuration(source.durationSeconds)
+      : null;
   return (
     <span
       aria-hidden="true"
       style={{ left: position.left, top: position.top, bottom: position.bottom }}
-      className="pointer-events-none fixed z-50 block w-72"
+      className="pointer-events-none fixed z-50 block w-80 font-normal whitespace-normal"
     >
-      <span className="block overflow-hidden rounded-xl border border-border bg-popover shadow-lg">
-        <span className="block aspect-video bg-muted">
+      <span
+        className={cn(
+          "block overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl shadow-black/30 ring-1 ring-black/5 motion-safe:animate-popover-in",
+          position.bottom !== undefined ? "origin-bottom" : "origin-top",
+        )}
+      >
+        <span
+          className={cn(
+            "relative block aspect-video",
+            platform ? PLATFORM_PLATE[platform] : "bg-muted",
+          )}
+        >
           {source.thumbnailUrl ? (
             <img
               src={source.thumbnailUrl}
               alt=""
               loading="lazy"
+              referrerPolicy="no-referrer"
               className="size-full object-cover"
             />
           ) : (
-            <span className="flex size-full items-center justify-center text-muted-foreground">
-              {isTweet ? (
-                <XLogo aria-hidden="true" className="size-6 opacity-40" />
-              ) : (
-                <span className="text-xs">No preview image</span>
-              )}
+            <span className="flex size-full items-center justify-center">
+              <PlatformMark
+                platform={platform}
+                className={cn("opacity-60", platform === "x" ? "size-8" : "size-12")}
+              />
             </span>
           )}
+          {source.thumbnailUrl ? (
+            <span className="absolute inset-0 bg-gradient-to-b from-black/35 via-transparent to-black/40" />
+          ) : null}
+          {platformName ? (
+            <span className="absolute top-2 left-2 inline-flex items-center gap-1.5 rounded-full bg-black/70 py-0.5 pr-2 pl-1.5 text-[11px] leading-4 font-medium text-white ring-1 ring-white/10 backdrop-blur-sm">
+              <PlatformMark
+                platform={platform}
+                className={cn(platform === "x" ? "size-2.5 text-white" : "size-3.5")}
+              />
+              {platformName}
+            </span>
+          ) : null}
+          {duration ? (
+            <span className="absolute right-2 bottom-2 rounded-md bg-black/75 px-1.5 py-0.5 text-[11px] leading-4 font-semibold text-white tabular-nums">
+              {duration}
+            </span>
+          ) : null}
         </span>
-        <span className="block space-y-1 p-3">
-          <span className="block line-clamp-2 text-sm leading-snug font-semibold whitespace-normal text-foreground [overflow-wrap:anywhere]">
+        <span className="block space-y-3 px-3.5 pt-3 pb-3.5">
+          <span
+            className={cn(
+              "block text-sm leading-snug font-semibold text-foreground [overflow-wrap:anywhere]",
+              isTweet ? "line-clamp-3" : "line-clamp-2",
+            )}
+          >
             {source.title}
           </span>
-          <span className="block text-xs text-muted-foreground">
-            {source.creator ? `${source.creator} · ` : ""}
-            {isTweet ? "X post" : "Video transcript"}
+          {source.creator || dateLine ? (
+            <span className="flex items-center gap-2.5">
+              {source.creator ? (
+                <SearchAvatar
+                  name={source.creator}
+                  src={source.creatorAvatarUrl ?? null}
+                  className="size-7 text-[10px]"
+                />
+              ) : null}
+              <span className="block min-w-0 flex-1">
+                {source.creator ? (
+                  <span className="block truncate text-xs font-medium text-foreground">
+                    {source.creator}
+                    {channelName ? (
+                      <span className="font-normal text-muted-foreground"> on {channelName}</span>
+                    ) : null}
+                  </span>
+                ) : null}
+                {dateLine ? (
+                  <span className="block truncate text-[11px] text-muted-foreground">
+                    {dateLine}
+                  </span>
+                ) : null}
+              </span>
+            </span>
+          ) : null}
+        </span>
+        <span className="flex items-center justify-between gap-3 border-t border-border bg-muted/40 px-3.5 py-2 text-[11px] text-muted-foreground">
+          <span className="inline-flex min-w-0 items-center gap-1.5">
+            <PlatformMark
+              platform={platform}
+              className={cn("shrink-0", platform === "x" ? "size-2.5" : "size-3.5")}
+            />
+            <span className="truncate">{sourceTypeLabel(source)}</span>
           </span>
+          {isTweet ? (
+            <span className="inline-flex shrink-0 items-center gap-0.5">
+              Open on X
+              <ArrowUpRight aria-hidden="true" className="size-3" />
+            </span>
+          ) : (
+            <span className="inline-flex shrink-0 items-center gap-1">
+              <FileText aria-hidden="true" className="size-3" />
+              Cited from transcript
+            </span>
+          )}
         </span>
       </span>
     </span>

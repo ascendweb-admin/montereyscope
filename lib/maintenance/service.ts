@@ -5,13 +5,20 @@
  * Saved creators are never touched here.
  */
 import { clearAllTranscripts, countTranscripts } from "@/lib/transcripts/repository";
-import { clearAllCachedFeeds, countAllVideos } from "@/lib/videos/repository";
+import {
+  clearAllCachedFeeds,
+  countAttributedVideos,
+  countClearableVideos,
+} from "@/lib/videos/repository";
 import { clearAllCachedTweets, countAllTweets } from "@/lib/x/repository";
 import type { ScopeDatabase } from "@/lib/db/connection";
 
 export interface CacheCounts {
   cachedTranscripts: number;
+  /** Videos "clear cached feeds" removes: everything not added to Other videos. */
   cachedVideos: number;
+  /** Videos added to a person's Other videos; clearing keeps them. */
+  keptVideos: number;
   cachedTweets: number;
 }
 
@@ -19,7 +26,8 @@ export interface CacheCounts {
 export function getCacheCounts(db: ScopeDatabase): CacheCounts {
   return {
     cachedTranscripts: countTranscripts(db),
-    cachedVideos: countAllVideos(db),
+    cachedVideos: countClearableVideos(db),
+    keptVideos: countAttributedVideos(db),
     cachedTweets: countAllTweets(db),
   };
 }
@@ -42,7 +50,7 @@ export function getCacheSizes(db: ScopeDatabase): CacheSizes {
        FROM dbstat AS stat
        JOIN sqlite_schema AS schema ON schema.name = stat.name
        WHERE schema.tbl_name IN (
-         'transcripts', 'videos', 'tweets', 'creator_tweets', 'x_feed_state',
+         'transcripts', 'video_digests', 'videos', 'tweets', 'creator_tweets', 'x_feed_state',
          'x_retrieval_checkpoints', 'x_retrieval_tasks', 'x_retrieval_jobs'
        )
        GROUP BY schema.tbl_name`,
@@ -54,7 +62,7 @@ export function getCacheSizes(db: ScopeDatabase): CacheSizes {
     cachedTweetBytes: 0,
   };
   for (const row of rows) {
-    if (row.tableName === "transcripts") {
+    if (row.tableName === "transcripts" || row.tableName === "video_digests") {
       sizes.cachedTranscriptBytes += row.bytes;
     } else if (row.tableName === "videos") {
       sizes.cachedVideoBytes += row.bytes;
@@ -85,7 +93,8 @@ export function clearTranscriptCache(db: ScopeDatabase): ClearOutcome {
 /**
  * Deletes every cached video entry (their transcripts cascade with them)
  * and resets last-refreshed times. The creator list itself is retained;
- * channel pages refill when feeds are refreshed again.
+ * channel pages refill when feeds are refreshed again. Videos added to a
+ * person's Other videos are kept, with their transcripts and hosts.
  */
 export function clearCachedFeedMetadata(db: ScopeDatabase): ClearOutcome {
   try {

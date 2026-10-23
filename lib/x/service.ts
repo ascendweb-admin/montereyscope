@@ -23,6 +23,7 @@ import {
 } from "./model";
 import { parseXTarget, xProfileUrl } from "./urls";
 import { getXProvider } from "./providers";
+import { scheduleX, type XScheduleOptions } from "./scheduler";
 import {
   countCreatorTweets,
   countCreatorTweetsFiltered,
@@ -61,40 +62,16 @@ export function toXServiceError(error: unknown): XServiceError {
 // Process-wide serialization
 // ---------------------------------------------------------------------------
 
-// Next builds route handlers and actions into separate bundles. Share the queue
-// through globalThis so research jobs and existing channel reads serialize together.
-const xOperationState = globalThis as typeof globalThis & {
-  __scopeXOperationQueue?: {
-    busy: boolean;
-    waiting: Array<{ background: boolean; start: () => void }>;
-  };
-};
-
-export interface XExclusiveOptions {
-  /** Yields to every non-background caller waiting at the time the X connection frees up. */
-  background?: boolean;
-}
+export type XExclusiveOptions = XScheduleOptions;
 
 /**
  * Serializes every X provider call in this process: one network operation at
- * a time, no nested retries. Callers waiting here do not hold database locks.
- * Background work (backfilling older posts) waits behind everything else.
+ * a time, most urgent first, timeline reads paced against X's quota (see
+ * ./scheduler). Next builds route handlers and actions into separate bundles;
+ * the queue lives on globalThis so they all share it.
  */
-export async function runXExclusive<T>(
-  operation: () => Promise<T>,
-  { background = false }: XExclusiveOptions = {},
-): Promise<T> {
-  const queue = (xOperationState.__scopeXOperationQueue ??= { busy: false, waiting: [] });
-  if (queue.busy) await new Promise<void>((start) => queue.waiting.push({ background, start }));
-  else queue.busy = true;
-  try {
-    return await operation();
-  } finally {
-    const urgent = queue.waiting.findIndex((waiter) => !waiter.background);
-    const [next] = queue.waiting.splice(urgent === -1 ? 0 : urgent, 1);
-    if (next) next.start();
-    else queue.busy = false;
-  }
+export function runXExclusive<T>(operation: () => Promise<T>, options: XExclusiveOptions = {}): Promise<T> {
+  return scheduleX(operation, options);
 }
 
 // ---------------------------------------------------------------------------
@@ -573,7 +550,7 @@ async function performTimelineRefresh(
         skipped: page.skipped,
         hasOlderAvailable,
       };
-    });
+    }, { bucket: "timeline" });
   } catch (error) {
     const serviceError = toXServiceError(error);
     // Record the last safe error for display; cached posts are untouched.

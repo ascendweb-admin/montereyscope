@@ -12,7 +12,9 @@ import {
   clearTranscriptCache,
   clearTweetCache,
   getCacheCounts,
+  getCacheSizes,
   type CacheCounts,
+  type CacheSizes,
 } from "@/lib/maintenance/service";
 import { getDb } from "@/lib/db/connection";
 
@@ -25,6 +27,11 @@ export interface ClearCacheOutcome {
 /** Reads the counts the confirmation dialogs display. */
 export async function getCacheCountsAction(): Promise<CacheCounts> {
   return getCacheCounts(getDb());
+}
+
+/** Reads the approximate cache sizes shown beside each cache. */
+export async function getCacheSizesAction(): Promise<CacheSizes> {
+  return getCacheSizes(getDb());
 }
 
 /** Deletes every cached transcript after the user confirmed the scope. */

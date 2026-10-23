@@ -9,6 +9,7 @@ import type { ScopeDatabase } from "@/lib/db/connection";
 import { ALL_MIGRATIONS } from "@/lib/db/migrations";
 import { runMigrations } from "@/lib/db/migrator";
 import { addCreator } from "@/lib/creators/repository";
+import { attachVideoToProfile } from "@/lib/videos/attribution";
 import { clearAllCachedFeeds, countAllVideos } from "@/lib/videos/repository";
 import {
   clearAllTranscripts,
@@ -67,6 +68,29 @@ function insertVideo(creatorId: number, id: string): void {
   );
 }
 
+/** A hidden host with one hand-picked video (and transcript) attributed to the first creator's person. */
+function addHiddenHostVideo(): { hostId: number; videoId: string } {
+  const host = addCreator(db, {
+    youtubeChannelId: "UCAAAAAAAAAAAAAAAAAAAAAA",
+    handle: "hiddenhost",
+    displayName: "Hidden Host",
+    channelUrl: "https://www.youtube.com/channel/UCAAAAAAAAAAAAAAAAAAAAAA",
+    avatarUrl: null,
+    followed: false,
+  }).creator;
+  insertVideo(host.id, "Hosted00001");
+  const person = db.prepare("SELECT profile_id FROM creators ORDER BY id LIMIT 1").get() as {
+    profile_id: number;
+  };
+  attachVideoToProfile(db, person.profile_id, "Hosted00001");
+  saveTranscript(
+    db,
+    { videoId: "Hosted00001", language: "en", source: "manual", plainText: "Kept." },
+    "2026-08-23T10:00:00.000Z",
+  );
+  return { hostId: host.id, videoId: "Hosted00001" };
+}
+
 beforeEach(() => {
   if (db) {
     db.close();
@@ -106,13 +130,32 @@ describe("cache counts (shown in confirmations before deletion)", () => {
       cachedTranscripts: 2,
       cachedTweets: 0,
       cachedVideos: 3,
+      keptVideos: 0,
     });
+  });
+
+  it("separates videos added to Other videos, which clearing keeps", () => {
+    const { hostId } = addHiddenHostVideo();
+    expect(countAllVideos(db)).toBe(4);
+    expect(getCacheCounts(db)).toEqual({
+      cachedTranscripts: 3,
+      cachedTweets: 0,
+      cachedVideos: 3,
+      keptVideos: 1,
+    });
+    // A source-only host is not a creator the user sees, but it is not deleted either.
+    expect(db.prepare("SELECT id FROM creators WHERE id = ?").get(hostId)).toBeDefined();
   });
 
   it("reads zero on an untouched database", () => {
     clearAllTranscripts(db);
     clearAllCachedFeeds(db);
-    expect(getCacheCounts(db)).toEqual({ cachedTranscripts: 0, cachedVideos: 0, cachedTweets: 0 });
+    expect(getCacheCounts(db)).toEqual({
+      cachedTranscripts: 0,
+      cachedVideos: 0,
+      keptVideos: 0,
+      cachedTweets: 0,
+    });
   });
 });
 
@@ -236,6 +279,36 @@ describe("clearCachedFeedMetadata — clears feeds while retaining saved creator
       id: number;
     }[];
     insertVideo(rows[0].id, "Refill0001");
-    expect(getCacheCounts(db)).toEqual({ cachedTranscripts: 0, cachedVideos: 1, cachedTweets: 0 });
+    expect(getCacheCounts(db)).toEqual({
+      cachedTranscripts: 0,
+      cachedVideos: 1,
+      keptVideos: 0,
+      cachedTweets: 0,
+    });
+  });
+
+  it("keeps videos added to Other videos, with their hosts and transcripts", () => {
+    const { hostId, videoId } = addHiddenHostVideo();
+
+    const outcome = clearCachedFeedMetadata(db);
+
+    expect(outcome).toEqual({ ok: true, deletedCount: 3 });
+    expect(getCacheCounts(db)).toEqual({
+      cachedTranscripts: 1,
+      cachedVideos: 0,
+      keptVideos: 1,
+      cachedTweets: 0,
+    });
+    expect(db.prepare("SELECT id FROM videos").all()).toEqual([{ id: videoId }]);
+    expect(db.prepare("SELECT id FROM creators WHERE id = ?").get(hostId)).toBeDefined();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM profile_videos").get()).toEqual({ n: 1 });
+    // Every followed creator is still reset, as before.
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM creators WHERE followed = 1 AND last_refreshed_at IS NOT NULL",
+        )
+        .get(),
+    ).toEqual({ n: 0 });
   });
 });

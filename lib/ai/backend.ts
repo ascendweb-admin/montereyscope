@@ -92,6 +92,7 @@ export async function createAiRunner(
         runOpencode({
           prompt: options.prompt,
           workDir: options.workDir,
+          sandbox: options.sandbox,
           resumeSessionId: options.resumeSessionId,
           signal: options.signal,
           timeoutMs: options.timeoutMs,

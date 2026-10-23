@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld(
   Object.freeze({
     info: () => ipcRenderer.invoke("scope:app", "info"),
     openLogs: () => ipcRenderer.invoke("scope:app", "open-logs"),
+    exportReportPdf: (reportId) => ipcRenderer.invoke("scope:app", "export-report-pdf", reportId),
     integrationStatus: () => ipcRenderer.invoke("scope:app", "integration-status"),
     installMenuEntry: () => ipcRenderer.invoke("scope:app", "install-menu-entry"),
     removeMenuEntry: () => ipcRenderer.invoke("scope:app", "remove-menu-entry"),

@@ -1,4 +1,4 @@
-import { FileText, MessagesSquare, Newspaper, Settings, Telescope, Users } from "lucide-react";
+import { FileText, MessagesSquare, Newspaper, Settings, Users } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 
 import { XLogo } from "@/components/ui/platform-logos";
@@ -19,9 +19,8 @@ export interface NavItem {
 export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/feed", label: "Feed", icon: Newspaper },
   { href: "/", label: "Creator library", icon: Users },
-  { href: "/research", label: "AI Research", icon: Telescope },
-  { href: "/x-dashboard", label: "X Dashboard", icon: XLogo, iconClassName: "p-px" },
   { href: "/chat", label: "AI Chat", icon: MessagesSquare },
+  { href: "/x-dashboard", label: "X Dashboard", icon: XLogo, iconClassName: "p-px" },
   { href: "/reports", label: "Reports", icon: FileText },
   { href: "/settings", label: "Settings", icon: Settings },
 ];

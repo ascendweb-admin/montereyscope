@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ArrowLeft, ExternalLink, Users } from "lucide-react";
 
 import { AskAiButton } from "@/components/ai/ask-ai-button";
+import { HostedVideoActions } from "@/components/video/hosted-video-actions";
 import { TranscriptPanel } from "@/components/video/transcript-panel";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -11,7 +12,11 @@ import {
   formatDuration,
   formatRelativeTime,
 } from "@/lib/format";
+import { localAvatarSrc } from "@/lib/creators/avatar";
+import { PLATFORM_LABELS, formatHandle } from "@/lib/creators/labels";
+import { getProfileSummary } from "@/lib/creators/profile-service";
 import { getCreatorById, toCreatorSummary } from "@/lib/creators/service";
+import { countProfileVideos, labelProfileOf, listFeaturedProfiles } from "@/lib/videos/attribution";
 import { getCachedVideo } from "@/lib/videos/service";
 import { getCachedTranscript } from "@/lib/transcripts/service";
 import { getDb } from "@/lib/db/connection";
@@ -63,6 +68,27 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
   }
 
   const creator = toCreatorSummary(creatorRecord);
+  // Videos belong to one platform account; the page reads as the person's.
+  const profile = getProfileSummary(db, creatorRecord.profileId);
+  const personName = profile?.displayName ?? creator.displayName;
+  // A guest appearance: the people it features, whose Other videos hold it.
+  // The channel's own owner is not "featured" on their own video.
+  const featured = (listFeaturedProfiles(db, [video.id]).get(video.id) ?? []).filter(
+    (person) => person.profileId !== creatorRecord.profileId,
+  );
+  const labelPerson = labelProfileOf(featured, creatorRecord.profileId);
+  const labelProfile = labelPerson ? getProfileSummary(db, labelPerson.profileId) : null;
+  // A source-only host has no page (404), so the way back is the featured
+  // person's Other videos; a followed host keeps its own account tab.
+  const hostIsSourceOnly = !creatorRecord.followed;
+  const backHref =
+    hostIsSourceOnly && labelPerson
+      ? `/creators/${labelPerson.profileId}?view=other`
+      : `/creators/${creatorRecord.profileId}?account=${creatorRecord.id}`;
+  const backLabel =
+    hostIsSourceOnly && labelPerson
+      ? `Back to ${labelPerson.displayName}'s Other videos`
+      : `Back to ${personName}`;
   const isRumble = creatorRecord.platform === "rumble";
   const externalLinkLabel = isRumble ? "Open on Rumble" : "Open on YouTube";
   const publishedLabel = formatDate(video.publishedAt);
@@ -84,11 +110,11 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
   return (
     <main id="main" className="mx-auto w-full max-w-4xl flex-1 px-4 py-8 md:px-8 md:py-10">
       <Link
-        href={`/channels/${creatorId}`}
+        href={backHref}
         className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
       >
         <ArrowLeft aria-hidden="true" className="size-4" />
-        Back to {creator.displayName}
+        {backLabel}
       </Link>
 
       <div className="mt-6 overflow-hidden rounded-xl border bg-card shadow-sm">
@@ -119,6 +145,19 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
 
         <div className="flex flex-col gap-4 p-5 sm:p-6">
           <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">{video.title}</h1>
+          {featured.length > 0 ? (
+            <ul aria-label="Where this video appears" className="-mt-1 flex flex-wrap gap-2">
+              <li>
+                <Badge variant="secondary" className="gap-1.5">
+                  <Users aria-hidden="true" className="size-3" />
+                  Featuring {featured.map((person) => person.displayName).join(", ")}
+                </Badge>
+              </li>
+              <li>
+                <Badge variant="outline">on {personName}</Badge>
+              </li>
+            </ul>
+          ) : null}
           <dl className="grid grid-cols-1 gap-x-8 gap-y-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
             <div>
               <dt className="text-xs text-muted-foreground">Published</dt>
@@ -141,9 +180,25 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
                 {video.durationSeconds === null ? "Unknown" : formatDuration(video.durationSeconds)}
               </dd>
             </div>
-            <div>
+            <div className="min-w-0">
               <dt className="text-xs text-muted-foreground">Channel</dt>
-              <dd className="truncate">{creator.displayName}</dd>
+              <dd className="truncate">
+                {hostIsSourceOnly ? (
+                  // A source-only channel has no page of its own.
+                  <span>{personName}</span>
+                ) : (
+                  <Link
+                    href={`/creators/${creatorRecord.profileId}?account=${creatorRecord.id}`}
+                    className="underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {personName}
+                  </Link>
+                )}
+                <span className="text-muted-foreground">
+                  {" "}
+                  · {formatHandle(creator.handle) ?? PLATFORM_LABELS[creatorRecord.platform]}
+                </span>
+              </dd>
             </div>
             <div>
               <dt className="text-xs text-muted-foreground">Cached</dt>
@@ -170,11 +225,38 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
               scope={[video.id]}
               source={{
                 id: video.id,
+                platform: isRumble ? "rumble" : "youtube",
                 title: video.title,
-                creator: creator.displayName,
+                creator: labelPerson?.displayName ?? personName,
+                // An appearance is cited as "{person} on {channel}".
+                ...(labelPerson ? { channelName: personName } : {}),
+                creatorAvatarUrl: labelProfile
+                  ? localAvatarSrc(labelProfile.avatarUrl, labelProfile.avatarCreatorId)
+                  : profile
+                    ? localAvatarSrc(profile.avatarUrl, profile.avatarCreatorId)
+                    : localAvatarSrc(creatorRecord.avatarUrl, creatorRecord.id),
+                publishedAt: video.publishedAt,
+                durationSeconds: video.durationSeconds,
                 thumbnailUrl: video.thumbnailUrl,
               }}
               description="Grounded in what is said in this video."
+            />
+            <HostedVideoActions
+              videoId={video.id}
+              host={{
+                id: creatorRecord.id,
+                displayName: creatorRecord.displayName,
+                followed: creatorRecord.followed,
+              }}
+              person={
+                labelPerson
+                  ? {
+                      id: labelPerson.profileId,
+                      displayName: labelPerson.displayName,
+                      otherVideoCount: countProfileVideos(db, labelPerson.profileId),
+                    }
+                  : null
+              }
             />
             <a
               href={video.url}

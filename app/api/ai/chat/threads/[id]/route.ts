@@ -9,6 +9,7 @@
  */
 import { acquireChatTurnLock } from "@/lib/ai";
 import { deleteThread, getThread, listMessages } from "@/lib/ai/threads";
+import { archivedChatSources } from "@/lib/ai/thread-sources";
 import { getDb } from "@/lib/db/connection";
 
 // Threads live in the local SQLite file; always read at request time.
@@ -56,7 +57,11 @@ export async function GET(_request: Request, ctx: RouteParams) {
     createdAt: thread.createdAt,
   };
   return Response.json(
-    { thread: publicThread, messages: listMessages(db, threadId) },
+    {
+      thread: publicThread,
+      messages: listMessages(db, threadId),
+      sourceMetadata: archivedChatSources(thread.codexWorkDir, thread.selectedSources),
+    },
     { headers: { "Cache-Control": "no-store" } },
   );
 }

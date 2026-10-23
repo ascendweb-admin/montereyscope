@@ -31,12 +31,12 @@ const {
 const {
   DESKTOP_AUTH_HEADER,
   LOOPBACK_HOST,
-  allocateLoopbackPort,
   backendEnvironment,
   desktopUserDataPath,
   isInternalUrl,
   isSafeExternalUrl,
   requestHealth,
+  reserveAppPort,
   waitForBackend,
 } = require("./lib/runtime.cjs");
 
@@ -47,6 +47,7 @@ const { startXBroker } = require("./lib/x-broker.cjs");
 const { createRumbleSearch, startRumbleSearchBroker } = require("./lib/rumble-search.cjs");
 const { runWorker } = require("./lib/x-worker.cjs");
 const { revealMainWindow, startupWindowAvailable } = require("./lib/window-lifecycle.cjs");
+const { createReportPdfExporter } = require("./lib/report-pdf.cjs");
 const {
   applyStorageBackendPreference,
   collectStorageDiagnostic,
@@ -909,7 +910,7 @@ async function bootstrap() {
   if (isSmokeRun) log("Startup window created.");
 
   const token = crypto.randomBytes(32).toString("hex");
-  const port = await allocateLoopbackPort();
+  const port = await reserveAppPort(path.join(userDataRoot, "backend-port"));
   if (isSmokeRun) log("Loopback port reserved.");
   appOrigin = `http://${LOOPBACK_HOST}:${port}`;
   configureRendererSession(appOrigin, token);
@@ -972,9 +973,36 @@ async function bootstrap() {
       return { ok: false, error: { code: error.code || "invalid_response" } };
     }
   });
-  ipcMain.handle("scope:app", async (event, operation) => {
+  const exportReportPdf = createReportPdfExporter({
+    BrowserWindow,
+    dialog,
+    origin: appOrigin,
+    fetchReport: (url) =>
+      fetch(url, {
+        headers: { [DESKTOP_AUTH_HEADER]: token },
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
+      }),
+  });
+  ipcMain.handle("scope:app", async (event, operation, reportId) => {
     if (!isTrustedDesktopEvent(event)) {
       throw new Error("Desktop app request refused");
+    }
+    if (operation === "export-report-pdf") {
+      try {
+        return { ok: true, data: await exportReportPdf(mainWindow, reportId) };
+      } catch (error) {
+        log(
+          `Could not export report ${reportId} as PDF: ${error instanceof Error ? error.cause || error.message : error}`,
+        );
+        return {
+          ok: false,
+          error: {
+            code: "pdf_export_failed",
+            message: error instanceof Error ? error.message : "Could not save the report as PDF.",
+          },
+        };
+      }
     }
     if (operation === "info") {
       return {

@@ -8,9 +8,16 @@ import { researchReportHtml } from "@/lib/x/research/experience";
  * with a CSP that enforces what the prompt already demands of the document:
  * inline styles only, no scripts, and no requests of any kind — external or
  * otherwise.
+ *
+ * `?embed=1` serves the same document for the Reports page's inline reader:
+ * framing is allowed from the app's own origin only, external links get
+ * target="_blank" so they open outside the frame (the reader's sandboxed
+ * iframe lets those popups escape) instead of navigating the frame itself,
+ * and every section heading carries the id the page's outline jumps to.
  */
 import { readFile } from "node:fs/promises";
 
+import { anchorReportHeadings } from "@/lib/ai/report-document";
 import { getReport } from "@/lib/ai/reports";
 import { getDb } from "@/lib/db/connection";
 
@@ -36,7 +43,22 @@ function jsonError(status: number, code: string, message: string): Response {
   );
 }
 
-export async function GET(_request: Request, ctx: RouteParams) {
+/**
+ * Lands an outline jump a little below the frame's top edge rather than
+ * flush against it. A style element is valid anywhere in the body, and the
+ * CSP allows inline styles.
+ */
+const EMBED_STYLE = "<style>h2[id],h3[id]{scroll-margin-top:1.5rem}</style>";
+
+/** Opens absolute links outside the frame; in-page anchors keep working. */
+function targetExternalLinks(html: string): string {
+  return html.replace(
+    /<a\b(?![^>]*\btarget\s*=)(?=[^>]*\bhref\s*=\s*["']?https?:)/gi,
+    '<a target="_blank" rel="noopener noreferrer"',
+  );
+}
+
+export async function GET(request: Request, ctx: RouteParams) {
   const { id: rawReportId } = await ctx.params;
   const reportId = parseReportId(rawReportId);
   if (reportId === null) {
@@ -65,14 +87,17 @@ export async function GET(_request: Request, ctx: RouteParams) {
     return jsonError(404, "report_file_missing", "The report file is no longer on disk.");
   }
 
-  return new Response(html, {
+  const embed = new URL(request.url).searchParams.get("embed") === "1";
+
+  const body = embed ? targetExternalLinks(anchorReportHeadings(html).html) + EMBED_STYLE : html;
+
+  return new Response(body, {
     status: 200,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
-      "Content-Security-Policy":
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors 'none'",
+      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors ${embed ? "'self'" : "'none'"}`,
     },
   });
 }

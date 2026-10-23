@@ -1,14 +1,9 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
-import { ChannelView } from "./channel-view";
 import { getCreatorById } from "@/lib/creators/service";
-import { getCachedCreatorFeed } from "@/lib/videos/service";
-import { getCachedCreatorTimeline } from "@/lib/x";
-import { toTweetViewModel } from "@/lib/x/view-model";
 import { getDb } from "@/lib/db/connection";
-import { listCategories, listCategoriesForCreator } from "@/lib/categories";
 
-// Cached feeds live in SQLite and must reflect refreshes immediately.
+// Account → creator lookups read SQLite at request time.
 export const dynamic = "force-dynamic";
 
 interface ChannelPageProps {
@@ -24,9 +19,10 @@ function parseCreatorId(raw: string): number | null {
 }
 
 /**
- * A saved creator's channel page. Unknown or removed IDs — and anything
- * that is not a plain numeric ID — fall through to the designed
- * not-found state for this segment.
+ * Legacy per-account channel URL. A channel is now one platform account of a
+ * creator, so this forwards to that creator's page with the account's tab
+ * open. Unknown or removed IDs, source-only hosts, and anything that is not a
+ * plain numeric ID fall through to the designed not-found state for this segment.
  */
 export default async function ChannelPage({ params }: ChannelPageProps) {
   const { id: rawId } = await params;
@@ -34,54 +30,10 @@ export default async function ChannelPage({ params }: ChannelPageProps) {
   if (creatorId === null) {
     notFound();
   }
-
-  const db = getDb();
-  const creator = getCreatorById(db, creatorId);
-  if (!creator) {
+  const creator = getCreatorById(getDb(), creatorId);
+  // A source-only host has no page of its own; only its videos are reachable.
+  if (!creator?.followed) {
     notFound();
   }
-
-  const categories = listCategories(db);
-  const creatorCategories = listCategoriesForCreator(db, creatorId);
-
-  // X accounts render their cached post timeline; video platforms render the
-  // cached videos/livestreams tabs. Both are pure local reads.
-  if (creator.platform === "x") {
-    const timeline = getCachedCreatorTimeline(db, creatorId, {
-      limit: 100,
-      offset: 0,
-      includeReplies: true,
-      includeReposts: true,
-    });
-    return (
-      <ChannelView
-        creator={creator}
-        timeline={{
-          tweets: timeline.items.map((item) => toTweetViewModel(item, creatorId)),
-          totalCount: timeline.totalCount,
-          hasMoreCached: timeline.hasMore,
-          state: timeline.state
-            ? {
-                lastRefreshedAt: timeline.state.lastRefreshedAt,
-                lastError: timeline.state.lastError,
-                exhausted: timeline.state.exhausted,
-              }
-            : null,
-        }}
-        categories={categories}
-        creatorCategories={creatorCategories}
-      />
-    );
-  }
-
-  const feed = getCachedCreatorFeed(db, creatorId);
-
-  return (
-    <ChannelView
-      creator={creator}
-      feed={feed}
-      categories={categories}
-      creatorCategories={creatorCategories}
-    />
-  );
+  redirect(`/creators/${creator.profileId}?account=${creator.id}`);
 }

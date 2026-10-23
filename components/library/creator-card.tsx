@@ -1,152 +1,147 @@
 import Link from "next/link";
-import { Rss } from "lucide-react";
 
 import { CategoryChip, UncategorizedChip } from "@/components/categories/category-chip";
+import { PlatformLogo, ProfileAvatar } from "@/components/creators/profile-ui";
+import {
+  PLATFORM_LABELS,
+  accountChipLabel,
+  formatHandle,
+  handleSummary,
+} from "@/lib/creators/labels";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { XLogo } from "@/components/ui/platform-logos";
-import { localAvatarSrc } from "@/lib/creators/avatar";
 import { cn } from "@/lib/utils";
 import type { CreatorPlatform } from "@/lib/creators/repository";
 import type { CreatorCategory } from "@/lib/categories";
 
-const AVATAR_STYLES = [
-  "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300",
-  "bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300",
-  "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
-  "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
-];
+export { creatorAvatarStyle } from "@/components/creators/avatar-style";
 
-function initialsOf(name: string): string {
-  return name
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((word) => word[0]?.toUpperCase() ?? "")
-    .join("");
+/** One platform account on a person's card. */
+export interface CreatorCardAccount {
+  platform: CreatorPlatform;
+  handle: string | null;
+  /** In-app link to this account's tab; null renders a static chip. */
+  href?: string | null;
 }
 
 /** Minimal view model shared by saved creators and design-preview fixtures. */
 export interface CreatorCardModel {
-  platform?: CreatorPlatform;
   displayName: string;
-  handle: string | null;
   avatarUrl: string | null;
-  /** Saved-creator id; present means avatars stream through the local proxy. */
-  id?: number | null;
-  /** In-app link to the channel page; null renders a static card. */
+  /** The account the avatar streams through; present means the local proxy is used. */
+  avatarCreatorId?: number | null;
+  /** In-app link to the creator page; null renders a static card. */
   href?: string | null;
+  /** Every platform account linked to this person, in display order. */
+  accounts: readonly CreatorCardAccount[];
   categories?: CreatorCategory[];
-}
-
-export function creatorAvatarStyle(name: string): string {
-  let hash = 0;
-  for (let index = 0; index < name.length; index += 1) {
-    hash = (hash * 31 + name.charCodeAt(index)) % 997;
-  }
-  return AVATAR_STYLES[hash % AVATAR_STYLES.length];
 }
 
 interface CreatorCardProps {
   creator: CreatorCardModel;
-  /** Optional trailing action area, e.g. the remove button. */
+  /** Optional trailing action area, e.g. the link, categories, and remove buttons. */
   actions?: React.ReactNode;
 }
 
 /**
- * A creator tile. Avatars stream through the local proxy route when the
- * creator is saved (same-origin, so browser privacy tooling never sees a
- * third-party request); nothing is downloaded to disk either way.
+ * A creator tile: one person with a chip for every platform they are
+ * followed on. The name is the card's link (stretched over the whole tile),
+ * while each platform chip jumps straight to that account's tab. Avatars
+ * stream through the local proxy route when the creator is saved
+ * (same-origin, so browser privacy tooling never sees a third-party
+ * request); nothing is downloaded to disk either way.
  */
 export function CreatorCard({ creator, actions }: CreatorCardProps) {
-  const body = (
-    <CardContent className="flex h-full flex-col gap-4 p-5">
-      <div className={cn("flex items-start gap-3", actions && "pr-16")}>
-        {creator.avatarUrl ? (
-          <img
-            src={localAvatarSrc(creator.avatarUrl, creator.id) ?? undefined}
-            alt=""
-            loading="lazy"
-            className="size-11 shrink-0 rounded-full border border-border object-cover"
-          />
-        ) : (
-          <span
-            aria-hidden="true"
-            className={cn(
-              "flex size-11 shrink-0 items-center justify-center rounded-full text-sm font-semibold",
-              creatorAvatarStyle(creator.displayName),
-            )}
-          >
-            {initialsOf(creator.displayName)}
-          </span>
-        )}
-      </div>
-      <div className="min-w-0">
-        <h3 className="truncate text-sm font-semibold">{creator.displayName}</h3>
-        <p className="truncate text-sm text-muted-foreground">
-          {creator.handle ? `@${creator.handle.replace(/^@/, "")}` : "Channel"}
-        </p>
-      </div>
-      <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
-        {creator.platform ? (
-          <Badge variant="outline" className="gap-1.5">
-            {creator.platform === "x" ? (
-              <XLogo aria-hidden="true" className="size-3 text-foreground" />
-            ) : (
-              <span
-                aria-hidden="true"
-                className={cn(
-                  "size-1.5 rounded-full",
-                  creator.platform === "rumble" ? "bg-lime-500" : "bg-red-500",
-                )}
-              />
-            )}
-            {creator.platform === "x"
-              ? "X"
-              : creator.platform === "rumble"
-                ? "Rumble"
-                : "YouTube"}
-          </Badge>
-        ) : null}
-        <Badge variant="secondary" className="gap-1.5">
-          <Rss aria-hidden="true" className="size-3" />
-          Cached feed
-        </Badge>
-      </div>
-      {creator.categories ? (
-        <div className="flex min-h-5 flex-wrap gap-1.5">
-          {creator.categories.length > 0 ? (
-            <>
-              {creator.categories.slice(0, 2).map((category) => (
-                <CategoryChip key={category.id} category={category} className="max-w-32" />
-              ))}
-              {creator.categories.length > 2 ? (
-                <Badge variant="outline" className="text-muted-foreground">
-                  +{creator.categories.length - 2}
-                </Badge>
-              ) : null}
-            </>
-          ) : (
-            <UncategorizedChip />
-          )}
-        </div>
-      ) : null}
-    </CardContent>
-  );
+  const subtitle = handleSummary(creator.accounts);
+  const multiPlatform = creator.accounts.length > 1;
 
   return (
     <Card className="relative h-full transition-colors motion-reduce:transition-none hover:border-ring/40">
-      {creator.href ? (
-        <Link
-          href={creator.href}
-          className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      <CardContent className="flex h-full flex-col gap-4 p-5">
+        <div className={cn("flex items-start gap-3", actions && "pr-28")}>
+          <ProfileAvatar
+            name={creator.displayName}
+            avatarUrl={creator.avatarUrl}
+            avatarCreatorId={creator.avatarCreatorId ?? null}
+            className="size-11 text-sm"
+          />
+        </div>
+        <div className="min-w-0">
+          <h2 className="truncate text-sm font-semibold">
+            {creator.href ? (
+              <Link
+                href={creator.href}
+                className="rounded-sm outline-none after:absolute after:inset-0 after:rounded-xl focus-visible:after:ring-2 focus-visible:after:ring-ring"
+              >
+                {creator.displayName}
+              </Link>
+            ) : (
+              creator.displayName
+            )}
+          </h2>
+          <p className="truncate text-sm text-muted-foreground" title={subtitle || undefined}>
+            {subtitle || (multiPlatform ? `${creator.accounts.length} accounts` : "Channel")}
+          </p>
+        </div>
+        <ul
+          aria-label={`${creator.displayName}'s platforms`}
+          className="mt-auto flex flex-wrap items-center gap-1.5 pt-1"
         >
-          {body}
-        </Link>
-      ) : (
-        body
-      )}
+          {creator.accounts.map((account, index) => {
+            const label = accountChipLabel(account, creator.accounts);
+            const handle = formatHandle(account.handle);
+            const title = handle
+              ? `${handle} on ${PLATFORM_LABELS[account.platform]}`
+              : PLATFORM_LABELS[account.platform];
+            const chipClass =
+              "inline-flex h-6 max-w-40 items-center gap-1.5 rounded-md border bg-background px-2 text-xs font-medium";
+            return (
+              <li key={`${account.platform}-${account.handle ?? index}`}>
+                {account.href ? (
+                  // Sits above the card's stretched link so it stays clickable.
+                  <Link
+                    href={account.href}
+                    title={title}
+                    aria-label={`Open ${title}`}
+                    className={cn(
+                      chipClass,
+                      "relative z-10 outline-none transition-colors hover:border-ring/50 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
+                    )}
+                  >
+                    <PlatformLogo platform={account.platform} className="size-3 shrink-0" />
+                    <span className="truncate">{label}</span>
+                  </Link>
+                ) : (
+                  <span title={title} className={chipClass}>
+                    <PlatformLogo platform={account.platform} className="size-3 shrink-0" />
+                    <span className="truncate">{label}</span>
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+        {creator.categories ? (
+          <div className="flex min-h-5 flex-wrap gap-1.5">
+            {creator.categories.length > 0 ? (
+              <>
+                {creator.categories.slice(0, 2).map((category) => (
+                  <CategoryChip key={category.id} category={category} className="max-w-32" />
+                ))}
+                {creator.categories.length > 2 ? (
+                  <Badge variant="outline" className="text-muted-foreground">
+                    +{creator.categories.length - 2}
+                  </Badge>
+                ) : null}
+              </>
+            ) : (
+              <UncategorizedChip />
+            )}
+          </div>
+        ) : null}
+      </CardContent>
       {actions ? (
-        <div className="absolute top-4 right-4 z-10 flex items-center gap-0.5">{actions}</div>
+        <div className="absolute top-4 right-4 z-20 flex items-center gap-0.5">{actions}</div>
       ) : null}
     </Card>
   );

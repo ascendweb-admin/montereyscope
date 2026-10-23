@@ -18,12 +18,14 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/pending";
 import { useToast } from "@/components/ui/toast";
 import {
-  formatScopeCapMessage,
+  estimateScopeLoad,
   formatSkippedSources,
-  MAX_SCOPE_SOURCES,
+  scopeAdditionProblem,
+  takeWhileFits,
 } from "@/lib/ai/scope-selection";
 import { formatRelativeTime } from "@/lib/format";
 import { toTweetViewModel, type TweetViewModel } from "@/lib/x/view-model";
+import { isTemporaryXError, X_BUSY_MESSAGE } from "@/lib/x/model";
 import { cn } from "@/lib/utils";
 
 export interface TweetTimelineState {
@@ -138,9 +140,15 @@ export function TweetTimeline({
     [selectedReady],
   );
 
+  const selectedLoad = (ids: ReadonlySet<string>) =>
+    estimateScopeLoad([...ids].map(() => ({ kind: "tweet" as const })));
+
   const toggleTweet = (tweetId: string): void => {
-    if (!selectedIds.has(tweetId) && selectedIds.size >= MAX_SCOPE_SOURCES) {
-      setNote({ tone: "danger", message: formatScopeCapMessage(selectedIds.size + 1) });
+    const problem = selectedIds.has(tweetId)
+      ? null
+      : scopeAdditionProblem(selectedLoad(selectedIds), { kind: "tweet" });
+    if (problem !== null) {
+      setNote({ tone: "danger", message: problem });
       return;
     }
     setNote(null);
@@ -156,18 +164,20 @@ export function TweetTimeline({
   };
 
   const selectVisible = (): void => {
-    const visibleIds = filtered.map((tweet) => tweet.id);
-    if (selectedIds.size >= MAX_SCOPE_SOURCES && visibleIds.some((id) => !selectedIds.has(id))) {
-      setNote({ tone: "danger", message: formatScopeCapMessage(MAX_SCOPE_SOURCES + 1) });
+    const unselected = filtered.map((tweet) => tweet.id).filter((id) => !selectedIds.has(id));
+    const load = selectedLoad(selectedIds);
+    const fitting = takeWhileFits(
+      load,
+      unselected.map((id) => ({ kind: "tweet" as const, id })),
+    );
+    if (unselected.length > 0 && fitting.length === 0) {
+      setNote({ tone: "danger", message: scopeAdditionProblem(load, { kind: "tweet" })! });
       return;
     }
     setNote(null);
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      for (const id of visibleIds) {
-        if (next.size >= MAX_SCOPE_SOURCES) {
-          break;
-        }
+      for (const { id } of fitting) {
         next.add(id);
       }
       return next;
@@ -208,7 +218,8 @@ export function TweetTimeline({
     const outcome = await refreshCreatorTweetsAction(creatorId, mode);
     setJob(null);
     if (!outcome.ok) {
-      showToast(outcome.message ?? "The timeline could not be updated.", "error");
+      if (isTemporaryXError(outcome.errorCode)) showToast(X_BUSY_MESSAGE, "info");
+      else showToast(outcome.message ?? "The timeline could not be updated.", "error");
       return;
     }
     if (outcome.status === "exhausted") {
@@ -250,7 +261,8 @@ export function TweetTimeline({
     const outcome = await fetchTweetsAction(creatorId, targets);
     setJob(null);
     if (!outcome.ok || !outcome.batch) {
-      showToast(outcome.message ?? "Fetching the selected posts failed.", "error");
+      if (isTemporaryXError(outcome.errorCode)) showToast(X_BUSY_MESSAGE, "info");
+      else showToast(outcome.message ?? "Fetching the selected posts failed.", "error");
       return;
     }
     if (extraTweets.length > 0) {
@@ -486,6 +498,9 @@ export function TweetTimeline({
         tweet={detailTweet}
         open={detailTweet !== null}
         onClose={() => setDetailId(null)}
+        onUpdated={(tweet) =>
+          setExtraTweets((current) => current.map((item) => (item.id === tweet.id ? tweet : item)))
+        }
       />
 
       <ChatPanel

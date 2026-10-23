@@ -666,6 +666,9 @@ test("a rate-limited read logs what X said about its quota, then waits it out", 
   const before = h.calls.length;
   await assert.rejects(h.host.read("user_posts", { userId: "1" }), { code: "rate_limited" });
   assert.equal(h.calls.length, before);
+  // X limits each endpoint on its own: profile lookups and search still go through.
+  assert.equal((await h.host.read("user", { handle: "someone" })).connected, true);
+  assert.equal(h.calls.length, before + 1);
 });
 
 test("desktop worker runner keeps only the safe parts of a failure diagnostic", async () => {

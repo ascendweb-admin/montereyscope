@@ -17,6 +17,15 @@ export interface VideoCardModel {
   publishedLabel: string | null;
   durationLabel: string | null;
   liveStatus: "not_live" | "is_live" | "was_live" | "upcoming" | "unknown";
+  /** Raw values behind the labels, for AI citation previews. */
+  publishedAt?: string | null;
+  durationSeconds?: number | null;
+  /** A line under the title, e.g. "on PBD Podcast" for an appearance on another channel. */
+  subtitle?: string | null;
+  /** The channel that hosts the video, when it is not the page's own account. */
+  hostName?: string | null;
+  /** The hosting channel's platform, when it can differ from the rest of the feed. */
+  platform?: "youtube" | "rumble";
 }
 
 /** When present, the card is a selection target instead of a link. */
@@ -116,6 +125,9 @@ export function VideoCard({
         <h3 className="line-clamp-2 text-sm leading-snug font-medium group-hover:underline [overflow-wrap:anywhere]">
           {video.title}
         </h3>
+        {video.subtitle ? (
+          <p className="truncate text-xs text-muted-foreground">{video.subtitle}</p>
+        ) : null}
         <p className="mt-auto text-xs text-muted-foreground">
           {video.publishedLabel ?? "Date unknown"}
           {badgeText !== null ? <span className="sr-only"> — {badgeText}</span> : null}

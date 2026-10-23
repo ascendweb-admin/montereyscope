@@ -163,6 +163,26 @@ class NormalizationTests(unittest.TestCase):
             self.assertEqual([item['tweet']['id'] for page in [first, second, third] for item in page['items']], ['1','2','3','4','5'])
             self.assertEqual(client.variables['userId'], '123')
 
+    def test_timeline_pages_report_xs_quota_for_pacing(self):
+        class Client:
+            def _graphql_get(self, operation, variables, _features):
+                worker.DIAGNOSTIC.update(rateLimit=dict(limit=50, remaining=37, reset=1800000000))
+                return dict(data=dict(user=dict(result=dict(timeline_v2=dict(timeline=dict(
+                    instructions=timeline([post('1')])))))))
+        request = dict(protocol=1, operation='user_posts', credentials=dict(cookieHeader='synthetic'),
+                       params=dict(userId='123', handle='author', limit=20))
+        with patch.object(worker, 'client_for', return_value=(Client(), {})):
+            page = worker.dispatch(request)
+        self.assertEqual(page['rateLimit'], dict(limit=50, remaining=37, reset=1800000000))
+
+        class Silent:
+            def _graphql_get(self, operation, variables, _features):
+                return dict(data=dict(user=dict(result=dict(timeline_v2=dict(timeline=dict(
+                    instructions=timeline([post('1')])))))))
+        # A quota from an earlier read is never reported as this one's.
+        with patch.object(worker, 'client_for', return_value=(Silent(), {})):
+            self.assertNotIn('rateLimit', worker.dispatch(request))
+
     def test_timeline_reads_never_look_up_the_handle_again(self):
         class Client:
             calls = []

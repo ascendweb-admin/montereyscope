@@ -42,17 +42,21 @@ type Platform = CreatorPlatform | "all";
 export function PlatformFilter({
   value,
   onChange,
+  content = "creators",
 }: {
   value: Platform;
   onChange: (value: Platform) => void;
+  /** Video lists only support the video-hosting platforms. */
+  content?: "creators" | "videos";
 }) {
+  const menuOptions = options.filter((option) => content !== "videos" || option.value !== "x");
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const items = useRef<(HTMLButtonElement | null)[]>([]);
   const menuId = useId();
-  const selectedIndex = options.findIndex((option) => option.value === value);
-  const selected = options[selectedIndex];
+  const selectedIndex = menuOptions.findIndex((option) => option.value === value);
+  const selected = menuOptions[selectedIndex];
   const Icon = selected.icon;
 
   useEffect(() => {
@@ -121,12 +125,13 @@ export function PlatformFilter({
           onKeyDown={(event) => {
             const index = items.current.indexOf(document.activeElement as HTMLButtonElement);
             let next: number | undefined;
-            if (event.key === "ArrowDown") next = (index + 1) % options.length;
-            if (event.key === "ArrowUp") next = (index - 1 + options.length) % options.length;
+            if (event.key === "ArrowDown") next = (index + 1) % menuOptions.length;
+            if (event.key === "ArrowUp")
+              next = (index - 1 + menuOptions.length) % menuOptions.length;
             if (event.key === "Home") next = 0;
-            if (event.key === "End") next = options.length - 1;
+            if (event.key === "End") next = menuOptions.length - 1;
             if (event.key.length === 1 && /\S/.test(event.key)) {
-              const match = options.findIndex((option) =>
+              const match = menuOptions.findIndex((option) =>
                 option.label.toLowerCase().startsWith(event.key.toLowerCase()),
               );
               if (match >= 0) next = match;
@@ -145,7 +150,7 @@ export function PlatformFilter({
           <p className="px-3 pt-2 pb-2.5 text-[10px] font-semibold tracking-[0.14em] text-muted-foreground uppercase">
             Filter by platform
           </p>
-          {options.map((option, index) => {
+          {menuOptions.map((option, index) => {
             const OptionIcon = option.icon;
             return (
               <button
@@ -187,7 +192,11 @@ export function PlatformFilter({
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-medium">{option.label}</span>
                   <span className="mt-0.5 block text-xs text-muted-foreground">
-                    {option.description}
+                    {content === "videos"
+                      ? option.value === "all"
+                        ? "Videos from every platform"
+                        : `Videos on ${option.label}`
+                      : option.description}
                   </span>
                 </span>
                 {value === option.value && (

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { BadgeCheck, Check, Lock, Plus, SearchX } from "lucide-react";
 
-import { creatorAvatarStyle } from "@/components/library/creator-card";
+import { creatorAvatarStyle } from "@/components/creators/avatar-style";
 import { Button } from "@/components/ui/button";
 import type { CreatorPlatform } from "@/lib/creators/repository";
 import {
